@@ -133,6 +133,7 @@ public:
     std::vector<DisplayInfo> display;
     std::vector<ExprInfo> probes;
     std::vector<RowGroup> groups;
+    int objective = -1;  // criterion index of the objective, -1 for none
     int n_coords = 0;
     int values_size = 0;
 
@@ -156,9 +157,15 @@ private:
         diags.push_back(
             {Diagnostic::Severity::Error, path, col, std::move(msg)});
     }
-    void warning(const std::string & path, std::string msg) {
+    // An identical warning at the same path is dropped: one expression can
+    // hold the same at() twice, and each call would warn again.
+    void warning(const std::string & path, std::string msg, int col = -1) {
+        for(const Diagnostic & d : diags)
+            if(d.severity == Diagnostic::Severity::Warning && d.path == path &&
+               d.message == msg)
+                return;
         diags.push_back(
-            {Diagnostic::Severity::Warning, path, -1, std::move(msg)});
+            {Diagnostic::Severity::Warning, path, col, std::move(msg)});
     }
     const Json & doc() const { return inst_.doc(); }
 
@@ -206,6 +213,17 @@ private:
 
     int term_index(Term t);
     void fill_expr_info(ExprInfo & e, int node);
+    // Error text for an aggregate compared with a bound in the direction
+    // that only asks for one sample ("max_over(s, f) >= b").
+    std::string existential_message(const Side & agg, std::string_view rel,
+                                    bool criterion = false);
+    // Warnings for at(s = e, ...) whose value can leave the range of s; col
+    // is the column of the at() call.
+    void warn_at_range(const std::string & path, int s, int e, int col);
+    // Warnings for keys of a constraint / criterion that have no effect;
+    // "weight" on a criterion is an error.
+    void check_keys(const Json & j, const std::string & path, bool criterion,
+                    const std::string & role);
 
     const Instance & inst_;
     const CompileOptions & opt_;
@@ -222,6 +240,9 @@ private:
     std::map<std::tuple<int, int, int>, int> agg_index_;
     std::vector<int> criterion_nodes_;
     int depth_ = 0;
+    // Sweep limits are read by build_sweeps(); an at() compiled before (in a
+    // param) must not be range-checked against the defaults.
+    bool sweeps_built_ = false;
 };
 
 bool Compiler::add_name(const std::string & name, NameKind kind, int index,
@@ -538,6 +559,7 @@ int Compiler::call(const Ast & a, const Ctx & c) {
                       a.arg_names[0], a.arg_names[0]));
             return -1;
         }
+        warn_at_range(c.path, s, e, col);
         const int r = subst(body, s, e);
         if(r == kTwoSweeps) {
             const auto [s1, s2] = B.conflict();
@@ -584,7 +606,7 @@ int Compiler::call(const Ast & a, const Ctx & c) {
         {"max_x", {1, -1}},      {"min_y", {1, -1}},
         {"max_y", {1, -1}},      {"max_proj", {2, 2}},
         {"min_proj", {2, 2}},    {"dyad", {5, 5}},
-        {"branch_of", {3, 3}},
+        {"branch_of", {3, 3}},   {"visible_fraction", {3, -1}},
     };
     auto sit = sigs.find(f);
     if(sit == sigs.end()) {
@@ -756,7 +778,28 @@ int Compiler::call(const Ast & a, const Ctx & c) {
         return needs("GV") ? mk(f == "max_proj" ? Op::MaxProj : Op::MinProj,
                                 {x[0], x[1]}, col, c)
                            : -1;
-    if(f == "dyad") return needs("VSVSS") ? mkv(Op::Dyad, x, col, c) : -1;
+    if(f == "visible_fraction") {
+        if(!needs("VHH")) return -1;
+        if(B.kind(x[1]) != ShapeKind::Polyline) {
+            error(c.path, first_column(*a.args[1]),
+                  std::format("the target of visible_fraction() must be a "
+                              "segment or a polyline, got {}",
+                              tname(x[1])));
+            return -1;
+        }
+        return mkv(Op::VisibleFraction, x, col, c);
+    }
+    if(f == "dyad") {
+        if(!needs("VSVSS")) return -1;
+        if(B.node(x[4]).dep == DepKind::Sweep)
+            warning(c.path,
+                    std::format("the branch of dyad() depends on sweep '{}': "
+                                "the linkage can switch assembly mode during "
+                                "the motion; take it at one sweep value, e.g. "
+                                "branch_of(at({} = ..., ...), ...)",
+                                dep_sweep_name(x[4]), dep_sweep_name(x[4])));
+        return mkv(Op::Dyad, x, col, c);
+    }
     if(f == "branch_of")
         return needs("VVV") ? mkv(Op::BranchOf, x, col, c) : -1;
     error(c.path, col, std::format("unknown function '{}'", f));
@@ -853,6 +896,124 @@ int Compiler::geometry_entry(const Json & g, const std::string & path) {
     return -1;
 }
 
+std::string Compiler::existential_message(const Side & agg,
+                                          std::string_view rel,
+                                          bool criterion) {
+    const bool max = agg.agg == AggKind::Max;
+    const char * f = max ? "max_over" : "min_over";
+    const char * one = max ? ">=" : "<=";
+    const std::string & s = sweeps[uz(agg.sweep)].name;
+    const std::string witness =
+        criterion ? std::format(
+                        "add a new design scalar w (its min and max inside the "
+                        "range of '{}') and make the criterion at({} = w, "
+                        "f), same role and bound; see \"Witness poses\" in "
+                        "the README",
+                        s, s)
+                  : std::format(
+                        "add a new design scalar w (its min and max inside the "
+                        "range of '{}') and {} at({} = w, f) {} b; see "
+                        "\"Witness poses\" in the README",
+                        s, rel == "==" ? "the constraint" : "write", s, one);
+    const std::string why = std::format(
+        "f {} b at one of the solver's samples of '{}', which are never "
+        "refined for it: it gives a poor design or none",
+        one, s);
+    if(rel == "==")
+        return std::format(
+            "{0}({1}, f) == b also asks for {2}. Write {0}({1}, f) {3} b, and "
+            "for f {4} b at some {1}, {5}",
+            f, s, why, max ? "<=" : ">=", one, witness);
+    return std::format(
+        "{0}({1}, f) {2} b only asks for {3}. To ask for f {2} "
+        "b at some {1}, {4}",
+        f, s, rel, why, witness);
+}
+
+void Compiler::warn_at_range(const std::string & path, int s, int e, int col) {
+    if(!sweeps_built_) return;
+    const SweepInfo & sw = sweeps[uz(s)];
+    // Excesses below this are rounding ("pi/2" against "90deg"), not a pose
+    // outside the motion.
+    const double slack = 1e-9 * std::max({sw.max - sw.min, std::fabs(sw.min),
+                                          std::fabs(sw.max)});
+    // "3.67e-06 above": the limits print with 6 digits, so an excess smaller
+    // than that would read as "1.5708 lies outside [0, 1.5708]".
+    auto excess = [&](double lo, double hi) {
+        std::string out;
+        if(sw.min - lo > slack) out = std::format("{:.3g} below", sw.min - lo);
+        if(hi - sw.max > slack)
+            out += std::format("{}{:.3g} above", out.empty() ? "" : " and ",
+                               hi - sw.max);
+        return out;
+    };
+    const Node & n = B.node(e);
+    if(n.dep == DepKind::Const) {
+        const double v = B.values(e)[0];
+        const std::string by = excess(v, v);
+        if(!by.empty())
+            warning(path,
+                    std::format("at({} = {:.6g}) lies {} the range [{:.6g}, "
+                                "{:.6g}] of '{}': the body is extrapolated "
+                                "beyond the motion",
+                                sw.name, v, by, sw.min, sw.max, sw.name),
+                    col);
+        return;
+    }
+    if(n.op != Op::Var) return;
+    const DesignVar & v = design[uz(n.aux)];
+    if(v.type != VarType::Scalar) return;
+    const std::string by = excess(v.min, v.max);
+    if(!by.empty())
+        warning(path,
+                std::format("the witness '{}' ranges over [{:.6g}, {:.6g}], "
+                            "which reaches {} the range [{:.6g}, {:.6g}] of "
+                            "'{}': the "
+                            "solver may place this pose outside the motion; "
+                            "give '{}' a min and max inside it",
+                            v.name, v.min, v.max, by, sw.min, sw.max, sw.name,
+                            v.name),
+                col);
+}
+
+void Compiler::check_keys(const Json & j, const std::string & path,
+                          bool criterion, const std::string & role) {
+    static const std::set<std::string, std::less<>> constraint_keys = {
+        "name", "expr", "forall", "enabled", "note"};
+    static const std::set<std::string, std::less<>> criterion_keys = {
+        "name", "expr", "role", "bound", "unit", "note"};
+    const auto & known = criterion ? criterion_keys : constraint_keys;
+    for(const auto & [key, v] : j.items()) {
+        const std::string at = path + "." + key;
+        if(criterion && key == "weight") {
+            error(at, -1,
+                  "\"weight\" is no longer supported: an instance has one "
+                  "objective. To maximise, use role \"maximize\" instead of "
+                  "a negative weight; to trade criteria off, bound all but "
+                  "one (role \"max\" / \"min\") and run a Pareto study, or "
+                  "write the weighted sum in one expression");
+        } else if(criterion && key == "bound" && role != "max" &&
+                  role != "min") {
+            warning(at, std::format("ignored for role \"{}\": only roles "
+                                    "\"max\" and \"min\" have a bound",
+                                    role));
+        } else if(!criterion && key == "unit") {
+            warning(at,
+                    "ignored: a constraint's margin is shown in SI units; to "
+                    "see the value in a display unit, write it as a criterion "
+                    "with role \"max\" or \"min\" and a bound");
+        } else if(!known.contains(key)) {
+            std::string list;
+            for(const std::string & k : known)
+                list += (list.empty() ? "" : ", ") + k;
+            warning(at, std::format("unknown key '{}' (ignored); a {} has the "
+                                    "keys {}",
+                                    key, criterion ? "criterion" : "constraint",
+                                    list));
+        }
+    }
+}
+
 void Compiler::build_geometry(const Json & geo, const std::string & file) {
     for(const auto & [name, g] : geo.items()) {
         const std::string path =
@@ -925,6 +1086,7 @@ void Compiler::build_sweeps() {
         sweeps[uz(k)] = si;
         ++k;
     }
+    sweeps_built_ = true;
 }
 
 void Compiler::build_design() {
@@ -1116,6 +1278,7 @@ void Compiler::build_constraints() {
                       ? cj["note"].get<std::string>()
                       : "";
         ci.enabled = !cj.contains("enabled") || cj["enabled"].get<bool>();
+        check_keys(cj, ci.path, false, "");
         const std::string epath = ci.path + ".expr";
         const int index = static_cast<int>(constraints.size());
         for(const ConstraintInfo & other : constraints)
@@ -1184,9 +1347,30 @@ void Compiler::build_constraints() {
             }
         }
         if(bad) continue;
+        const std::string & rel = ast->text;
+        if(L.agg != AggKind::None || R.agg != AggKind::None) {
+            const bool left = L.agg != AggKind::None;
+            const Side & A = left ? L : R;
+            const Side & O = left ? R : L;
+            // "max_over(s, f) >= b" written with the aggregate on either
+            // side: the relation as seen from the aggregate.
+            const char seen = rel == "=="             ? '='
+                              : (rel == "<=") == left ? '<'
+                                                      : '>';
+            const bool existential =
+                O.agg == AggKind::None &&
+                B.node(A.node).dep == DepKind::Sweep &&
+                (seen == '=' || (A.agg == AggKind::Max) == (seen == '>'));
+            if(existential) {
+                error(epath, first_column(left ? *ast->args[0] : *ast->args[1]),
+                      existential_message(A, seen == '='   ? "=="
+                                             : seen == '<' ? "<="
+                                                           : ">="));
+                continue;
+            }
+        }
         if(!ci.enabled) continue;
 
-        const std::string & rel = ast->text;
         GroupImpl G;
         G.equality = rel == "==";
         auto node_rows = [&](int lhs, int rhs) {
@@ -1266,6 +1450,11 @@ void Compiler::build_constraints() {
             warning(epath,
                     "does not depend on any design variable: it is always "
                     "satisfied or always violated");
+        if(forall >= 0 && sweep != forall)
+            warning(ci.path + ".forall",
+                    std::format("the constraint does not depend on sweep "
+                                "'{}': \"forall\" has no effect",
+                                ci.forall));
         G.sweep = sweep;
         RowGroup rg;
         rg.kind = GroupKind::Constraint;
@@ -1293,12 +1482,26 @@ void Compiler::build_criteria() {
         ci.text = cj.at("expr").get<std::string>();
         ci.unit = cj.contains("unit") ? cj["unit"].get<std::string>() : "";
         const std::string role = cj.at("role").get<std::string>();
-        ci.role = role == "minimize" ? CriterionRole::Minimize
-                  : role == "max"    ? CriterionRole::Max
-                  : role == "min"    ? CriterionRole::Min
-                                     : CriterionRole::Report;
-        ci.weight = cj.contains("weight") ? cj["weight"].get<double>() : 1.0;
+        ci.role = role == "minimize"   ? CriterionRole::Minimize
+                  : role == "maximize" ? CriterionRole::Maximize
+                  : role == "max"      ? CriterionRole::Max
+                  : role == "min"      ? CriterionRole::Min
+                                       : CriterionRole::Report;
+        check_keys(cj, ci.path, true, role);
         const int index = static_cast<int>(criteria.size());
+        const bool is_objective = ci.role == CriterionRole::Minimize ||
+                                  ci.role == CriterionRole::Maximize;
+        if(is_objective && objective >= 0)
+            error(ci.path + ".role", -1,
+                  std::format(
+                      "a second objective (the first is {}): an instance "
+                      "has one \"minimize\" or \"maximize\" criterion. Bound "
+                      "the others (role \"max\" / \"min\") and run a Pareto "
+                      "study over their bounds, or write the sum you want "
+                      "in one expression",
+                      criteria[uz(objective)].path));
+        else if(is_objective)
+            objective = index;
         // Results and the CLI address criteria by name.
         for(const CriterionInfo & other : criteria)
             if(other.name == ci.name)
@@ -1353,15 +1556,17 @@ void Compiler::build_criteria() {
                                     : Aggregate::None;
         criteria[uz(index)].sweep = S.agg != AggKind::None ? S.sweep : -1;
 
-        if(ci.role == CriterionRole::Minimize) {
+        if(is_objective) {
+            const bool maximize = ci.role == CriterionRole::Maximize;
             ObjTerm o;
             o.criterion = index;
-            o.weight = ci.weight;
-            // Minimising w*z with w <= 0 pushes z up without limit (nothing
-            // bounds it from above): such a criterion enters directly.
-            o.epigraph = S.agg == AggKind::Max &&
-                         B.node(S.node).dep == DepKind::Sweep &&
-                         ci.weight > 0.0;
+            o.sign = maximize ? -1.0 : 1.0;
+            // The rows sign * e(t_i) <= z bound the largest of sign * e, so
+            // the epigraph fits minimize max_over and maximize min_over only.
+            // For minimize min_over (maximize max_over) it would optimise the
+            // other extreme: those enter as the selected sample's value.
+            o.epigraph = S.agg == (maximize ? AggKind::Min : AggKind::Max) &&
+                         B.node(S.node).dep == DepKind::Sweep;
             o.term = term;
             P.objective.push_back(o);
             continue;
@@ -1403,6 +1608,12 @@ void Compiler::build_criteria() {
                                   {},
                                   {},
                                   1.0});
+        } else if(B.node(S.node).dep == DepKind::Sweep) {
+            error(epath, ast->column,
+                  std::format(
+                      "with role \"{}\", {}", role,
+                      existential_message(S, is_max ? "<=" : ">=", true)));
+            continue;
         } else {
             RowTemplate t;
             t.kind = RowTemplate::Kind::Aggregate;
@@ -1667,6 +1878,16 @@ bool Compiler::run() {
     for(const Instance::Include & inc : inst_.includes()) {
         if(inc.doc.contains("units") && inc.doc["units"] != "m")
             error(inc.spec + ": units", -1, "only metres are supported");
+        static const std::set<std::string, std::less<>> read = {
+            "units", "geometry", "format", "description", "note"};
+        if(inc.doc.is_object())
+            for(const auto & [key, v] : inc.doc.items())
+                if(!read.contains(key))
+                    warning(inc.spec + ": " + key,
+                            std::format("ignored: an included file only "
+                                        "contributes its \"geometry\"; put "
+                                        "\"{}\" in the instance itself",
+                                        key));
     }
     try {
         // Names, in precedence order. Each category's position decides which
@@ -1751,12 +1972,6 @@ bool Compiler::run() {
         build_constraints();
         build_criteria();
         build_display();
-        if(P.objective.size() > 1)
-            warning("criteria",
-                    "several \"minimize\" criteria are summed with their "
-                    "weights; a weighted sum cannot reach "
-                    "concave parts of the trade-off front (bound all but one "
-                    "criterion instead)");
         if(has_errors(diags)) return false;
         build_implicit();
         finalize();
@@ -1813,6 +2028,7 @@ struct ModelBuilder {
         m.display_ = std::move(c.display);
         m.probes_ = std::move(c.probes);
         m.groups_ = std::move(c.groups);
+        m.objective_ = c.objective;
         m.solver_ = inst.doc().contains("solver")
                         ? inst.doc()["solver"]
                         : nlohmann::ordered_json::object();

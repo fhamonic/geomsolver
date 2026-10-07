@@ -4,6 +4,7 @@
 #include <cmath>
 #include <format>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "ui/widgets.hpp"
@@ -17,7 +18,7 @@ constexpr ImGuiTableFlags kTableFlags = ImGuiTableFlags_RowBg |
                                         ImGuiTableFlags_BordersInnerH |
                                         ImGuiTableFlags_SizingStretchProp;
 
-const char * const kUnits[] = {"", "m", "cm", "mm", "deg", "rad"};
+const char * const kUnits[] = {"", "m", "cm", "mm", "deg", "rad", "%"};
 
 // Keys of an object member of the document, copied: edits made while drawing
 // replace the document and would invalidate iterators into it.
@@ -143,6 +144,22 @@ std::string unused_name(const Document & doc, const char * member,
     }
 }
 
+// "criteria[2].weight": a key of a constraint or criterion entry, where
+// the compiler warns about keys it does not use.
+bool entry_key(const std::string & path) {
+    if(!path.starts_with("constraints[") && !path.starts_with("criteria["))
+        return false;
+    const std::size_t close = path.find("].");
+    return close != std::string::npos &&
+           path.find_first_of(".[", close + 2) == std::string::npos;
+}
+
+// "weight" of "criteria[2].weight".
+std::string last_key(const std::string & path) {
+    const std::size_t dot = path.find_last_of('.');
+    return dot == std::string::npos ? path : path.substr(dot + 1);
+}
+
 bool small_delete_button(const char * id) {
     ImGui::PushID(id);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.15f, 0.15f, 0.6f));
@@ -209,22 +226,47 @@ void Inspector::field_diagnostics(Document & doc, const std::string & path) {
     if(ds.empty()) return;
     ImGui::PushID(path.c_str());
     bool any_error = false;
-    std::unordered_set<std::string> raw;
+    bool edited = false;
+    std::unordered_set<std::string> keys;
     for(const Diagnostic * d : ds) {
         const Json * j = doc.instance()->get(d->path);
         const std::string text =
             j && j->is_string() ? j->get<std::string>() : std::string();
         diagnostic_line(*d, text);
-        any_error |= d->severity == Diagnostic::Severity::Error;
-        if(d->severity == Diagnostic::Severity::Error && j &&
-           !drawn_.contains(d->path) && raw.insert(d->path).second) {
+        const bool error = d->severity == Diagnostic::Severity::Error;
+        any_error |= error;
+        if(!j || drawn_.contains(d->path) || !keys.insert(d->path).second)
+            continue;
+        // A key without an editor of its own. An error there gets a raw JSON
+        // field, which cannot remove the key (empty text is stored as ""):
+        // a key the compiler rejects or ignores ("weight", a misspelt key, a
+        // "bound" its role does not use) needs the remove button instead.
+        const bool removable = error || entry_key(d->path);
+        const std::string remove =
+            std::format("remove \"{}\"", last_key(d->path));
+        const float button = ImGui::CalcTextSize(remove.c_str()).x +
+                             2.0f * ImGui::GetStyle().FramePadding.x +
+                             ImGui::GetStyle().ItemSpacing.x;
+        if(error) {
             ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("JSON");
             ImGui::SameLine();
-            field(doc, d->path, Kind::RawJson, -FLT_MIN);
+            edited = field(doc, d->path, Kind::RawJson, -button);
+            if(removable) ImGui::SameLine();
         }
+        if(removable && !edited) {
+            if(ImGui::SmallButton(remove.c_str())) {
+                edits_.erase(d->path);
+                doc.erase(d->path);
+                edited = true;
+            }
+            tooltip_text("Delete this key from the instance");
+        }
+        // The edit recompiled the document: `ds` points at diagnostics that
+        // no longer exist.
+        if(edited) break;
     }
-    if(any_error && doc.model()) {
+    if(!edited && any_error && doc.model()) {
         if(ImGui::SmallButton("revert")) {
             doc.revert(path);
             edits_.erase(path);
@@ -402,7 +444,13 @@ void Inspector::design(Document & doc) {
                 shown[0] = held->second[0];
                 shown[1] = held->second[1];
             }
-            const std::string fmt = "%.5g " + shown_unit;
+            // A printf format: the "%" unit must be doubled, or the format
+            // ends in a lone '%' (undefined behaviour in vsnprintf).
+            std::string fmt = "%.5g ";
+            for(const char ch : shown_unit) {
+                fmt += ch;
+                if(ch == '%') fmt += '%';
+            }
             ImGui::SetNextItemWidth(-FLT_MIN);
             bool changed = false;
             bool commit = false;
@@ -444,6 +492,7 @@ void Inspector::design(Document & doc) {
 
         ImGui::TableNextColumn();
         bool f = fixed;
+        drawn_.insert(base + ".fixed");
         if(ImGui::Checkbox("##fixed", &f)) doc.edit(base + ".fixed", f);
         tooltip_text("Fixed variables keep their value and take no coordinate");
 
@@ -483,6 +532,7 @@ void Inspector::design(Document & doc) {
             field(doc, base + ".max", Kind::NumberOrExpression,
                   std::max(w, fs * 3));
             ImGui::SameLine();
+            drawn_.insert(base + ".unit");
             if(unit_combo("##unit", unit)) {
                 if(unit.empty())
                     doc.erase(base + ".unit");
@@ -573,6 +623,7 @@ void Inspector::constraints(Document & doc, const Scene & scene) {
         const std::string name = string_at(doc, base + ".name", "?");
         ImGui::PushID(base.c_str());
         bool enabled = bool_at(doc, base + ".enabled", true);
+        drawn_.insert(base + ".enabled");
         if(ImGui::Checkbox("##en", &enabled))
             doc.edit(base + ".enabled", enabled);
         tooltip_text("Enabled");
@@ -682,37 +733,51 @@ void Inspector::criteria(Document & doc, const Scene & scene) {
         }
         ImGui::Indent();
         ImGui::SetNextItemWidth(fs * 6.0f);
+        drawn_.insert(base + ".role");
         if(ImGui::BeginCombo("##role", role.c_str())) {
-            for(const char * r : {"minimize", "max", "min", "report"}) {
+            for(const char * r :
+                {"minimize", "maximize", "max", "min", "report"}) {
                 if(!ImGui::Selectable(r, role == r) || role == r) continue;
-                // A max/min role needs a bound: start from the current value
-                // so the change compiles and is satisfied.
-                if((std::string_view(r) == "max" ||
-                    std::string_view(r) == "min") &&
-                   !doc.instance()->get(base + ".bound") && cc)
-                    doc.edit(base + ".bound", cc->value);
-                doc.edit(base + ".role", r);
+                const std::string bpath = base + ".bound";
+                const Json * jb = doc.instance()->get(bpath);
+                const std::optional<Json> bound =
+                    jb ? std::optional<Json>(*jb) : std::nullopt;
+                if(std::string_view(r) == "max" ||
+                   std::string_view(r) == "min") {
+                    // A max/min role needs a bound: the one parked when the
+                    // criterion lost it, else the current value, so the
+                    // change compiles and is satisfied.
+                    const auto parked = parked_bounds_.find(bpath);
+                    if(!bound && parked != parked_bounds_.end())
+                        doc.edit(bpath, parked->second);
+                    else if(!bound && cc)
+                        doc.edit(bpath, cc->value);
+                    doc.edit(base + ".role", r);
+                } else {
+                    // The other roles ignore a bound, which would then warn;
+                    // it is parked so that switching back restores it.
+                    doc.edit(base + ".role", r);
+                    if(bound) {
+                        parked_bounds_[bpath] = *bound;
+                        doc.erase(bpath);
+                    }
+                }
             }
             ImGui::EndCombo();
         }
         tooltip_text(
-            "minimize: objective; max: value <= bound; min: value >= "
-            "bound; report: shown only");
+            "minimize / maximize: the objective (one criterion at most); "
+            "max: value <= bound; min: value >= bound; report: shown only");
         ImGui::SameLine();
         if(role == "max" || role == "min") {
             ImGui::TextDisabled("bound");
             ImGui::SameLine();
             field(doc, base + ".bound", Kind::NumberOrExpression, fs * 6.0f);
             ImGui::SameLine();
-        } else if(role == "minimize") {
-            ImGui::TextDisabled("weight");
-            ImGui::SameLine();
-            field(doc, base + ".weight", Kind::NumberOrExpression, fs * 4.0f,
-                  "1");
-            ImGui::SameLine();
         }
         ImGui::TextDisabled("unit");
         ImGui::SameLine();
+        drawn_.insert(base + ".unit");
         if(unit_combo("##unit", unit)) {
             if(unit.empty())
                 doc.erase(base + ".unit");
@@ -725,15 +790,6 @@ void Inspector::criteria(Document & doc, const Scene & scene) {
         ImGui::Separator();
         ImGui::PopID();
     }
-    int minimize = 0;
-    for(std::size_t i = 0; i < count; ++i)
-        if(string_at(doc, std::format("criteria[{}].role", i)) == "minimize")
-            ++minimize;
-    if(minimize > 1)
-        text_colored(palette::warn,
-                     "Several minimize criteria are summed with weights: a "
-                     "weighted sum cannot reach concave parts of the Pareto "
-                     "front. Prefer one objective plus max/min bounds.");
     if(ImGui::Button("Add criterion")) {
         Json c = Json::object();
         c["name"] = unused_name(doc, "criteria", "k", count + 1);
@@ -760,6 +816,9 @@ void Inspector::display(Document & doc) {
             }
         }
         ImVec4 col = engine_color_vec(rgba32);
+        for(const char * key :
+            {".color", ".fill", ".trace", ".width", ".ghosts"})
+            drawn_.insert(base + key);
         ImGui::ColorEdit4(
             "##col", &col.x,
             ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);

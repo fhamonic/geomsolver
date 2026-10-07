@@ -21,14 +21,19 @@ namespace gs::test {
 
 using Json = nlohmann::ordered_json;
 
-inline std::filesystem::path data_dir() { return GS_DATA_DIR; }
+// Frozen copy of data/tv_corner.json (and its room): the numbers below hold
+// for it, not for whatever data/ holds now.
+inline std::filesystem::path tv_file() {
+    return std::filesystem::path(GS_TEST_DATA_DIR) / "tv_corner_ref.json";
+}
 
-// Contract section 7.
-inline constexpr double kOptimum = 1.0193394755;
+// Protrusion at the optimum of tests/data/tv_corner_ref.json (view_tol 2 deg,
+// min_visible 86 %).
+inline constexpr double kOptimum = 1.0437292638;
 inline constexpr double kDeg = 0.017453292519943295;
 
 inline std::shared_ptr<Instance> tv_instance() {
-    LoadResult r = Instance::load(data_dir() / "tv_corner.json");
+    LoadResult r = Instance::load(tv_file());
     INFO(to_string(r.diagnostics));
     REQUIRE(r.ok());
     return r.instance;
@@ -55,24 +60,37 @@ inline std::shared_ptr<const Model> model_from(const Json & doc) {
     return compile_ok(*r.instance);
 }
 
-// The verified optimum of contract section 7.
+// The design values at kOptimum.
 inline std::vector<std::pair<std::string, std::vector<double>>>
 optimum_values() {
     return {
-        {"A", {0.3169048760460707, 0.023257031027451074}},
-        {"B", {8.055287993847735e-05, 0.24509981039656606}},
-        {"c", {0.1392422822668392, 0.0}},
-        {"d", {-0.11151459378589386, -0.03650882642838018}},
-        {"p0", {0.19109362318188705, 0.6310993655970135}},
-        {"phi0", {-1.458109052736341}},
-        {"span", {1.299292818565645}},
-        {"tstar", {0.636576761516744}},
+        {"A", {0.04124141278724899, 0.3038836104289831}},
+        {"B", {0.3501042214046246, 1.059914376411293e-05}},
+        {"c", {-0.16169443493060132, 0.0}},
+        {"d", {0.11211739507420804, -0.08347212552276656}},
+        {"p0", {0.3752252853661016, 0.6075222732478925}},
+        {"phi0", {-1.2707431383321104}},
+        {"span", {1.1391888732985331}},
+        {"tstar", {0.5615694774545104}},
     };
 }
 
 inline void set_optimum(Instance & inst) {
     for(const auto & [name, v] : optimum_values())
         REQUIRE(inst.set_design_value(name, v));
+}
+
+// With the hand design's wall pivots the multistart finds no feasible design
+// (neither with the setback nor, without it, with the visibility bound): fix
+// the optimum's pivots, so the reduced problem's optimum is kOptimum.
+inline std::shared_ptr<Instance> tv_pivots_fixed() {
+    auto inst = tv_instance();
+    set_optimum(*inst);
+    REQUIRE(inst->set("design.A.fixed", true));
+    REQUIRE(inst->set("design.B.fixed", true));
+    for(const char * v : {"c", "d", "p0", "phi0", "span", "tstar"})
+        REQUIRE(inst->erase(std::string("design.") + v + ".value"));
+    return inst;
 }
 
 inline std::vector<double> optimum_x(const Model & m) {

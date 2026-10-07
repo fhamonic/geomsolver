@@ -1,0 +1,101 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Corner TV on a planar four-bar: swings from facing the couch (tau=0) to facing the kitchen (tau=1) and is centred over meuble_TV at tau=tstar. Initial values are the hand-designed linkage.",
+  "include": ["example_room_ref.json"],
+  "params": {
+    "W": 1.23,
+    "T": 0.07,
+    "bracket_depth": 0.15,
+    "clr": 0.02,
+    "link_min": 0.10,
+    "link_max": 1.0,
+    "sep_min": 0.10,
+    "min_link_angle": "15deg",
+    "view_tol": "2deg",
+    "centre_tol": 0.01,
+    "centre_angle_tol": "1deg",
+    "edge_margin": 0.10,
+    "min_visible": 0.86
+  },
+  "design": {
+    "A": {"type": "point", "domain": "pivot_zone", "value": [0.16, 0.175], "note": "wall-side pivot of link 1"},
+    "B": {"type": "point", "domain": "pivot_zone", "value": [0.34, 0.05], "note": "wall-side pivot of link 2"},
+    "c": {"type": "point", "domain": "box(-W/2, -bracket_depth, W/2, 0)", "value": [-0.10, -0.03], "note": "TV-side pivot of link 1, TV frame (origin = back-face centre, +y = screen normal)"},
+    "d": {"type": "point", "domain": "box(-W/2, -bracket_depth, W/2, 0)", "value": [0.06, -0.03], "note": "TV-side pivot of link 2, TV frame"},
+    "p0": {"type": "point", "domain": "box(0, 0, 2, 2)", "value": [0.23064248198069212, 0.543094239410155], "note": "TV back-face centre in the couch pose"},
+    "phi0": {"type": "scalar", "min": "-150deg", "max": "-40deg", "unit": "deg", "value": -1.4574986003667585, "note": "TV axis angle in the couch pose"},
+    "span": {"type": "scalar", "min": "8deg", "max": "180deg", "unit": "deg", "value": 1.3604117115566463, "note": "rotation from the couch pose to the kitchen pose"},
+    "tstar": {"type": "scalar", "min": 0, "max": 1, "value": 0.6113314762544086, "note": "sweep position of the centred pose (a witness: see the README)"}
+  },
+  "sweeps": {
+    "tau": {"min": 0, "max": 1}
+  },
+  "let": {
+    "phi": "phi0 + tau * span",
+    "l1": "dist(A, place(c, p0, phi0))",
+    "l2": "dist(B, place(d, p0, phi0))",
+    "K1": "A - rotate(c, phi)",
+    "K2": "B - rotate(d, phi)",
+    "branch": "branch_of(at(tau = 0, K1), at(tau = 0, K2), p0)",
+    "p": "dyad(K1, l1, K2, l2, branch)",
+    "C": "place(c, p, phi)",
+    "D": "place(d, p, phi)",
+    "tv": "place(box(-W/2, 0, W/2, T), p, phi)",
+    "screen": "place(vec(0, T), p, phi)",
+    "normal": "dir(phi + 90deg)",
+    "body_centre": "place(vec(0, T/2), p, phi)",
+    "front_dir": "normalize(vertex(meuble_TV, 2) - vertex(meuble_TV, 1))",
+    "front_out": "perp(front_dir)",
+    "front_mid": "(min_proj(meuble_TV, front_dir) + max_proj(meuble_TV, front_dir)) / 2",
+    "living_target": "mean(center(chair1), couch_seat_1, couch_seat_2)",
+    "screen_face": "place(segment(vec(-W/2, T), vec(W/2, T)), p, phi)"
+  },
+  "constraints": [
+    {"name": "couch", "forall": "tau", "expr": "clearance(tv, couch) >= clr"},
+    {"name": "fridge", "forall": "tau", "expr": "clearance(tv, fridge) >= clr"},
+    {"name": "table", "forall": "tau", "expr": "clearance(tv, table) >= clr"},
+    {"name": "chair", "forall": "tau", "expr": "clearance(tv, chair1) >= clr"},
+    {"name": "pivot_spacing", "expr": "dist(A, B) >= sep_min"},
+    {"name": "bracket_spacing", "expr": "dist(c, d) >= sep_min"}
+  ],
+  "criteria": [
+    {"name": "protrusion", "expr": "max_over(tau, max_proj(tv, dir(45deg)))", "unit": "cm", "role": "minimize"},
+    {"name": "view_couch", "expr": "abs(at(tau = 0, angle_between(normal, living_target - screen)))", "unit": "deg", "role": "max", "bound": "view_tol", "note": "aims at living_target, the barycentre of the chair and the two couch seats"},
+    {"name": "view_kitchen", "expr": "abs(at(tau = 1, angle_between(normal, kitchen_view - screen)))", "unit": "deg", "role": "max", "bound": "view_tol"},
+    {"name": "kitchen_visible", "expr": "at(tau = 1, visible_fraction(kitchen_view, screen_face, fridge))", "unit": "%", "role": "min", "bound": "min_visible", "note": "share of the screen width not hidden by the fridge, seen from kitchen_view in the kitchen pose"},
+    {"name": "link_angle", "expr": "min_over(tau, asin(abs(sin_between(C - A, D - B))))", "unit": "deg", "role": "min", "bound": "min_link_angle", "note": "smallest angle between the two links over the motion"},
+    {"name": "wall_x", "expr": "min_over(tau, min_x(tv, C, D))", "unit": "cm", "role": "min", "bound": "clr", "note": "smallest gap to the wall x = 0 over the motion"},
+    {"name": "wall_y", "expr": "min_over(tau, min_y(tv, C, D))", "unit": "cm", "role": "min", "bound": "clr", "note": "smallest gap to the wall y = 0 over the motion"},
+    {"name": "link_1", "expr": "l1", "unit": "cm", "role": "max", "bound": "link_max"},
+    {"name": "link_2", "expr": "l2", "unit": "cm", "role": "max", "bound": "link_max"},
+    {"name": "link_1_min", "expr": "l1", "unit": "cm", "role": "min", "bound": "link_min"},
+    {"name": "link_2_min", "expr": "l2", "unit": "cm", "role": "min", "bound": "link_min"},
+    {"name": "centred_offset", "expr": "abs(at(tau = tstar, dot(body_centre, front_dir)) - front_mid)", "unit": "cm", "role": "max", "bound": "centre_tol", "note": "in the centred pose, distance along the cabinet's front edge from the TV body's centre to the edge's middle"},
+    {"name": "centred_angle", "expr": "abs(at(tau = tstar, phi) - angle(front_dir))", "unit": "deg", "role": "max", "bound": "centre_angle_tol", "note": "in the centred pose, angle between the TV and the cabinet's front edge"},
+    {"name": "centre_setback", "expr": "at(tau = tstar, dot(vertex(meuble_TV, 1) - body_centre, front_out))", "unit": "cm", "role": "min", "bound": "edge_margin", "note": "in the centred pose, how far the TV body's centre stays behind the cabinet's front edge"}
+  ],
+  "display": [
+    {"expr": "tv", "color": "#3b6fb6", "fill": true, "label": "TV", "ghosts": 6},
+    {"expr": "segment(screen, screen + 0.4 * normal)", "color": "#f2c94c", "width": 1.5},
+    {"expr": "segment(A, C)", "color": "#2f80ed", "width": 3, "label": "link 1"},
+    {"expr": "segment(B, D)", "color": "#eb5757", "width": 3, "label": "link 2"},
+    {"expr": "A", "color": "#2f80ed", "label": "A"},
+    {"expr": "B", "color": "#eb5757", "label": "B"},
+    {"expr": "C", "color": "#2f80ed", "trace": true},
+    {"expr": "D", "color": "#eb5757", "trace": true},
+    {"expr": "at(tau = 1, polygon(kitchen_view, vertex(screen_face, 0), vertex(screen_face, 1)))", "color": "#f2c94c30", "fill": true, "label": "kitchen view"},
+    {"expr": "living_target", "color": "#27ae60", "label": "living_target"}
+  ],
+  "solver": {
+    "algorithm": "SLSQP",
+    "starts": 64,
+    "seed": 1,
+    "phase1": true,
+    "initial_samples": 5,
+    "verify_samples": 2001,
+    "max_exchange_iterations": 40,
+    "feas_tol": 1e-7,
+    "maxeval": 3000,
+    "xtol_rel": 1e-7
+  }
+}

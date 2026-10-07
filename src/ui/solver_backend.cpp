@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 
+#include "gs/solve/report.hpp"
 #include "gs/solve/run.hpp"
 #include "gs/solve/service.hpp"
 #include "gs/solve/settings.hpp"
@@ -87,8 +88,7 @@ std::string run_status(const RunResult & r) {
     return s;
 }
 
-SolverSolution solution(const Model & m, const RunResult & r, int hits,
-                        int variants = 1) {
+SolverSolution solution(const Model & m, const RunResult & r, int hits) {
     SolverSolution s;
     s.x = r.x;
     s.objective = r.objective;
@@ -98,7 +98,6 @@ SolverSolution solution(const Model & m, const RunResult & r, int hits,
         s.worst = m.groups()[uz(r.worst_group)].name;
     for(const CriterionCheck & c : r.criteria) s.criteria.push_back(c.value);
     s.hits = hits;
-    s.variants = variants;
     s.status = run_status(r);
     return s;
 }
@@ -117,10 +116,18 @@ SolverResults convert(const SolveOutcome & o, std::uint64_t serial,
         r.wall_seconds = o.complete ? o.pareto.wall_seconds : elapsed;
     } else {
         const MultistartResult & ms = o.multistart;
-        for(const Solution & sol : ms.solutions)
-            if(sol.run >= 0 && uz(sol.run) < ms.runs.size())
-                r.solutions.push_back(
-                    solution(m, ms.runs[uz(sol.run)], sol.hits, sol.variants));
+        for(const Solution & sol : ms.solutions) {
+            if(sol.run < 0 || uz(sol.run) >= ms.runs.size()) continue;
+            const RunResult & best = ms.runs[uz(sol.run)];
+            SolverSolution s = solution(m, best, sol.hits);
+            for(const Solution::Variant & v : sol.variants)
+                if(v.run >= 0 && uz(v.run) < ms.runs.size())
+                    s.variants.push_back({ms.runs[uz(v.run)].x, v.hits,
+                                          format_design_difference(
+                                              m, best.x, ms.runs[uz(v.run)].x,
+                                              o.settings.cluster_x_tol)});
+            r.solutions.push_back(std::move(s));
+        }
         r.wall_seconds = o.complete ? ms.wall_seconds : elapsed;
     }
     return r;

@@ -1,0 +1,24 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "A lamp P in the corner of a room must stay 1 m away from the corner; you want it close to both walls. Both distances are blended into one weighted objective.",
+  "params": {
+    "wx": 0.3
+  },
+  "geometry": {
+    "keep_out": {"type": "circle", "x": 0, "y": 0, "r": 1, "note": "nothing within 1 m of the corner"}
+  },
+  "design": {
+    "P": {"type": "point", "domain": "box(0, 0, 1.5, 1.5)", "value": [1, 1]}
+  },
+  "constraints": [
+    {"name": "keep_out", "expr": "clearance(P, keep_out) >= 0"}
+  ],
+  "criteria": [
+    {"name": "blend", "expr": "wx * P.x + (1 - wx) * P.y", "role": "minimize", "unit": "cm"},
+    {"name": "wall_x", "expr": "P.x", "role": "report", "unit": "cm"},
+    {"name": "wall_y", "expr": "P.y", "role": "report", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "P", "color": "#eb5757", "label": "P"}
+  ]
+}

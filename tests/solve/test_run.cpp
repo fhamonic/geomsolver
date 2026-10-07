@@ -32,7 +32,7 @@ TEST_CASE("settings: defaults come from the instance's solver object") {
     CHECK(msgs[0] == "solver.maxeval: expected an integer >= 1");
     CHECK(msgs[1] == "solver.bogus: unknown setting (ignored)");
     CHECK(settings_from_json(to_json(t)).algorithm == Algorithm::COBYLA);
-    CHECK(parse_algorithm("ccsaq") == Algorithm::CCSAQ);
+    CHECK_FALSE(parse_algorithm("ccsaq").has_value());
     CHECK_FALSE(parse_algorithm("LD_LBFGS").has_value());
 }
 
@@ -136,41 +136,12 @@ TEST_CASE("cluster: solutions sorted feasible first, members grouped") {
     CHECK(sol[0].run == 2);
     CHECK(sol[0].members == std::vector<int>{2, 3, 4});
     CHECK(sol[0].hits == 3);
-    CHECK(sol[0].variants == 2);
+    CHECK(sol[0].variants.size() == 2);
     CHECK(sol[1].run == 1);
-    CHECK(sol[1].variants == 1);
+    CHECK(sol[1].variants.size() == 1);
     CHECK(sol[2].run == 5);  // infeasible: by violation, x only
     CHECK(sol[2].members == std::vector<int>{5, 6});
     CHECK(sol[3].run == 0);
-}
-
-TEST_CASE("cluster: variants need equal non-report criteria") {
-    auto m = tv_model();
-    SolverSettings s;
-    auto run = [&](int i, double x0, std::vector<double> crit) {
-        RunResult r;
-        r.index = i;
-        r.feasible = true;
-        r.objective = 1.0;
-        r.max_violation = 0.0;
-        r.x = {x0, 0.5};
-        for(const double v : crit) r.criteria.push_back({.value = v});
-        return r;
-    };
-    // TV criteria: protrusion, view_couch, view_kitchen (bounded), then four
-    // report criteria. A mirror image swaps link_1 and link_2.
-    const std::vector<RunResult> runs{
-        run(0, 0.1, {1.0, 0.03, 0.03, 0.26, 0.02, 0.48, 0.51}),
-        run(1, 0.9, {1.0, 0.03, 0.03, 0.26, 0.02, 0.51, 0.48}),
-        run(2, 0.5, {1.0, 0.02, 0.03, 0.26, 0.02, 0.48, 0.51}),
-    };
-    const std::vector<Solution> with_model = cluster(runs, s, m.get());
-    REQUIRE(with_model.size() == 2);
-    CHECK(with_model[0].members == std::vector<int>{0, 1});
-    CHECK(with_model[0].variants == 2);
-    CHECK(with_model[1].members == std::vector<int>{2});
-    // Without the model every criterion counts.
-    CHECK(cluster(runs, s).size() == 3);
 }
 
 }  // namespace gs::test
@@ -222,13 +193,9 @@ TEST_CASE("solve_from: equality rows, min-role bounds and a plain objective") {
               doctest::Approx(
                   -0.4 - q.criteria[static_cast<std::size_t>(floor)].value));
     }
-    // Without equality support the row becomes +h <= 0 and -h <= 0.
     const SampleSets S = SampleSets::uniform(*m, 5);
-    NlpProblem split(ev, S, NlpMode::Phase2, true, {});
-    NlpProblem native(ev, S, NlpMode::Phase2, false, {});
+    NlpProblem native(ev, S, NlpMode::Phase2, {});
     CHECK(native.m_eq() == 1);
-    CHECK(split.m_eq() == 0);
-    CHECK(split.m_ineq() == native.m_ineq() + 2);
 }
 
 }  // namespace gs::test

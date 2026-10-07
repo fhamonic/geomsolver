@@ -118,6 +118,13 @@ endif()
 if(ENABLE_TESTING)
   find_package(doctest REQUIRED)
   enable_testing()
+  # Tests that pin numbers read the frozen copies in tests/data, never data/:
+  # data/ is the working instance the user edits, and every design edit there
+  # would break them. Only the live_instance smoke test reads data/.
+  set(GS_TEST_DATA_DIR ${PROJECT_SOURCE_DIR}/tests/data)
+  set(GS_DATA_DIR ${PROJECT_SOURCE_DIR}/data)
+  set(GS_LIVE_INSTANCE ${GS_DATA_DIR}/tv_corner.json CACHE FILEPATH
+      "Instance the live_instance test compiles and solves")
   foreach(suite engine solve)
     file(GLOB_RECURSE GS_TEST_${suite} CONFIGURE_DEPENDS
          ${PROJECT_SOURCE_DIR}/tests/${suite}/*.cpp)
@@ -126,18 +133,38 @@ if(ENABLE_TESTING)
       gs_configure_target(test_${suite})
       target_link_libraries(test_${suite} PRIVATE gs_${suite} doctest::doctest)
       target_compile_definitions(test_${suite} PRIVATE
-                                 GS_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+                                 GS_TEST_DATA_DIR="${GS_TEST_DATA_DIR}")
       add_test(NAME test_${suite} COMMAND test_${suite})
     endif()
   endforeach()
   # Headless: runs before any window or GL context is created.
   add_test(NAME geomsolver_selftest
-           COMMAND geomsolver --selftest ${PROJECT_SOURCE_DIR}/data/tv_corner.json)
+           COMMAND geomsolver --selftest ${GS_TEST_DATA_DIR}/tv_corner_ref.json)
   if(TARGET geomsolver-cli)
     add_test(NAME geomsolver_cli
              COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:geomsolver-cli>
-                     -DDATA=${PROJECT_SOURCE_DIR}/data
+                     -DDATA=${GS_TEST_DATA_DIR}
                      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_checks
                      -P ${PROJECT_SOURCE_DIR}/tests/cli/cli_checks.cmake)
+    # No pinned numbers: the instance must load, compile and reach a feasible
+    # design (CLI exit 0) in a short multistart.
+    add_test(NAME live_instance
+             COMMAND geomsolver-cli ${GS_LIVE_INSTANCE} --quiet --starts 8)
+    set_tests_properties(live_instance PROPERTIES TIMEOUT 300)
+    # Every instance in docs/instances must still evaluate as the pages show.
+    add_test(NAME docs_instances
+             COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:geomsolver-cli>
+                     -DDOCS=${PROJECT_SOURCE_DIR}/docs/instances
+                     -P ${PROJECT_SOURCE_DIR}/tests/docs/docs_instances.cmake)
+    set_tests_properties(docs_instances PROPERTIES TIMEOUT 300)
   endif()
+  # The suite takes seconds; a hang (a solver that never returns) fails here
+  # instead of stalling ctest for its default 1500 s.
+  get_property(GS_TESTS DIRECTORY PROPERTY TESTS)
+  foreach(t IN LISTS GS_TESTS)
+    get_test_property(${t} TIMEOUT GS_TIMEOUT)
+    if(NOT GS_TIMEOUT)
+      set_tests_properties(${t} PROPERTIES TIMEOUT 600)
+    endif()
+  endforeach()
 endif()

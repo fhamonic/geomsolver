@@ -40,7 +40,7 @@ private:
     bool start(Document & doc, SolveKind kind);
     bool run_blocking(Document & doc, SolveKind kind, std::string * message);
     void refresh_results();
-    void load(Document & doc, const SolverSolution & s);
+    void load(Document & doc, const std::vector<double> & x);
 
     std::unique_ptr<SolverBackend> backend_;
     SolverSettings settings_;

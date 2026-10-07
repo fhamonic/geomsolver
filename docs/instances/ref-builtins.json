@@ -1,0 +1,29 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Shapes and values to try the builtin functions on, with --probe",
+  "params": {"half": 0.5, "tilt": "30deg"},
+  "geometry": {
+    "P": {"type": "point", "x": 3, "y": 4},
+    "sq": {"type": "polyline", "points": [[0, 0], [1, 0], [1, 1], [0, 1]], "closed": true, "note": "unit square, counter-clockwise"},
+    "L": {"type": "polyline", "points": [[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]], "closed": true, "note": "non-convex L shape"},
+    "disk": {"type": "circle", "x": 4, "y": 0, "r": 1},
+    "wall": {"type": "polyline", "points": [[0, 3], [4, 3]]},
+    "plate": {"type": "rect", "x": 2, "y": -2, "width": 1, "height": 0.5, "angle": 30}
+  },
+  "design": {
+    "s": {"type": "scalar", "min": 0, "max": 2, "value": 0.5},
+    "q": {"type": "point", "domain": "box(-1, -1, 1, 1)", "value": [0.25, -0.5]}
+  },
+  "sweeps": {"u": {"min": 0, "max": 2}},
+  "let": {
+    "arm": "place(segment(vec(0, 0), vec(1, 0)), q, u)",
+    "tip": "vertex(arm, 1)"
+  },
+  "constraints": [
+    {"name": "tip_inside", "forall": "u", "expr": "norm(tip) <= 2"}
+  ],
+  "criteria": [
+    {"name": "s_value", "expr": "s", "role": "minimize"},
+    {"name": "tip_height", "expr": "max_over(u, tip.y)", "role": "report"}
+  ]
+}

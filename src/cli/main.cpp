@@ -40,7 +40,13 @@ const char * kUsage =
   --starts N                seeded uniform starts (default: solver.starts)
   --seed S                  multistart seed (default: solver.seed)
   --threads T               worker threads, 0 = all cores
-  --algorithm A             SLSQP | COBYLA | MMA | CCSAQ
+  --algorithm A             SLSQP | COBYLA
+  --set PATH=VALUE          edit the instance before compiling (repeatable),
+                            e.g. params.edge_margin=0.05 or
+                            criteria[3].role=maximize: VALUE is read as JSON
+                            when it parses, else as a string; null removes
+                            the key. An index path follows the file's order;
+                            --write-instance saves the edits
   --fix name,...            fix design variables at their instance values
   --bound C=VALUE           replace criterion C's bound (its display unit)
   --no-current              do not use the instance's design as a start
@@ -70,6 +76,7 @@ struct Args {
     std::optional<std::string> algorithm;
     std::optional<double> feas_tol;
     bool no_current = false, no_phase1 = false;
+    std::vector<std::pair<std::string, std::string>> edits;  // --set
     std::vector<std::string> fix;
     std::vector<std::pair<std::string, double>> bound_overrides;
     std::vector<std::string> probes;
@@ -143,6 +150,12 @@ Args parse(int argc, char ** argv) {
             a.threads = static_cast<int>(to_int(value(), arg));
         } else if(arg == "--algorithm") {
             a.algorithm = value();
+        } else if(arg == "--set") {
+            const std::string kv = value();
+            const auto eq = kv.find('=');
+            if(eq == std::string::npos || eq == 0)
+                throw std::invalid_argument("--set expects PATH=VALUE");
+            a.edits.emplace_back(kv.substr(0, eq), kv.substr(eq + 1));
         } else if(arg == "--fix") {
             for(const std::string & n : split(value(), ',')) a.fix.push_back(n);
         } else if(arg == "--bound") {
@@ -200,7 +213,7 @@ Args parse(int argc, char ** argv) {
         throw std::invalid_argument(
             std::format("--write-point {}: the study has {} point(s)",
                         a.write_point, a.bounds.size()));
-    // Taking the lowest objective would pick the loosest bound, which the
+    // Taking the best objective would pick the loosest bound, which the
     // saved instance would then not state.
     if(!a.pareto.empty() && !a.write_instance.empty() && a.write_point == 0)
         throw std::invalid_argument(
@@ -259,6 +272,26 @@ int run(const Args & a) {
         return 2;
     }
     std::shared_ptr<gs::Instance> inst = lr.instance;
+    for(const auto & [path, text] : a.edits) {
+        Json value = Json::parse(text, nullptr, false);
+        if(value.is_discarded()) value = text;
+        std::string err;
+        const bool existed = inst->get(path) != nullptr;
+        const bool remove = value.is_null();
+        const bool ok = remove ? inst->erase(path, &err)
+                               : inst->set(path, std::move(value), &err);
+        if(!ok) {
+            std::cerr << "--set " << path << ": " << err << "\n";
+            return 2;
+        }
+        // Instance::set creates missing keys, so a misspelt name path would
+        // otherwise leave the intended value unchanged in silence. A new key
+        // the schema lists ("design.A.fixed") is a normal edit.
+        if(!existed && !remove && !gs::schema_lists_key(path))
+            std::cerr << "warning: --set " << path
+                      << ": the instance had no such key, so it was added "
+                         "(check the spelling)\n";
+    }
     for(const std::string & name : a.fix) {
         if(!inst->get("design." + name)) {
             std::cerr << "--fix: no design variable named '" << name << "'\n";
@@ -279,7 +312,11 @@ int run(const Args & a) {
     const gs::Model & m = *model;
 
     std::vector<std::string> messages;
-    gs::SolverSettings s = gs::settings_from_model(m, &messages);
+    Json solver_json = m.solver_settings();
+    // --algorithm replaces the instance's choice, and the instance's note
+    // about a removed algorithm ("using SLSQP") would then be wrong.
+    if(a.algorithm && solver_json.is_object()) solver_json.erase("algorithm");
+    gs::SolverSettings s = gs::settings_from_json(solver_json, &messages);
     for(const std::string & msg : messages)
         std::cerr << "warning: " << msg << "\n";
     if(a.starts) s.starts = *a.starts;
@@ -293,11 +330,17 @@ int run(const Args & a) {
     if(a.no_phase1) s.phase1 = false;
     if(a.algorithm) {
         const auto alg = gs::parse_algorithm(*a.algorithm);
-        if(!alg) {
-            std::cerr << "unknown algorithm '" << *a.algorithm << "'\n";
+        const std::string removed = gs::removed_algorithm_note(*a.algorithm);
+        if(alg) {
+            s.algorithm = *alg;
+        } else if(!removed.empty()) {
+            std::cerr << "warning: --algorithm: " << removed << "\n";
+            s.algorithm = gs::Algorithm::SLSQP;
+        } else {
+            std::cerr << "unknown algorithm '" << *a.algorithm
+                      << "': expected SLSQP or COBYLA\n";
             return 2;
         }
-        s.algorithm = *alg;
     }
     if(const auto bad = gs::validate(s); !bad.empty()) {
         for(const std::string & b : bad) std::cerr << "settings: " << b << "\n";
@@ -356,12 +399,6 @@ int run(const Args & a) {
         return 0;
     }
 
-    if(const std::string w = gs::algorithm_warning(
-           s.algorithm,
-           m.nlp_layout(gs::SampleSets::uniform(m, s.initial_samples)).m());
-       !w.empty())
-        std::cerr << "warning: " << w << "\n";
-
     gs::SolveJob job;
     job.model = model;
     job.settings = s;
@@ -403,7 +440,14 @@ int run(const Args & a) {
         const gs::SolveProgress p = service.progress();
         std::string best = "none feasible yet";
         if(std::isfinite(p.best_objective))
-            best = std::format("best {:.10g}", p.best_objective);
+            best =
+                "best " +
+                gs::format_value(
+                    p.best_objective,
+                    m.objective() >= 0
+                        ? m.criteria()[static_cast<std::size_t>(m.objective())]
+                              .unit
+                        : std::string());
         std::cerr << std::format("\r[{}] {}/{} runs, {}, {:.1f} s     ",
                                  p.phase, p.runs_done, p.runs_total, best,
                                  p.elapsed_seconds)
@@ -425,16 +469,16 @@ int run(const Args & a) {
             m.criteria()[static_cast<std::size_t>(job.pareto.criteria[0])].unit;
         for(std::size_t k = 0; k < o->pareto.points.size(); ++k) {
             const gs::ParetoPoint & p = o->pareto.points[k];
+            const double sign = m.objective_sign();
             const bool chosen =
                 a.write_point > 0
                     ? static_cast<int>(k) + 1 == a.write_point
-                    : p.feasible &&
-                          (!best || p.best.objective < best->objective);
+                    : p.feasible && (!best || sign * p.best.objective <
+                                                  sign * best->objective);
             if(!chosen) continue;
             best = &p.best;
-            best_label = a.write_point > 0
-                             ? std::format(", point {}", k + 1)
-                             : ", lowest objective over the points";
+            best_label = a.write_point > 0 ? std::format(", point {}", k + 1)
+                                           : ", best objective over the points";
             std::erase_if(best_bounds, [&](const gs::BoundOverride & b) {
                 return std::ranges::find(o->pareto.criteria, b.criterion) !=
                        o->pareto.criteria.end();
@@ -449,7 +493,8 @@ int run(const Args & a) {
             }
         }
     } else {
-        std::cout << gs::format_solutions(m, o->multistart);
+        std::cout << gs::format_solutions(m, o->multistart, 10,
+                                          s.cluster_x_tol);
         best = o->multistart.best();
     }
 

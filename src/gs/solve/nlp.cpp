@@ -22,7 +22,6 @@ double bound_shift(const Model & m, int criterion, double bound) {
 }
 
 NlpProblem::NlpProblem(Evaluator & ev, SampleSets samples, NlpMode mode,
-                       bool split_equalities,
                        std::span<const BoundOverride> bounds)
     : ev_(&ev), samples_(std::move(samples)), mode_(mode) {
     const Model & m = ev.model();
@@ -55,9 +54,6 @@ NlpProblem::NlpProblem(Evaluator & ev, SampleSets samples, NlpMode mode,
             const bool eq = m.groups()[uz(layout_.rows[uz(r)].group)].equality;
             if(!eq) {
                 ineq_.push_back({r, 1.0, -1});
-            } else if(split_equalities) {
-                ineq_.push_back({r, 1.0, -1});
-                ineq_.push_back({r, -1.0, -1});
             } else {
                 eq_.push_back({r, 1.0, -1});
             }
@@ -72,7 +68,7 @@ NlpProblem::NlpProblem(Evaluator & ev, SampleSets samples, NlpMode mode,
             int k = static_cast<int>(it - epi_crit_.begin());
             if(it == epi_crit_.end()) epi_crit_.push_back(piece.criterion);
             piece_aux_[p] = model_n_ + k;
-            ineq_.push_back({static_cast<int>(p), 1.0, model_n_ + k});
+            ineq_.push_back({static_cast<int>(p), piece.sign, model_n_ + k});
         }
         n_ = model_n_ + static_cast<int>(epi_crit_.size());
     }
@@ -116,7 +112,7 @@ void NlpProblem::evaluate(const double * x, const LocalBuffers & out) {
         double f = 0.0;
         if(grad) std::fill(out.df, out.df + n, 0.0);
         for(uz p = 0; p < layout_.objective.size(); ++p) {
-            const double w = layout_.objective[p].weight;
+            const double w = layout_.objective[p].sign;
             if(piece_aux_[p] >= 0) continue;
             f += w * obj_[p];
             if(grad)
@@ -124,9 +120,8 @@ void NlpProblem::evaluate(const double * x, const LocalBuffers & out) {
                     out.df[j] += w * obj_jac_[p * nm + j];
         }
         for(uz k = 0; k < epi_crit_.size(); ++k) {
-            const double w = ev_->model().criteria()[uz(epi_crit_[k])].weight;
-            f += w * x[nm + k];
-            if(grad) out.df[nm + k] = w;
+            f += x[nm + k];
+            if(grad) out.df[nm + k] = 1.0;
         }
         *out.f = f;
     }
@@ -200,7 +195,7 @@ std::vector<double> NlpProblem::epigraph_values(std::span<const double> x) {
         if(std::isnan(obj_[p]) || std::isnan(zk))
             zk = std::numeric_limits<double>::quiet_NaN();
         else
-            zk = std::max(zk, obj_[p]);
+            zk = std::max(zk, layout_.objective[p].sign * obj_[p]);
     }
     return z;
 }

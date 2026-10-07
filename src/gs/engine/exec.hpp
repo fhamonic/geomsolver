@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numbers>
+#include <utility>
 #include <vector>
 
 #include "gs/engine/dual.hpp"
@@ -84,7 +86,8 @@ T dist_point_segment(const V2<T> & p, const V2<T> & a, const V2<T> & b) {
 //   PS: distance from point (ps, pi) to segment (es: e0 -> e1), negated when
 //       sign < 0 (the point is inside);
 //   EV: signed distance of vertex (ps, pi) to the outward line of edge
-//       (es: e0 -> e1); sign is the edge owner's orientation.
+//       (es: e0 -> e1); sign is the edge owner's orientation, except for a
+//       point against a polygon, where it follows the inside test.
 struct Feature {
     enum class Kind : std::uint8_t { PP, PS, EV };
     Kind kind = Kind::PP;
@@ -140,6 +143,18 @@ T eval_feature(const Feature & f, const T * d0, const T * d1) {
     return T(0.0);
 }
 
+// Vertex k of the closed ring V[0, n) lies on the line through its two
+// neighbours, the boundary going on in the same direction (a redundant
+// vertex, such as (0.5, 0) in (0, 0), (0.5, 0), (1, 0), ...).
+inline bool straight_vertex(const std::vector<Vec2d> & V, int n, int k) {
+    const Vec2d u = V[uz((k + n - 1) % n)], v = V[uz(k)],
+                w = V[uz((k + 1) % n)];
+    const double ax = v.x - u.x, ay = v.y - u.y, bx = w.x - v.x, by = w.y - v.y;
+    const double la = std::hypot(ax, ay), lb = std::hypot(bx, by);
+    return la > 0.0 && lb > 0.0 && ax * bx + ay * by > 0.0 &&
+           std::fabs(ax * by - ay * bx) <= 1e-10 * la * lb;
+}
+
 inline Feature point_vs_shape(int ps, int pi, int s, ShapeKind kind, int n,
                               const Scratch & sc) {
     const Vec2d p = sc.v[ps][static_cast<std::size_t>(pi)];
@@ -161,10 +176,53 @@ inline Feature point_vs_shape(int ps, int pi, int s, ShapeKind kind, int n,
             f.e1 = k1;
         }
     }
-    if(closed && point_in_polygon(p, std::span<const Vec2d>(V.data(), uz(n)))) {
+    if(!closed) return f;
+    const std::span<const Vec2d> poly(V.data(), uz(n));
+    const bool inside = point_in_polygon(p, poly);
+    if(inside) {
         f.sign = -1.0;
         f.value = -f.value;
     }
+    // Facing an edge's interior, or a vertex where the boundary runs straight
+    // on, the signed distance is the distance to the edge's line, which stays
+    // smooth as the point crosses the boundary. The segment distance's
+    // derivative vanishes (sqrt at 0) or is rounding noise there: a pivot
+    // resting on its domain's edge would get no usable gradient.
+    const Vec2d a = V[uz(f.e0)], b = V[uz(f.e1)];
+    const double ex = b.x - a.x, ey = b.y - a.y, L2 = ex * ex + ey * ey;
+    if(!(L2 > 0.0)) return f;
+    const double t = ((p.x - a.x) * ex + (p.y - a.y) * ey) / L2;
+    if(t <= 0.0 && !straight_vertex(V, n, f.e0)) return f;
+    if(t >= 1.0 && !straight_vertex(V, n, f.e1)) return f;
+    f.kind = Feature::Kind::EV;
+    // The sign must make the line distance agree with the inside test, not
+    // follow the polygon's orientation: a polygon with no interior
+    // (box(0, 0, 1, 0)) or a self-intersecting one has outside points on the
+    // inner side of their nearest edge, which the orientation reports as
+    // penetrating by their whole distance. Within rounding of the line the
+    // point's own inside test is noise, so it is asked just off the line on
+    // both sides; the orientation decides only where both answers agree (a
+    // polygon with no interior, or a point at a vertex), else a point on a
+    // lobe's edge of a self-intersecting polygon gets the reversed gradient.
+    const double L = std::sqrt(L2);
+    const double line = (ey * (p.x - a.x) - ex * (p.y - a.y)) / L;
+    const double scale =
+        std::max({std::fabs(p.x), std::fabs(p.y), std::fabs(a.x),
+                  std::fabs(a.y), std::fabs(b.x), std::fabs(b.y)});
+    if(std::fabs(line) > 1e-12 * scale) {
+        f.sign = (line > 0.0) != inside ? 1.0 : -1.0;
+        return f;
+    }
+    // Beyond the 1e-12 * scale band, so each probe is decided off the line,
+    // yet short against the edge, so neither crosses another edge away from
+    // a vertex.
+    const double off = (1e-11 * scale + 1e-9 * L) / L;
+    const bool plus = point_in_polygon({p.x + off * ey, p.y - off * ex}, poly);
+    const bool minus = point_in_polygon({p.x - off * ey, p.y + off * ex}, poly);
+    if(plus != minus)
+        f.sign = plus ? -1.0 : 1.0;
+    else
+        f.sign = signed_area(poly) >= 0.0 ? 1.0 : -1.0;
     return f;
 }
 
@@ -458,6 +516,309 @@ T projection(bool is_max, const ArgRef & g, const T * d, const V2<T> & v,
         }
     }
     return dot(ld2(d + 2 * bi), v);
+}
+
+// visible_fraction(eye, target, occluder...): the share of the target's length
+// whose sight segment from the eye crosses no occluder's interior.
+//
+// For a target segment (a, b) and a convex occluder piece K, K clipped to the
+// triangle (eye, a, b) is the part of K that sight segments to (a, b) can
+// cross, and the rays from the eye through its vertices bound the hidden
+// interval of the segment's parameter. The intervals of all pieces are merged,
+// so overlapping shadows count once. Clipping and projection run in T; the
+// extreme vertices and the merge are chosen on values.
+
+// A circle occluder becomes this regular polygon, circumscribed: an inscribed
+// one would report sight lines that cross the disk's rim as visible. Its
+// corners stick out by 1 / cos(pi / 64) - 1 = 0.12 % of the radius.
+inline constexpr int kCircleSides = 64;
+
+struct CircleTable {
+    double c[kCircleSides], s[kCircleSides];
+    double scale;
+};
+
+inline const CircleTable & circle_table() {
+    static const CircleTable t = [] {
+        CircleTable r{};
+        for(int i = 0; i < kCircleSides; ++i)
+            ad::sin_cos(
+                2.0 * std::numbers::pi * static_cast<double>(i) / kCircleSides,
+                r.s[i], r.c[i]);
+        r.scale = 1.0 / std::cos(std::numbers::pi / kCircleSides);
+        return r;
+    }();
+    return t;
+}
+
+template <class T>
+using Poly = std::vector<V2<T>>;
+
+// Convex pieces of one occluder in T. A polyline gives its segments, which
+// hide what lies behind them like thin walls.
+template <class T>
+void occluder_pieces(const ArgRef & r, const T * d,
+                     const std::vector<ShapeMeta> & metas, Scratch & sc,
+                     std::vector<Poly<T>> & out) {
+    const ShapeArg s = shape_arg(r, metas);
+    if(s.circle) {
+        const CircleTable & ct = circle_table();
+        const T R = d[2] * ct.scale;
+        Poly<T> p(uz(kCircleSides));
+        for(int i = 0; i < kCircleSides; ++i)
+            p[uz(i)] = {d[0] + R * ct.c[i], d[1] + R * ct.s[i]};
+        out.push_back(std::move(p));
+        return;
+    }
+    if(s.point) return;
+    load_values(0, s, d, sc);
+    sc.ensure_iota(s.n);
+    collect_pieces(0, s, sc, sc.piece_list[0]);
+    for(const Piece & pc : sc.piece_list[0]) {
+        Poly<T> p(uz(pc.n));
+        for(int j = 0; j < pc.n; ++j) p[uz(j)] = ld2(d + 2 * pc.idx[j]);
+        out.push_back(std::move(p));
+    }
+}
+
+// The part of the convex polygon `in` left of (or on) the line p0 -> p1.
+template <class T>
+void clip_left(const Poly<T> & in, const V2<T> & p0, const V2<T> & p1,
+               Poly<T> & out) {
+    out.clear();
+    const std::size_t n = in.size();
+    const V2<T> e = p1 - p0;
+    for(std::size_t i = 0; i < n; ++i) {
+        const V2<T> & c = in[i];
+        const V2<T> & nx = in[(i + 1) % n];
+        const T dc = cross(e, c - p0), dn = cross(e, nx - p0);
+        const double vc = val(dc), vn = val(dn);
+        if(vc >= 0.0) out.push_back(c);
+        if((vc > 0.0 && vn < 0.0) || (vc < 0.0 && vn > 0.0))
+            out.push_back(c + scale(nx - c, dc / (dc - dn)));
+    }
+}
+
+// Parameter u on a -> b where the ray from the eye along d meets the line ab,
+// with A = a - eye and Bv = b - eye.
+template <class T>
+T ray_param(const V2<T> & d, const V2<T> & A, const V2<T> & Bv) {
+    const T ca = cross(d, A), cb = cross(d, Bv);
+    return ca / (ca - cb);
+}
+
+template <class T>
+struct Shadow {
+    double lo = 0.0, hi = 0.0;
+    T tlo{}, thi{};
+};
+
+// Hidden interval of one clipped piece, clamped to [0, 1]; false when it
+// hides nothing. A vertex within sqrt(near2) of the eye has no reliable
+// direction: it exists only when the eye is on or inside the piece, and the
+// piece's other vertices then bound the same rays.
+template <class T>
+bool shadow(const Poly<T> & poly, const V2<T> & eye, const V2<T> & A,
+            const V2<T> & Bv, double near2, Shadow<T> & out) {
+    const V2<double> Av{val(A.x), val(A.y)}, Bd{val(Bv.x), val(Bv.y)};
+    double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+    std::size_t ilo = 0, ihi = 0;
+    for(std::size_t i = 0; i < poly.size(); ++i) {
+        const V2<double> d{val(poly[i].x) - val(eye.x),
+                           val(poly[i].y) - val(eye.y)};
+        if(dot(d, d) <= near2) continue;
+        const double u = ray_param(d, Av, Bd);
+        if(u < lo) {
+            lo = u;
+            ilo = i;
+        }
+        if(u > hi) {
+            hi = u;
+            ihi = i;
+        }
+    }
+    if(!(hi > 0.0 && lo < 1.0 && hi > lo)) return false;
+    out.lo = std::max(lo, 0.0);
+    out.hi = std::min(hi, 1.0);
+    out.tlo = lo > 0.0 ? ray_param(poly[ilo] - eye, A, Bv) : T(0.0);
+    out.thi = hi < 1.0 ? ray_param(poly[ihi] - eye, A, Bv) : T(1.0);
+    return true;
+}
+
+// True when every vertex of `poly` is within `tol` of the line through p and
+// q. A clipped piece that collapses onto the target's own line only touches
+// the target from behind (a face on its own body, a wall along the target):
+// sight segments end on it without crossing its interior.
+template <class T>
+bool on_line(const Poly<T> & poly, const V2<T> & p, const V2<T> & q,
+             double tol) {
+    const V2<double> pv{val(p.x), val(p.y)};
+    const V2<double> e{val(q.x) - pv.x, val(q.y) - pv.y};
+    const double lim = tol * norm(e);
+    for(const V2<T> & v : poly)
+        if(std::fabs(cross(e, V2<double>{val(v.x) - pv.x, val(v.y) - pv.y})) >
+           lim)
+            return false;
+    return true;
+}
+
+// Hidden share of the parameter range [0, 1] of a -> b, for an eye off the
+// line ab; `area` is cross(a - eye, b - eye).
+template <class T>
+T hidden_share(const V2<T> & eye, const V2<T> & a, const V2<T> & b,
+               const std::vector<Poly<T>> & pieces, double area, double near) {
+    const V2<T> A = a - eye, Bv = b - eye;
+    const V2<T> & p = area > 0.0 ? a : b;
+    const V2<T> & q = area > 0.0 ? b : a;
+    // Clipping leaves vertices on the target line with a rounding error far
+    // below this; a real occluder in front of the target is far thicker.
+    const double line_tol =
+        1e-10 * std::max(norm(V2<double>{val(A.x), val(A.y)}),
+                         norm(V2<double>{val(Bv.x), val(Bv.y)}));
+    Poly<T> c1, c2;
+    std::vector<Shadow<T>> sh;
+    for(const Poly<T> & k : pieces) {
+        clip_left(k, eye, p, c1);
+        clip_left(c1, p, q, c2);
+        clip_left(c2, q, eye, c1);
+        if(on_line(c1, p, q, line_tol)) continue;
+        Shadow<T> s;
+        if(shadow(c1, eye, A, Bv, near * near, s)) sh.push_back(s);
+    }
+    std::sort(sh.begin(), sh.end(),
+              [](const Shadow<T> & x, const Shadow<T> & y) {
+                  return x.lo < y.lo || (x.lo == y.lo && x.hi < y.hi);
+              });
+    T hidden(0.0);
+    for(std::size_t k = 0; k < sh.size();) {
+        const T lo = sh[k].tlo;
+        T hi = sh[k].thi;
+        double hv = sh[k].hi;
+        for(++k; k < sh.size() && sh[k].lo <= hv; ++k)
+            if(sh[k].hi > hv) {
+                hv = sh[k].hi;
+                hi = sh[k].thi;
+            }
+        hidden = hidden + (hi - lo);
+    }
+    return hidden;
+}
+
+// The eye on the target's line, which is the line through `eye` along the
+// unit vector w; the target covers [sa, sb] in the coordinate s = dot(w, x -
+// eye). Every sight segment runs along the line, so a piece the line enters
+// hides everything beyond the entry point. Returns the hidden share of [sa,
+// sb] or, when sa == sb, 1 if that point is hidden and 0 if not. Values only:
+// the configuration is a single point of the design space.
+template <class T>
+double hidden_on_line(const V2<double> & eye, const V2<double> & w, double sa,
+                      double sb, const std::vector<Poly<T>> & pieces) {
+    const double inf = std::numeric_limits<double>::infinity();
+    std::vector<std::pair<double, double>> iv;
+    std::vector<double> h, s;
+    for(const Poly<T> & k : pieces) {
+        const std::size_t n = k.size();
+        h.assign(n, 0.0);
+        s.assign(n, 0.0);
+        double extent = std::max(std::fabs(sa), std::fabs(sb));
+        for(std::size_t i = 0; i < n; ++i) {
+            const V2<double> d{val(k[i].x) - eye.x, val(k[i].y) - eye.y};
+            h[i] = cross(w, d);
+            s[i] = dot(w, d);
+            extent = std::max(extent, std::hypot(d.x, d.y));
+        }
+        const double tol = 1e-12 * extent;
+        const auto [hmin, hmax] = std::minmax_element(h.begin(), h.end());
+        if(!(*hmax > tol && *hmin < -tol)) continue;
+        double s_in = inf, s_out = -inf;
+        for(std::size_t i = 0; i < n; ++i) {
+            const std::size_t j = (i + 1) % n;
+            double x = inf;
+            if(std::fabs(h[i]) <= tol)
+                x = s[i];
+            else if((h[i] > tol && h[j] < -tol) || (h[i] < -tol && h[j] > tol))
+                x = s[i] + (s[j] - s[i]) * (h[i] / (h[i] - h[j]));
+            else
+                continue;
+            s_in = std::min(s_in, x);
+            s_out = std::max(s_out, x);
+        }
+        if(s_out > 0.0) iv.emplace_back(std::max(s_in, 0.0), inf);
+        if(s_in < 0.0) iv.emplace_back(-inf, std::min(s_out, 0.0));
+    }
+    if(sa == sb) {
+        for(const auto & [lo, hi] : iv)
+            if(lo < sa && sa < hi) return 1.0;
+        return 0.0;
+    }
+    for(auto & [lo, hi] : iv) {
+        lo = std::max(lo, sa);
+        hi = std::min(hi, sb);
+    }
+    std::sort(iv.begin(), iv.end());
+    double hidden = 0.0, cur_lo = 0.0, cur_hi = -inf;
+    for(const auto & [lo, hi] : iv) {
+        if(!(hi > lo)) continue;
+        if(lo > cur_hi) {
+            if(cur_hi > cur_lo) hidden += cur_hi - cur_lo;
+            cur_lo = lo;
+            cur_hi = hi;
+        } else {
+            cur_hi = std::max(cur_hi, hi);
+        }
+    }
+    if(cur_hi > cur_lo) hidden += cur_hi - cur_lo;
+    return hidden / (sb - sa);
+}
+
+template <class T>
+T visible_fraction(const ArgRef * A, int nargs, const T * b,
+                   const std::vector<ShapeMeta> & metas, Scratch & sc) {
+    const V2<T> eye = ld2(b + A[0].slot);
+    const T * td = b + A[1].slot;
+    const int nt = metas[uz(A[1].meta)].n;
+    std::vector<Poly<T>> pieces;
+    for(int k = 2; k < nargs; ++k)
+        occluder_pieces(A[k], b + A[k].slot, metas, sc, pieces);
+    // The selections below would turn a NaN input into a finite answer.
+    bool finite = std::isfinite(val(eye.x)) && std::isfinite(val(eye.y));
+    for(int i = 0; i < 2 * nt; ++i)
+        finite = finite && std::isfinite(val(td[i]));
+    for(const Poly<T> & k : pieces)
+        for(const V2<T> & v : k)
+            finite =
+                finite && std::isfinite(val(v.x)) && std::isfinite(val(v.y));
+    if(!finite) return T(std::numeric_limits<double>::quiet_NaN());
+
+    const V2<double> ev{val(eye.x), val(eye.y)};
+    T seen(0.0), total(0.0);
+    for(int i = 0; i + 1 < nt; ++i) {
+        const V2<T> p = ld2(td + 2 * i), q = ld2(td + 2 * i + 2);
+        const T L = norm(q - p);
+        const double Lv = val(L);
+        if(!(Lv > 0.0)) continue;
+        const V2<double> pa{val(p.x) - ev.x, val(p.y) - ev.y},
+            pb{val(q.x) - ev.x, val(q.y) - ev.y};
+        const double area = cross(pa, pb), na = norm(pa), nb = norm(pb);
+        T hidden(0.0);
+        if(std::fabs(area) > 1e-12 * na * nb) {
+            hidden =
+                hidden_share(eye, p, q, pieces, area, 1e-12 * std::max(na, nb));
+        } else {
+            const V2<double> w = scale(pb - pa, 1.0 / Lv);
+            const double sa = dot(w, pa), sb = dot(w, pb);
+            hidden = T(hidden_on_line(ev, w, std::min(sa, sb), std::max(sa, sb),
+                                      pieces));
+        }
+        seen = seen + L * (1.0 - hidden);
+        total = total + L;
+    }
+    if(val(total) > 0.0) return seen / total;
+    // A target of zero length is one point, seen or hidden.
+    const V2<double> d{val(td[0]) - ev.x, val(td[1]) - ev.y};
+    const double r = norm(d);
+    if(!(r > 0.0)) return T(1.0);
+    return T(1.0 - hidden_on_line(ev, scale(d, 1.0 / r), r, r, pieces));
 }
 
 template <class T>
@@ -796,6 +1157,9 @@ void exec_instr(const Instr & I, const ArgRef * A,
             break;
         case Op::MinProj:
             o[0] = projection(false, A[0], p(0), v(1), metas);
+            break;
+        case Op::VisibleFraction:
+            o[0] = visible_fraction(A, I.arg_count, b, metas, sc);
             break;
         case Op::Dyad:
             dyad(p(0), s(1), p(2), s(3), s(4), o);

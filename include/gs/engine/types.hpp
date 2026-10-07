@@ -39,7 +39,7 @@ struct GeoValue {
 // "Scalar", "Vec", "Polygon", "Polyline" or "Circle".
 std::string type_name(ValueType type, ShapeKind kind = ShapeKind::Polygon);
 
-// Display units deg, rad, m, cm, mm and "" (no conversion):
+// Display units deg, rad, m, cm, mm, % and "" (no conversion):
 // internal = display * unit_factor(unit). 0 for an unknown unit.
 double unit_factor(std::string_view unit);
 inline double to_display(double internal, std::string_view unit) {

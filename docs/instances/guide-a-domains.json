@@ -1,0 +1,37 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "One design point per kind of domain, and two design scalars. Nothing to optimise: open it in the GUI and drag the handles.",
+  "geometry": {
+    "plan": {"type": "polyline", "points": [[0, 0], [4, 0], [4, 2.6], [0, 2.6], [0, 0]], "note": "outline of the plan, drawn for reference"},
+    "zone": {"type": "rect", "x": 3.1, "y": 2.0, "width": 0.8, "height": 0.4, "angle": 30, "note": "a named geometry entry used as a domain"},
+    "rail": {"type": "polyline", "points": [[0.2, 1.3], [1.2, 1.7]], "note": "an open 2-point polyline is a segment"},
+    "nook": {
+      "type": "polyline",
+      "points": [[1.5, 1.2], [2.5, 1.2], [2.5, 1.5], [1.8, 1.5], [1.8, 2.3], [1.5, 2.3]],
+      "closed": true,
+      "note": "a non-convex (L-shaped) polygon"
+    }
+  },
+  "design": {
+    "P_box": {"type": "point", "domain": "box(0.1, 0.1, 1.1, 0.7)"},
+    "P_rect": {"type": "point", "domain": "rect(vec(2, 0.4), 0.8, 0.4, -20deg)"},
+    "P_par": {"type": "point", "domain": "polygon(vec(2.8, 0.1), vec(3.6, 0.1), vec(3.9, 0.7), vec(3.1, 0.7))", "note": "a parallelogram given vertex by vertex"},
+    "P_zone": {"type": "point", "domain": "zone"},
+    "P_rail": {"type": "point", "domain": "rail", "value": [0.7, 1.5]},
+    "P_tri": {"type": "point", "domain": "polygon(vec(2.7, 0.9), vec(3.7, 0.9), vec(3.2, 1.5))"},
+    "P_nook": {"type": "point", "domain": "nook", "value": [1.65, 1.35]},
+    "P_disc": {"type": "point", "domain": "circle(vec(0.6, 2.2), 0.3)"},
+    "width": {"type": "scalar", "min": "20cm", "max": "60cm", "value": 0.4, "unit": "cm"},
+    "angle": {"type": "scalar", "min": "-30deg", "max": "30deg", "unit": "deg"}
+  },
+  "display": [
+    {"expr": "P_box", "color": "#eb5757", "label": "P_box"},
+    {"expr": "P_rect", "color": "#eb5757", "label": "P_rect"},
+    {"expr": "P_par", "color": "#eb5757", "label": "P_par"},
+    {"expr": "P_zone", "color": "#eb5757", "label": "P_zone"},
+    {"expr": "P_rail", "color": "#eb5757", "label": "P_rail"},
+    {"expr": "P_tri", "color": "#eb5757", "label": "P_tri"},
+    {"expr": "P_nook", "color": "#eb5757", "label": "P_nook"},
+    {"expr": "P_disc", "color": "#eb5757", "label": "P_disc"}
+  ]
+}

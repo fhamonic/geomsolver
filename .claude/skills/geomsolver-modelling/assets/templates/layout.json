@@ -1,0 +1,64 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "LAYOUT TEMPLATE (static: no sweep). Study room seen from above: place a desk (rectangle D, da) and an armchair (circle S). Both stay whole inside the room and clear of the column; the desk is near the window and faces it within 5 deg; make the walkway between the chair and the desk as wide as possible. Solved with the default 64 starts: feasible, 61 of 65 runs at the optimum walkway = 206.5605 cm, D = (1.165005, 2.6) m, da = 0 deg, S = (3.55, 0.45) m; active: desk_in_2, desk_in_3, chair_in, desk_view.",
+  "how_to_edit": {
+    "params": "Every size and limit, by name. A string may carry a unit (\"5cm\", \"10deg\"); a JSON number is SI (m, rad).",
+    "params.gap": "smallest distance to the walls and to the column",
+    "params.desk_w": "desk size along its own x axis (fixed size, so a param)",
+    "params.desk_d": "desk depth, along its own y axis",
+    "params.chair_r": "armchair radius",
+    "params.window_max": "bound of criterion to_window; change with --bound to_window=100 (cm)",
+    "params.view_tol": "bound of criterion desk_view; change with --bound desk_view=10 (deg)",
+    "let.desk": "the desk shape: centre D, size desk_w x desk_d, angle da (radians)",
+    "let.facing": "unit direction the person at the desk looks at: the desk's +y axis",
+    "let.chair": "the armchair shape: circle of centre S",
+    "constraints": "desk_in_0..3: one row per desk corner (a convex body is inside a convex room when all its corners are). NEVER write clearance(desk, room) <= -gap: it accepts a desk crossing a wall",
+    "display": "GUI drawing only; no effect on the solve",
+    "delete": "this how_to_edit object is ignored by geomsolver; delete it when you are done"
+  },
+  "params": {
+    "gap": "5cm",
+    "desk_w": "140cm",
+    "desk_d": "70cm",
+    "chair_r": "40cm",
+    "window_max": "60cm",
+    "view_tol": "5deg"
+  },
+  "geometry": {
+    "room": {"type": "polyline", "points": [[0, 0], [4, 0], [4, 3], [0, 3]], "closed": true, "note": "EDIT: room outline; closed = it has an inside; keep it convex (split a non-convex room into convex parts)"},
+    "column": {"type": "circle", "x": 2.4, "y": 1.6, "r": 0.15, "note": "EDIT: a fixed obstacle"},
+    "window": {"type": "point", "x": 1.2, "y": 3, "note": "EDIT: middle of the window, on the top wall"}
+  },
+  "design": {
+    "D": {"type": "point", "domain": "box(0, 0, 4, 3)", "value": [1.2, 2.2], "note": "EDIT: desk centre; the domain holds this point only, the corners need the desk_in rows"},
+    "da": {"type": "scalar", "min": "-90deg", "max": "90deg", "value": 0, "unit": "deg", "note": "EDIT: desk angle; keep the range under one turn, ends where the design is worst; value in radians"},
+    "S": {"type": "point", "domain": "box(2.4, 0, 4, 1.4)", "value": [3, 0.8], "note": "EDIT: armchair centre; domain = the reading corner where it may go"}
+  },
+  "let": {
+    "desk": "rect(D, desk_w, desk_d, da)",
+    "facing": "dir(da + 90deg)",
+    "chair": "circle(S, chair_r)"
+  },
+  "constraints": [
+    {"name": "desk_in_0", "expr": "clearance(vertex(desk, 0), room) <= -gap", "note": "corner 0 of the desk at least gap inside the room"},
+    {"name": "desk_in_1", "expr": "clearance(vertex(desk, 1), room) <= -gap", "note": "corner 1"},
+    {"name": "desk_in_2", "expr": "clearance(vertex(desk, 2), room) <= -gap", "note": "corner 2"},
+    {"name": "desk_in_3", "expr": "clearance(vertex(desk, 3), room) <= -gap", "note": "corner 3"},
+    {"name": "chair_in", "expr": "clearance(S, room) <= -(chair_r + gap)", "note": "a circle is inside when its centre is at least r + gap inside"},
+    {"name": "desk_column", "expr": "clearance(desk, column) >= gap", "note": "EDIT: no overlap with an obstacle; one row per pair"},
+    {"name": "chair_column", "expr": "clearance(chair, column) >= gap", "note": "EDIT: same for the chair"}
+  ],
+  "criteria": [
+    {"name": "walkway", "expr": "clearance(chair, desk)", "role": "maximize", "unit": "cm", "note": "EDIT: the ONE objective"},
+    {"name": "to_window", "expr": "dist(D, window)", "role": "max", "bound": "window_max", "unit": "cm", "note": "EDIT: a wish turned into a bound: desk centre within window_max of the window"},
+    {"name": "desk_view", "expr": "abs(angle_between(facing, window - D))", "role": "max", "bound": "view_tol", "unit": "deg", "note": "EDIT: view direction bound: the desk faces the window within view_tol (abs at the top is split into 2 smooth rows)"}
+  ],
+  "display": [
+    {"expr": "room", "color": "#9b9b9b", "width": 2, "note": "room outline"},
+    {"expr": "column", "color": "#9b9b9b", "fill": true, "note": "obstacle"},
+    {"expr": "desk", "color": "#3b6fb6", "fill": true, "label": "desk", "note": "desk"},
+    {"expr": "chair", "color": "#eb5757", "fill": true, "label": "chair", "note": "armchair"},
+    {"expr": "segment(D, D + 0.5 * facing)", "color": "#f2c94c", "width": 2, "note": "where the desk faces"},
+    {"expr": "window", "color": "#27ae60", "label": "window", "note": "window"}
+  ]
+}

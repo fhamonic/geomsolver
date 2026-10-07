@@ -16,10 +16,14 @@ using uz = std::size_t;
 
 Json num(double v) { return std::isfinite(v) ? Json(v) : Json(nullptr); }
 
+constexpr uz kVariantRows = 5;
+
 std::string_view role_name(CriterionRole r) {
     switch(r) {
         case CriterionRole::Minimize:
             return "minimize";
+        case CriterionRole::Maximize:
+            return "maximize";
         case CriterionRole::Max:
             return "max";
         case CriterionRole::Min:
@@ -85,16 +89,16 @@ long nonfinite_derivative_evals(const RunResult & r) {
     return n;
 }
 
-// The objective in the unit of the single minimize criterion, when there is
-// exactly one with weight 1; SI otherwise.
 std::string objective_unit(const Model & m) {
-    const CriterionInfo * only = nullptr;
-    for(const CriterionInfo & c : m.criteria()) {
-        if(c.role != CriterionRole::Minimize) continue;
-        if(only) return "";
-        only = &c;
-    }
-    return only && only->weight == 1.0 ? only->unit : "";
+    return m.objective() >= 0 ? m.criteria()[uz(m.objective())].unit : "";
+}
+
+// "(0.04124141, 0.3038836) m" or "54.01567 cm".
+std::string var_text(const DesignVar & v, const double * p) {
+    if(v.type == VarType::Scalar) return format_value(p[0], v.unit);
+    return std::format("({:.7g}, {:.7g}){}", to_display(p[0], v.unit),
+                       to_display(p[1], v.unit),
+                       v.unit.empty() ? " m" : " " + v.unit);
 }
 
 }  // namespace
@@ -264,9 +268,22 @@ Json results_json(const Model & m, const SolverSettings & s,
         Json e = Json::object();
         e["rank"] = k + 1;
         e["hits"] = sol.hits;
-        e["variants"] = sol.variants;
+        e["variants"] = sol.variants.size();
         e["members"] = sol.members;
         e["best"] = run_json(m, r.runs[uz(sol.run)]);
+        Json vars = Json::array();
+        for(const Solution::Variant & v : sol.variants) {
+            const RunResult & vr = r.runs[uz(v.run)];
+            Json ve = Json::object();
+            ve["run"] = vr.index;
+            ve["origin"] = vr.origin;
+            ve["hits"] = v.hits;
+            ve["objective"] = num(vr.objective);
+            if(vr.x.size() == static_cast<uz>(m.n()))
+                ve["design"] = design_json(m, vr.x);
+            vars.push_back(ve);
+        }
+        e["variant_designs"] = vars;
         sols.push_back(e);
     }
     j["solutions"] = sols;
@@ -347,17 +364,28 @@ bool write_json(const std::filesystem::path & file, const Json & j,
 std::string format_design(const Model & m, std::span<const double> x) {
     const std::vector<double> values = m.values_from_x(x);
     std::string s = "design\n";
-    for(const DesignVar & v : m.design()) {
-        const double * p = values.data() + v.value_offset;
-        std::string val;
-        if(v.type == VarType::Scalar)
-            val = format_value(p[0], v.unit);
-        else
-            val = std::format("({:.7g}, {:.7g}){}", to_display(p[0], v.unit),
-                              to_display(p[1], v.unit),
-                              v.unit.empty() ? " m" : " " + v.unit);
-        s += std::format("  {} {}{}\n", pad(v.name, 10), val,
+    for(const DesignVar & v : m.design())
+        s += std::format("  {} {}{}\n", pad(v.name, 10),
+                         var_text(v, values.data() + v.value_offset),
                          v.fixed ? "  [fixed]" : "");
+    return s;
+}
+
+std::string format_design_difference(const Model & m,
+                                     std::span<const double> x_ref,
+                                     std::span<const double> x, double x_tol) {
+    if(x_ref.size() != uz(m.n()) || x.size() != uz(m.n())) return {};
+    const std::vector<double> values = m.values_from_x(x);
+    std::string s;
+    for(const DesignVar & v : m.design()) {
+        if(v.coord < 0) continue;
+        bool differs = false;
+        for(int k = 0; k < v.chart.dims(); ++k)
+            differs |= !(std::fabs(x[uz(v.coord + k)] -
+                                   x_ref[uz(v.coord + k)]) <= x_tol);
+        if(differs)
+            s += std::format("{}{} {}", s.empty() ? "" : ", ", v.name,
+                             var_text(v, values.data() + v.value_offset));
     }
     return s;
 }
@@ -423,7 +451,7 @@ std::string format_check(const Model & m, const Check & c, double feas_tol) {
 }
 
 std::string format_solutions(const Model & m, const MultistartResult & r,
-                             int max_rows) {
+                             int max_rows, double x_tol) {
     const std::string unit = objective_unit(m);
     int feasible_runs = 0;
     for(const RunResult & rr : r.runs) feasible_runs += rr.feasible ? 1 : 0;
@@ -450,7 +478,7 @@ std::string format_solutions(const Model & m, const MultistartResult & r,
             pad(rr.feasible ? "yes" : "no", 9),
             pad(std::format("{:.3g}", rr.max_violation), 12),
             pad(std::to_string(sol.hits), 5),
-            pad(std::to_string(sol.variants), 9),
+            pad(std::to_string(sol.variants.size()), 9),
             pad(std::format("{} ({})", rr.index, rr.origin), 18),
             exchange_name(rr.exchange), rr.exchange_iterations, samples,
             bad > 0 ? std::format("  [{} evaluations with non-finite "
@@ -458,14 +486,33 @@ std::string format_solutions(const Model & m, const MultistartResult & r,
                                   bad)
                     : std::string());
     }
-    if(std::ranges::any_of(r.solutions,
-                           [](const Solution & x) { return x.variants > 1; }))
-        s += "  (variants: runs that ended at different points with the same "
-             "objective and non-report criteria, e.g. a mirror image or a "
-             "variable the optimum leaves free)\n";
     if(static_cast<int>(r.solutions.size()) > max_rows)
         s += std::format("  ... {} more\n",
                          static_cast<int>(r.solutions.size()) - max_rows);
+    bool any_variants = false;
+    for(uz k = 0; k < r.solutions.size() && static_cast<int>(k) < max_rows;
+        ++k) {
+        const Solution & sol = r.solutions[k];
+        if(sol.variants.size() < 2) continue;
+        if(!any_variants)
+            s += "variants: runs that ended at different points with the same "
+                 "objective and the same values of the bounds active in "
+                 "either (a mirror image, a variable the optimum leaves free, "
+                 "or another design); the design values that differ from the "
+                 "solution's best run:\n";
+        any_variants = true;
+        const std::vector<double> & ref = r.runs[uz(sol.run)].x;
+        for(uz v = 1; v < sol.variants.size() && v <= kVariantRows; ++v) {
+            const RunResult & vr = r.runs[uz(sol.variants[v].run)];
+            s += std::format("  #{} run {} ({}), {} hit{}: {}\n", k + 1,
+                             vr.index, vr.origin, sol.variants[v].hits,
+                             sol.variants[v].hits == 1 ? "" : "s",
+                             format_design_difference(m, ref, vr.x, x_tol));
+        }
+        if(sol.variants.size() > kVariantRows + 1)
+            s += std::format("  #{} ... {} more\n", k + 1,
+                             sol.variants.size() - kVariantRows - 1);
+    }
     return s;
 }
 

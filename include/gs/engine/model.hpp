@@ -129,7 +129,13 @@ struct ConstraintInfo {
     std::vector<int> groups;  // row groups it produced (empty when disabled)
 };
 
-enum class CriterionRole : std::uint8_t { Minimize, Max, Min, Report };
+enum class CriterionRole : std::uint8_t {
+    Minimize,
+    Maximize,
+    Max,
+    Min,
+    Report
+};
 enum class Aggregate : std::uint8_t { None, MaxOver, MinOver };
 
 struct CriterionInfo {
@@ -138,7 +144,6 @@ struct CriterionInfo {
     // SI; NaN without a bound. Max role: value <= bound; Min: value >= bound.
     double bound = std::numeric_limits<double>::quiet_NaN();
     std::string bound_text;
-    double weight = 1.0;
     // Top-level max_over / min_over and the sweep it aggregates (-1 if None).
     Aggregate aggregate = Aggregate::None;
     int sweep = -1;
@@ -200,6 +205,12 @@ public:
     const std::vector<DisplayInfo> & display() const { return display_; }
     const std::vector<ExprInfo> & probes() const { return probes_; }
     const std::vector<RowGroup> & groups() const { return groups_; }
+    // Index in criteria() of the one minimize or maximize criterion, -1 when
+    // the instance has none (a feasibility problem).
+    int objective() const { return objective_; }
+    // -1 when the objective is maximised, else +1: the solver minimises
+    // objective_sign() * value, and "better" compares that product.
+    double objective_sign() const;
     const nlohmann::ordered_json & solver_settings() const { return solver_; }
     const std::filesystem::path & instance_path() const { return path_; }
 
@@ -252,6 +263,7 @@ private:
     std::filesystem::path path_;
     int n_ = 0;
     int values_size_ = 0;
+    int objective_ = -1;
 };
 
 struct CompileResult {

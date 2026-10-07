@@ -54,12 +54,16 @@ double unit_factor(std::string_view unit) {
     if(unit == "deg") return std::numbers::pi / 180.0;
     if(unit == "cm") return 0.01;
     if(unit == "mm") return 0.001;
+    if(unit == "%") return 0.01;
     return 0.0;
 }
 
 std::string Diagnostic::to_string() const {
-    std::string s = path.empty() ? message : path + ": " + message;
-    if(column >= 0) s += std::format(" at column {}", column);
+    std::string where = path;
+    if(column >= 0)
+        where +=
+            std::format("{}at column {}", where.empty() ? "" : " ", column);
+    std::string s = where.empty() ? message : where + ": " + message;
     if(severity == Severity::Warning) s = "warning: " + s;
     return s;
 }

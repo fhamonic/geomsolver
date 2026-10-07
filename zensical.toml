@@ -1,0 +1,104 @@
+# Documentation site (Zensical, successor of Material for MkDocs).
+# Preview locally with:  pip install zensical && zensical serve
+
+[project]
+site_name = "geomsolver"
+site_description = "Describe a planar geometric design problem (variables, motions, constraints, criteria) in a JSON file and solve it with NLopt, from a GUI or the command line."
+site_url = "https://fhamonic.github.io/geomsolver/"
+repo_url = "https://github.com/fhamonic/geomsolver"
+repo_name = "fhamonic/geomsolver"
+edit_uri = "edit/main/docs/"
+
+extra_css = ["stylesheets/extra.css"]
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting started" = [
+    { "Installation" = "getting-started/index.md" },
+    { "Your first problem" = "getting-started/tutorial.md" },
+    { "The GUI" = "getting-started/gui.md" },
+    { "The command line" = "getting-started/cli.md" },
+  ] },
+  { "Modelling guide" = [
+    { "Overview" = "guide/index.md" },
+    { "Instance files" = "guide/instance-files.md" },
+    { "Design variables" = "guide/design-variables.md" },
+    { "Sweeps and motion" = "guide/sweeps.md" },
+    { "Derived geometry and mechanisms" = "guide/let-and-mechanisms.md" },
+    { "Constraints" = "guide/constraints.md" },
+    { "Criteria and objectives" = "guide/criteria.md" },
+    { "Display" = "guide/display.md" },
+    { "Recipes" = "guide/recipes.md" },
+    { "Troubleshooting" = "guide/troubleshooting.md" },
+  ] },
+  { "Example" = [
+    { "Corner TV linkage" = "examples/tv-corner.md" },
+  ] },
+  { "Reference" = [
+    { "Expression language" = "reference/expressions.md" },
+    { "Builtin functions" = "reference/builtins.md" },
+    { "Instance file keys" = "reference/instance.md" },
+    { "Solver settings" = "reference/solver-settings.md" },
+    { "Command line options" = "reference/cli.md" },
+  ] },
+  { "Design rationale" = [
+    { "Formulation" = "design-rationale/index.md" },
+    { "Numerics and limits" = "design-rationale/numerics.md" },
+  ] },
+  { "Contributing" = [
+    { "Adding a builtin" = "contributing/adding-a-builtin.md" },
+  ] },
+]
+
+[project.validation.links]
+anchors = "warn"
+
+[project.theme]
+# Zensical's own look: Inter / JetBrains Mono, lucide icons.
+variant = "modern"
+logo = "assets/logo.svg"
+favicon = "assets/logo.svg"
+features = [
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.footer",
+  "content.code.copy",
+  "content.tabs.link",
+  "search.suggest",
+]
+
+# No `media` queries: the first entry is the default for every visitor
+# (dark), the toggle switches to the second and the choice is remembered.
+[[project.theme.palette]]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+toggle.icon = "material/weather-sunny"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "custom"
+accent = "custom"
+toggle.icon = "material/weather-night"
+toggle.name = "Switch to dark mode"
+
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.md_in_html]
+[project.markdown_extensions.tables]
+[project.markdown_extensions.toc]
+permalink = true
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+# `--8<-- "data/…"` pulls repository files into a page, so the examples shown
+# are the files that are tested. Paths are relative to the repository root.
+[project.markdown_extensions.pymdownx.snippets]
+base_path = ["."]
+check_paths = true

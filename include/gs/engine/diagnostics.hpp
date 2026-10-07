@@ -16,7 +16,8 @@ struct Diagnostic {
     int column = -1;
     std::string message;
 
-    // "let.p: unknown function 'dyadd' at column 0"
+    // "let.p at column 0: unknown function 'dyadd'". The column comes before
+    // the message, which may end with a reference such as "the README".
     std::string to_string() const;
 };
 

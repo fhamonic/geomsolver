@@ -18,7 +18,7 @@ namespace {
 
 std::size_t uz(int i) { return static_cast<std::size_t>(i); }
 
-const char * const kAlgorithms[] = {"SLSQP", "COBYLA", "MMA", "CCSAQ"};
+const char * const kAlgorithms[] = {"SLSQP", "COBYLA"};
 
 const char * kind_name(SolveKind k) {
     switch(k) {
@@ -44,15 +44,16 @@ std::string joined_names(const Model & m, const std::vector<int> & criteria) {
     return s;
 }
 
-// Unit of the objective when it is a single unweighted criterion, else "".
 std::string objective_unit(const Model & m) {
-    const CriterionInfo * only = nullptr;
-    for(const CriterionInfo & c : m.criteria())
-        if(c.role == CriterionRole::Minimize) {
-            if(only) return {};
-            only = &c;
-        }
-    return only && only->weight == 1.0 ? only->unit : std::string();
+    return m.objective() >= 0 ? m.criteria()[uz(m.objective())].unit
+                              : std::string();
+}
+
+// "104.37293 cm": the objective in its criterion's display unit.
+std::string objective_text(const Model * m, double v, int digits) {
+    const std::string unit = m ? objective_unit(*m) : std::string();
+    return format_number(to_display(v, unit), digits) +
+           (unit.empty() ? "" : " " + unit);
 }
 
 }  // namespace
@@ -98,9 +99,9 @@ void SolverPanel::refresh_results() {
     selected_ = keep;
 }
 
-void SolverPanel::load(Document & doc, const SolverSolution & s) {
+void SolverPanel::load(Document & doc, const std::vector<double> & x) {
     if(!results_.model) return;
-    const int n = doc.load_values(*results_.model, s.x);
+    const int n = doc.load_values(*results_.model, x);
     message_ = n > 0 ? std::format("loaded a solution ({} variables)", n)
                      : "the solution does not match the current model";
 }
@@ -187,11 +188,12 @@ bool SolverPanel::solve_blocking(Document & doc, std::string * message) {
         if(message) *message = "the solver returned no solution";
         return false;
     }
-    load(doc, results_.solutions.front());
+    load(doc, results_.solutions.front().x);
     if(message)
         *message = std::format(
             "best objective {} ({})",
-            format_number(results_.solutions.front().objective, 10),
+            objective_text(results_.model.get(),
+                           results_.solutions.front().objective, 10),
             results_.solutions.front().feasible ? "feasible" : "infeasible");
     return true;
 }
@@ -205,9 +207,10 @@ bool SolverPanel::pareto_blocking(Document & doc,
     if(!run_blocking(doc, SolveKind::Pareto, message)) return false;
     std::string points;
     for(const ParetoPoint & p : results_.pareto)
-        points += std::format("{}{}{}", points.empty() ? "" : ", ",
-                              format_number(p.solution.objective, 8),
-                              p.solution.feasible ? "" : " (infeasible)");
+        points += std::format(
+            "{}{}{}", points.empty() ? "" : ", ",
+            objective_text(results_.model.get(), p.solution.objective, 8),
+            p.solution.feasible ? "" : " (infeasible)");
     if(message)
         *message =
             std::format("{} point(s): {}", results_.pareto.size(), points);
@@ -287,15 +290,20 @@ void SolverPanel::actions_ui(Document & doc) {
         ImGui::ProgressBar(frac, ImVec2(-FLT_MIN, 0), overlay.c_str());
         std::string line = p.phase;
         if(std::isfinite(p.best_objective))
-            line +=
-                std::format("{}best feasible {}", line.empty() ? "" : "  |  ",
-                            format_number(p.best_objective, 8));
+            line += std::format(
+                "{}best feasible {}", line.empty() ? "" : "  |  ",
+                objective_text(doc.model().get(), p.best_objective, 8));
         if(!line.empty()) ImGui::TextDisabled("%s", line.c_str());
         if(!p.message.empty()) ImGui::TextWrapped("%s", p.message.c_str());
     } else {
         ImGui::ProgressBar(0.0f, ImVec2(-FLT_MIN, 0), "not connected");
     }
     if(!message_.empty()) ImGui::TextDisabled("%s", message_.c_str());
+    if(!settings_.note.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        text_colored(palette::warn, "solver.algorithm: " + settings_.note);
+        ImGui::PopTextWrapPos();
+    }
 }
 
 void SolverPanel::settings_ui(Document & doc) {
@@ -304,17 +312,11 @@ void SolverPanel::settings_ui(Document & doc) {
     ImGui::SetNextItemWidth(w);
     if(ImGui::BeginCombo("algorithm", s.algorithm.c_str())) {
         for(const char * a : kAlgorithms)
-            if(ImGui::Selectable(a, s.algorithm == a)) s.algorithm = a;
+            if(ImGui::Selectable(a, s.algorithm == a)) {
+                s.algorithm = a;
+                s.note.clear();
+            }
         ImGui::EndCombo();
-    }
-    if(s.algorithm == "MMA" || s.algorithm == "CCSAQ") {
-        ImGui::SameLine();
-        text_colored(palette::warn, "slow with many rows");
-        tooltip_text(
-            "MMA / CCSAQ solve a dual problem per iteration (about 1 s "
-            "per iteration on the TV instance), and a solve may end "
-            "slightly outside its rows, which costs extra exchange "
-            "iterations; SLSQP is the default");
     }
     auto int_input = [&](const char * label, int & v, int lo, int hi) {
         ImGui::SetNextItemWidth(w);
@@ -418,10 +420,13 @@ void SolverPanel::results_ui(Document & doc) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             const std::string id = std::format("{}##row{}", rows[i].first, i);
+            // AllowOverlap: without it the row swallows the clicks meant for
+            // the variants button in the hits column.
             if(ImGui::Selectable(id.c_str(), selected_ == static_cast<int>(i),
-                                 ImGuiSelectableFlags_SpanAllColumns)) {
+                                 ImGuiSelectableFlags_SpanAllColumns |
+                                     ImGuiSelectableFlags_AllowOverlap)) {
                 selected_ = static_cast<int>(i);
-                load(doc, s);
+                load(doc, s.x);
             }
             if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 tooltip_text(s.status.empty() ? "click to load"
@@ -437,16 +442,38 @@ void SolverPanel::results_ui(Document & doc) {
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(s.worst.c_str());
             ImGui::TableNextColumn();
-            if(s.variants > 1) {
-                ImGui::Text("%d (%d variants)", s.hits, s.variants);
+            if(s.variants.size() > 1) {
+                ImGui::PushID(static_cast<int>(i));
+                const std::string label =
+                    std::format("{} ({} variants)", s.hits, s.variants.size());
+                if(ImGui::SmallButton(label.c_str()))
+                    ImGui::OpenPopup("variants");
                 if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                     tooltip_text(
-                        "The runs ended at different design points with the "
-                        "same "
-                        "objective and the same bounded criteria: e.g. a "
-                        "mirror "
-                        "image with the labels swapped, or a variable the "
-                        "optimum leaves free");
+                        "Click to list the variants and load one. The runs "
+                        "ended at different design points with the same "
+                        "objective and the same values of the bounds that "
+                        "are active in either: a mirror image with the "
+                        "labels swapped, a variable the optimum leaves free, "
+                        "or another design with those values");
+                if(ImGui::BeginPopup("variants")) {
+                    for(std::size_t v = 0; v < s.variants.size(); ++v) {
+                        const SolverSolution::Variant & var = s.variants[v];
+                        const std::string text =
+                            v == 0 ? std::format(
+                                         "variant 1, {} hits: the row's "
+                                         "design",
+                                         var.hits)
+                                   : std::format("variant {}, {} hits: {}",
+                                                 v + 1, var.hits, var.differs);
+                        if(ImGui::Selectable(text.c_str())) {
+                            selected_ = static_cast<int>(i);
+                            load(doc, var.x);
+                        }
+                    }
+                    ImGui::EndPopup();
+                }
+                ImGui::PopID();
             } else {
                 ImGui::Text("%d", s.hits);
             }
@@ -545,8 +572,11 @@ void SolverPanel::pareto_ui(Document & doc) {
             std::format("objective{}", ounit.empty() ? "" : " [" + ounit + "]");
         ImPlot::SetupAxes(xl.c_str(), yl.c_str(), ImPlotAxisFlags_AutoFit,
                           ImPlotAxisFlags_AutoFit);
-        // A relaxed bound lowers the objective: the upper right stays empty.
-        ImPlot::SetupLegend(ImPlotLocation_NorthEast);
+        // A relaxed bound improves the objective: for a minimised one the
+        // upper right stays empty, for a maximised one the lower right.
+        ImPlot::SetupLegend(r.model->objective_sign() < 0
+                                ? ImPlotLocation_SouthEast
+                                : ImPlotLocation_NorthEast);
         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 5);
         ImPlot::PlotScatter("feasible", fx.data(), fy.data(),
                             static_cast<int>(fx.size()));
@@ -568,7 +598,7 @@ void SolverPanel::pareto_ui(Document & doc) {
                     best = static_cast<int>(i);
                 }
             }
-            if(best >= 0) load(doc, r.pareto[uz(best)].solution);
+            if(best >= 0) load(doc, r.pareto[uz(best)].solution.x);
         }
         ImPlot::EndPlot();
     }

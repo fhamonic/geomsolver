@@ -1,0 +1,44 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Widest TV that swivels on a pole from facing the couch to facing the kitchen",
+  "params": {
+    "depth": "6cm",
+    "arm": "8cm",
+    "clr": "2cm",
+    "max_protrusion": "110cm"
+  },
+  "geometry": {
+    "walls": {"type": "polyline", "points": [[0, 3], [0, 0], [4, 0]], "closed": false},
+    "shelf": {"type": "rect", "x": 0.2, "y": 1.6, "width": 0.4, "height": 1.0, "angle": 0},
+    "couch": {"type": "point", "x": 3.2, "y": 0.9, "note": "eyes of a viewer on the couch"},
+    "kitchen": {"type": "point", "x": 1.2, "y": 3.6, "note": "where you stand when cooking"}
+  },
+  "design": {
+    "P": {"type": "point", "domain": "box(0, 0, 1.2, 1.2)", "value": [0.6, 0.6], "note": "axis of the swivel pole"},
+    "W": {"type": "scalar", "min": "50cm", "max": "180cm", "value": 1.0, "unit": "cm", "note": "width of the TV"}
+  },
+  "sweeps": {
+    "tau": {"min": 0, "max": 1}
+  },
+  "let": {
+    "h0": "angle(couch - P)",
+    "h1": "angle(kitchen - P)",
+    "heading": "h0 + tau * (h1 - h0)",
+    "tv": "place(box(-W/2, arm, W/2, arm + depth), P, heading - 90deg)"
+  },
+  "constraints": [
+    {"name": "wall_x", "forall": "tau", "expr": "min_x(tv) >= clr"},
+    {"name": "wall_y", "forall": "tau", "expr": "min_y(tv) >= clr"},
+    {"name": "shelf", "forall": "tau", "expr": "clearance(tv, shelf) >= clr"}
+  ],
+  "criteria": [
+    {"name": "width", "expr": "W", "role": "maximize", "unit": "cm"},
+    {"name": "protrusion", "expr": "max_over(tau, max_proj(tv, dir(45deg)))", "role": "max", "bound": "max_protrusion", "unit": "cm", "note": "reach into the room along the diagonal from the corner"}
+  ],
+  "display": [
+    {"expr": "tv", "color": "#3b6fb6", "fill": true, "label": "TV", "ghosts": 6},
+    {"expr": "P", "color": "#eb5757", "label": "pole"},
+    {"expr": "segment(P, couch)", "color": "#27ae6080"},
+    {"expr": "segment(P, kitchen)", "color": "#27ae6080"}
+  ]
+}

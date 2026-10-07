@@ -12,18 +12,16 @@ namespace gs {
 
 class Model;
 
-enum class Algorithm : std::uint8_t { SLSQP, COBYLA, MMA, CCSAQ };
+enum class Algorithm : std::uint8_t { SLSQP, COBYLA };
 
-// "SLSQP", "COBYLA", "MMA", "CCSAQ".
+// "SLSQP", "COBYLA".
 std::string_view algorithm_name(Algorithm a);
 // Case-insensitive; also accepts the nlopt names "LD_SLSQP", "LN_COBYLA", ...
 std::optional<Algorithm> parse_algorithm(std::string_view name);
 bool uses_gradient(Algorithm a);
-// MMA and CCSAQ take inequality rows only: equality rows are given to them
-// as the two inequalities h <= 0 and -h <= 0.
-bool supports_equality(Algorithm a);
-// Non-empty for algorithms that are impractical on large row counts.
-std::string algorithm_warning(Algorithm a, int rows);
+// The warning for "MMA" / "CCSAQ" (or "LD_MMA", any case), which are no longer
+// offered and run as SLSQP; empty for any other name.
+std::string removed_algorithm_note(std::string_view name);
 
 struct SolverSettings {
     Algorithm algorithm = Algorithm::SLSQP;

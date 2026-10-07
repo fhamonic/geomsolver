@@ -1,0 +1,22 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Point of an L-shaped room closest to a target in the notch: a non-convex domain with two local optima.",
+  "geometry": {
+    "room": {
+      "type": "polyline",
+      "points": [[0, 0], [2, 0], [2, 0.8], [0.8, 0.8], [0.8, 2], [0, 2]],
+      "closed": true
+    },
+    "target": {"type": "point", "x": 1.5, "y": 1.7}
+  },
+  "design": {
+    "P": {"type": "point", "domain": "room", "value": [1.6, 0.4]}
+  },
+  "criteria": [
+    {"name": "distance", "expr": "dist(P, target)", "role": "minimize", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "segment(P, target)", "color": "#f2c94c"},
+    {"expr": "P", "color": "#eb5757", "label": "P"}
+  ]
+}

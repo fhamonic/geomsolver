@@ -589,13 +589,18 @@ void Canvas::draw(Document & doc, const Scene & scene) {
                                  : std::string("?"),
                              scene.verify_samples),
                          rgba(255, 150, 140)});
-                if(V.objective != 0.0 ||
-                   std::ranges::any_of(model->criteria(), [](const auto & c) {
-                       return c.role == CriterionRole::Minimize;
-                   }))
-                    lines.push_back({std::format("objective {}",
-                                                 format_number(V.objective, 7)),
-                                     rgba(220, 224, 232)});
+                if(const int o = model->objective(); o >= 0) {
+                    const CriterionInfo & c = model->criteria()[uz(o)];
+                    lines.push_back(
+                        {std::format(
+                             "{} {} = {}{}",
+                             c.role == CriterionRole::Maximize ? "maximize"
+                                                               : "minimize",
+                             c.name,
+                             format_number(to_display(V.objective, c.unit), 7),
+                             c.unit.empty() ? "" : " " + c.unit),
+                         rgba(220, 224, 232)});
+                }
             }
             if(!scene.error.empty())
                 lines.push_back(

@@ -46,15 +46,20 @@ constexpr double kPhase1Target = -1e-4;
 constexpr int kPhase1Retries = 2;
 constexpr double kPhase1Kick = 0.05;  // normalised coordinates
 // A phase-2 solve that misses its own samples by less than this (solver
-// units) is only slightly off (MMA/CCSAQ end around 1e-7): the exchange goes
-// on and the fine-grid check decides, instead of giving up.
+// units) is only slightly off: the exchange goes on and the fine-grid check
+// decides. Giving up there instead loses SLSQP runs that end feasible.
 constexpr double kNearFeasible = 1e-4;
-// Warm re-solves on unchanged samples (after maxeval / maxtime, or a
-// near-feasible solve that adds no sample): at most this many in a row, and
-// only while those samples have cost less than kResolveBudget * maxeval
-// evaluations (an MMA evaluation can take a second).
+// Warm re-solves on unchanged samples (after maxeval / maxtime, a
+// near-feasible solve that adds no sample, or a feasible solve that failed):
+// at most this many in a row, and only while those samples have cost less
+// than kResolveBudget * maxeval evaluations.
 constexpr int kMaxResolves = 3;
 constexpr long kResolveBudget = 2;
+// A feasible phase-2 solve that failed (solve_failed) is re-solved from a
+// point this far away (normalised coordinates). SLSQP is deterministic: from
+// the same point it fails the same way, and the run would keep a feasible
+// point that is no optimum.
+constexpr double kResolveKick = 1e-5;
 
 double seconds_since(Clock::time_point t0) {
     return std::chrono::duration<double>(Clock::now() - t0).count();
@@ -120,6 +125,13 @@ LocalOptions local_options(const SolverSettings & s, const NlpProblem & P,
     return o;
 }
 
+// A solve that ended without meeting its own stopping test. SLSQP returns
+// ROUNDOFF_LIMITED when its line search fails, which can happen at the
+// feasible start itself; that point is then no optimum.
+bool solve_failed(LocalStatus s) {
+    return s == LocalStatus::RoundoffLimited || s == LocalStatus::Failure;
+}
+
 LocalSummary summary(const LocalResult & lr, NlpMode mode,
                      const SampleSets & S) {
     LocalSummary ls;
@@ -135,13 +147,14 @@ LocalSummary summary(const LocalResult & lr, NlpMode mode,
     return ls;
 }
 
-// Better = feasible before infeasible, then lower objective, then lower
-// violation; NaN loses.
-bool better(bool fa, double oa, double va, bool fb, double ob, double vb) {
+// Better = feasible before infeasible, then lower sign * objective
+// (Model::objective_sign), then lower violation; NaN loses.
+bool better(double sign, bool fa, double oa, double va, bool fb, double ob,
+            double vb) {
     if(fa != fb) return fa;
     if(fa) {
         if(std::isnan(ob)) return !std::isnan(oa);
-        return oa < ob;
+        return sign * oa < sign * ob;
     }
     if(std::isnan(vb)) return !std::isnan(va);
     return va < vb;
@@ -197,9 +210,8 @@ RunResult solve_from(const Model & m, Evaluator & ev,
         if(nm == 0) {
             r.exchange = ExchangeStatus::NoVariables;
         } else {
-            const bool split = !supports_equality(s.algorithm);
             if(s.phase1) {
-                NlpProblem P1(ev, S, NlpMode::Phase1, true, bounds);
+                NlpProblem P1(ev, S, NlpMode::Phase1, bounds);
                 double worst = P1.m_ineq() > 0 ? P1.max_row(x) : -1.0;
                 std::uint64_t kick_state = hash2(seed, 0x9ba5e1ULL);
                 for(int attempt = 0; attempt <= kPhase1Retries &&
@@ -234,10 +246,11 @@ RunResult solve_from(const Model & m, Evaluator & ev,
             std::optional<Iterate> best;
             r.exchange = ExchangeStatus::IterationLimit;
             int resolves = 0;
+            std::uint64_t resolve_kick = hash2(seed, 0x5e501feULL);
             long stuck_evals = 0;  // phase-2 evaluations on these samples
             for(int it = 1; it <= s.max_exchange_iterations && !r.stopped;
                 ++it) {
-                NlpProblem P2(ev, S, NlpMode::Phase2, split, bounds);
+                NlpProblem P2(ev, S, NlpMode::Phase2, bounds);
                 const std::vector<double> xa = P2.start(x);
                 const LocalResult lr =
                     minimize(P2, xa, local_options(s, P2, xa, seed, stop));
@@ -256,8 +269,8 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                 }
                 const bool feasible = c.feasible(s.feas_tol);
                 if(!best ||
-                   better(feasible, c.v.objective, c.v.max_violation,
-                          best->check.feasible(s.feas_tol),
+                   better(m.objective_sign(), feasible, c.v.objective,
+                          c.v.max_violation, best->check.feasible(s.feas_tol),
                           best->check.v.objective, best->check.v.max_violation))
                     best = Iterate{x, c};
                 if(r.stopped) {
@@ -270,19 +283,34 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                 for(uz k = 0; k < z.size(); ++k) {
                     const int ci = P2.epigraph_criteria()[k];
                     const CriterionCheck & cc = c.v.criteria[uz(ci)];
-                    if(cc.value - z[k] > s.feas_tol)
+                    if(m.objective_sign() * cc.value - z[k] > s.feas_tol)
                         add.emplace_back(m.criteria()[uz(ci)].sweep, cc.t);
                 }
+                const bool may_resolve =
+                    resolves < kMaxResolves &&
+                    stuck_evals < kResolveBudget * s.maxeval;
                 if(feasible && add.empty()) {
-                    r.exchange = ExchangeStatus::Converged;
-                    break;
+                    if(!solve_failed(lr.status)) {
+                        r.exchange = ExchangeStatus::Converged;
+                        break;
+                    }
+                    if(!may_resolve) {
+                        r.exchange = ExchangeStatus::Stalled;
+                        break;
+                    }
+                    ++resolves;
+                    for(double & v : x) {
+                        const double u = static_cast<double>(
+                                             splitmix64(resolve_kick) >> 11) *
+                                         0x1.0p-53;
+                        v = std::clamp(v + kResolveKick * (2.0 * u - 1.0), 0.0,
+                                       1.0);
+                    }
+                    continue;
                 }
                 const double own = P2.max_row(x);
                 const bool own_ok =
                     own <= std::max(s.feas_tol, s.constraint_tol);
-                const bool may_resolve =
-                    resolves < kMaxResolves &&
-                    stuck_evals < kResolveBudget * s.maxeval;
                 if(!own_ok) {
                     const bool budget =
                         lr.status == LocalStatus::MaxevalReached ||
@@ -377,9 +405,11 @@ bool close(double a, double b, double tol) {
     return std::fabs(a - b) <= tol * std::max(1.0, std::fabs(b));
 }
 
-// Same objective and same value of every criterion that enters the NLP.
-// Report criteria are left out: a relabelled mirror image (A <-> B) swaps
-// "link_1" and "link_2" without being another design.
+// Same objective and same value of every criterion that enters the NLP,
+// except report criteria and bounds that are slack in both designs: a
+// relabelled mirror image (A <-> B) swaps the values of "link_1" and
+// "link_2" without being another design. Comparing slack bounds too lists
+// that mirror as a second solution.
 bool same_criteria(const RunResult & a, const RunResult & b, const Model * m,
                    double tol) {
     if(!close(a.objective, b.objective, tol)) return false;
@@ -387,6 +417,8 @@ bool same_criteria(const RunResult & a, const RunResult & b, const Model * m,
     for(uz c = 0; c < a.criteria.size(); ++c) {
         if(m && c < m->criteria().size() &&
            m->criteria()[c].role == CriterionRole::Report)
+            continue;
+        if(a.criteria[c].violation < -tol && b.criteria[c].violation < -tol)
             continue;
         if(!close(a.criteria[c].value, b.criteria[c].value, tol)) return false;
     }
@@ -402,7 +434,7 @@ std::vector<Solution> merge_variants(const std::vector<RunResult> & runs,
         const RunResult & r = runs[uz(sol.run)];
         Solution * home = nullptr;
         if(r.feasible)
-            // Feasible solutions arrive by increasing objective: only the
+            // Feasible solutions arrive best objective first: only the
             // trailing ones can be within tolerance.
             for(auto it = out.rbegin(); it != out.rend(); ++it) {
                 const RunResult & rep = runs[uz(it->run)];
@@ -418,7 +450,8 @@ std::vector<Solution> merge_variants(const std::vector<RunResult> & runs,
             home->members.insert(home->members.end(), sol.members.begin(),
                                  sol.members.end());
             home->hits += sol.hits;
-            home->variants += sol.variants;
+            home->variants.insert(home->variants.end(), sol.variants.begin(),
+                                  sol.variants.end());
         } else {
             out.push_back(std::move(sol));
         }
@@ -432,11 +465,12 @@ std::vector<Solution> cluster(const std::vector<RunResult> & runs,
                               const SolverSettings & s, const Model * model) {
     std::vector<int> order(runs.size());
     for(uz i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+    const double sign = model ? model->objective_sign() : 1.0;
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
         const RunResult & ra = runs[uz(a)];
         const RunResult & rb = runs[uz(b)];
-        return better(ra.feasible, ra.objective, ra.max_violation, rb.feasible,
-                      rb.objective, rb.max_violation);
+        return better(sign, ra.feasible, ra.objective, ra.max_violation,
+                      rb.feasible, rb.objective, rb.max_violation);
     });
     std::vector<Solution> sols;
     for(const int i : order) {
@@ -460,8 +494,9 @@ std::vector<Solution> cluster(const std::vector<RunResult> & runs,
         if(home) {
             home->members.push_back(i);
             ++home->hits;
+            ++home->variants.front().hits;
         } else {
-            sols.push_back(Solution{i, 1, {i}, 1});
+            sols.push_back(Solution{i, 1, {i}, {{i, 1}}});
         }
     }
     return merge_variants(runs, s, std::move(sols), model);

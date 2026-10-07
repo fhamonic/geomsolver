@@ -16,10 +16,6 @@ std::string_view algorithm_name(Algorithm a) {
             return "SLSQP";
         case Algorithm::COBYLA:
             return "COBYLA";
-        case Algorithm::MMA:
-            return "MMA";
-        case Algorithm::CCSAQ:
-            return "CCSAQ";
     }
     return "?";
 }
@@ -29,8 +25,7 @@ std::optional<Algorithm> parse_algorithm(std::string_view name) {
     std::transform(up.begin(), up.end(), up.begin(), [](unsigned char c) {
         return static_cast<char>(std::toupper(c));
     });
-    for(const Algorithm a : {Algorithm::SLSQP, Algorithm::COBYLA,
-                             Algorithm::MMA, Algorithm::CCSAQ}) {
+    for(const Algorithm a : {Algorithm::SLSQP, Algorithm::COBYLA}) {
         const std::string_view n = algorithm_name(a);
         if(up == n) return a;
         const std::string_view prefix = a == Algorithm::COBYLA ? "LN_" : "LD_";
@@ -43,20 +38,17 @@ std::optional<Algorithm> parse_algorithm(std::string_view name) {
 
 bool uses_gradient(Algorithm a) { return a != Algorithm::COBYLA; }
 
-bool supports_equality(Algorithm a) {
-    return a == Algorithm::SLSQP || a == Algorithm::COBYLA;
-}
-
-std::string algorithm_warning(Algorithm a, int rows) {
-    if((a == Algorithm::MMA || a == Algorithm::CCSAQ) && rows > 50)
-        return std::format(
-            "{} solves a dual problem with one variable per row at every "
-            "iteration ({} rows here): expect about a second per iteration, "
-            "and a solve may end slightly outside its rows (about 1e-7) so "
-            "the run needs extra exchange iterations or ends infeasible; "
-            "SLSQP is the practical choice",
-            algorithm_name(a), rows);
-    return {};
+std::string removed_algorithm_note(std::string_view name) {
+    std::string up(name);
+    std::transform(up.begin(), up.end(), up.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    if(up.starts_with("LD_")) up.erase(0, 3);
+    if(up != "MMA" && up != "CCSAQ") return {};
+    return std::format(
+        "{} is no longer offered (it solves a dual problem per iteration, "
+        "which is slow with many rows); using SLSQP",
+        up);
 }
 
 int resolved_threads(const SolverSettings & s) {
@@ -113,10 +105,15 @@ SolverSettings settings_from_json(const Json & j,
         if(key == "algorithm") {
             const auto a = v.is_string() ? parse_algorithm(v.get<std::string>())
                                          : std::nullopt;
+            const std::string removed =
+                v.is_string() ? removed_algorithm_note(v.get<std::string>())
+                              : std::string();
             if(a)
                 s.algorithm = *a;
+            else if(!removed.empty())
+                note(messages, key, removed);
             else
-                note(messages, key, "expected SLSQP, COBYLA, MMA or CCSAQ");
+                note(messages, key, "expected SLSQP or COBYLA");
         } else if(key == "starts") {
             read_int(v, key, 0, s.starts, messages);
         } else if(key == "seed") {

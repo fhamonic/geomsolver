@@ -79,6 +79,7 @@ enum class Op : std::uint8_t {
     MaxY,
     MaxProj,
     MinProj,
+    VisibleFraction,  // (eye, target polyline, occluder, ...)
     // Kinematics
     // Slot of 4: p.x, p.y, s2 (squared sine of the angle between the radii,
     // < 0 when the circles miss) and the assembly gap in m (value only).
@@ -170,8 +171,9 @@ struct GroupImpl {
 
 struct ObjTerm {
     int criterion = -1;
-    double weight = 1.0;
-    // One piece per sample of term.sweep, term.node being the max_over body.
+    double sign = 1.0;  // -1 for a maximize criterion
+    // One piece per sample of term.sweep, term.node being the body of a
+    // minimize max_over or a maximize min_over.
     bool epigraph = false;
     Term term;
 };

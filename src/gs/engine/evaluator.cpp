@@ -428,8 +428,7 @@ Verification Evaluator::verify(std::span<const double> x, int samples,
         const CriterionInfo & info = model_->criteria()[ci];
         if(info.role == CriterionRole::Max) r.violation = r.value - info.bound;
         if(info.role == CriterionRole::Min) r.violation = info.bound - r.value;
-        if(info.role == CriterionRole::Minimize)
-            V.objective += info.weight * r.value;
+        if(static_cast<int>(ci) == model_->objective()) V.objective = r.value;
     }
     for(std::size_t g = 0; g < V.groups.size(); ++g)
         if(V.groups[g].violation > V.max_violation) {

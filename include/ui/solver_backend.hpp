@@ -18,7 +18,7 @@
 namespace gs::ui {
 
 struct SolverSettings {
-    std::string algorithm = "SLSQP";  // SLSQP | COBYLA | MMA | CCSAQ
+    std::string algorithm = "SLSQP";  // SLSQP | COBYLA
     int starts = 64;
     std::uint64_t seed = 1;
     int threads = 0;  // 0: hardware concurrency
@@ -30,6 +30,9 @@ struct SolverSettings {
     int maxeval = 3000;
     double xtol_rel = 1e-7;
     bool include_current = true;  // the current design as an extra start
+    // Set by from_json when the instance asks for an algorithm that is no
+    // longer offered (MMA, CCSAQ), which is then replaced by SLSQP.
+    std::string note;
 
     // Missing or mistyped keys keep their defaults.
     static SolverSettings from_json(const nlohmann::ordered_json & j);
@@ -60,8 +63,14 @@ struct SolverSolution {
     std::vector<double> criteria;  // SI, aligned with model->criteria()
     int hits = 1;                  // starts that converged to this solution
     // Distinct end points among the hits with the same objective and
-    // criteria (a mirror image, a variable the optimum leaves free).
-    int variants = 1;
+    // criteria: a mirror image, a variable the optimum leaves free, or
+    // another design. The first one is `x`; empty for a Pareto point.
+    struct Variant {
+        std::vector<double> x;  // normalised, for SolverResults::model
+        int hits = 0;
+        std::string differs;  // design values that differ from the first
+    };
+    std::vector<Variant> variants;
     std::string status;  // e.g. nlopt result codes
 };
 

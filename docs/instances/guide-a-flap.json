@@ -1,0 +1,68 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Lift-up flap of a wall cabinet, seen from the side, on a four-bar linkage. The flap turns 90 degrees from closed (tau = 0) to lying on its back above the cabinet (tau = 1). Keep it as close to the cabinet front as possible while it opens.",
+  "params": {
+    "H_f": 0.6,
+    "T_f": 0.02,
+    "p0": "vec(0.36, 0)",
+    "phi0": 0,
+    "span": "90deg",
+    "gap": "5mm",
+    "ceiling": "95cm",
+    "link_min": "8cm",
+    "sep_min": "3cm",
+    "min_link_angle": "15deg"
+  },
+  "geometry": {
+    "wall": {"type": "polyline", "points": [[0, -0.05], [0, 1.1]]},
+    "top_panel": {"type": "rect", "x": 0.175, "y": 0.59, "width": 0.35, "height": 0.02, "angle": 0},
+    "bottom_panel": {"type": "rect", "x": 0.175, "y": 0.01, "width": 0.35, "height": 0.02, "angle": 0},
+    "pivot_zone": {"type": "rect", "x": 0.27, "y": 0.42, "width": 0.1, "height": 0.24, "angle": 0, "note": "where the side-panel pivots may go"}
+  },
+  "design": {
+    "A": {"type": "point", "domain": "pivot_zone", "note": "cabinet-side pivot of link 1"},
+    "B": {"type": "point", "domain": "pivot_zone", "value": [0.3, 0.35], "note": "cabinet-side pivot of link 2"},
+    "c": {"type": "point", "domain": "box(-0.08, 0.05, 0, 0.55)", "value": [-0.04, 0.45], "note": "flap-side pivot of link 1, flap frame"},
+    "d": {"type": "point", "domain": "box(-0.08, 0.05, 0, 0.55)", "value": [-0.04, 0.2], "note": "flap-side pivot of link 2, flap frame"}
+  },
+  "sweeps": {
+    "tau": {"min": 0, "max": 1}
+  },
+  "let": {
+    "phi": "phi0 + tau * span",
+    "l1": "dist(A, place(c, p0, phi0))",
+    "l2": "dist(B, place(d, p0, phi0))",
+    "K1": "A - rotate(c, phi)",
+    "K2": "B - rotate(d, phi)",
+    "branch": "branch_of(at(tau = 0, K1), at(tau = 0, K2), p0)",
+    "p": "dyad(K1, l1, K2, l2, branch)",
+    "C": "place(c, p, phi)",
+    "D": "place(d, p, phi)",
+    "flap": "place(box(0, 0, T_f, H_f), p, phi)"
+  },
+  "constraints": [
+    {"name": "flap_top", "forall": "tau", "expr": "clearance(flap, top_panel) >= gap"},
+    {"name": "link1_top", "forall": "tau", "expr": "clearance(segment(A, C), top_panel) >= gap"},
+    {"name": "link2_top", "forall": "tau", "expr": "clearance(segment(B, D), top_panel) >= gap"},
+    {"name": "wall", "forall": "tau", "expr": "min_x(flap, C, D) >= gap"},
+    {"name": "open", "expr": "at(tau = 1, min_y(flap)) >= max_y(top_panel) + gap"},
+    {"name": "pivot_spacing", "expr": "dist(A, B) >= sep_min"},
+    {"name": "bracket_spacing", "expr": "dist(c, d) >= sep_min"}
+  ],
+  "criteria": [
+    {"name": "protrusion", "expr": "max_over(tau, max_x(flap, C, D))", "role": "minimize", "unit": "cm"},
+    {"name": "height", "expr": "max_over(tau, max_y(flap, C, D))", "role": "max", "bound": "ceiling", "unit": "cm"},
+    {"name": "link_angle", "expr": "min_over(tau, asin(abs(sin_between(C - A, D - B))))", "role": "min", "bound": "min_link_angle", "unit": "deg"},
+    {"name": "link_1", "expr": "l1", "role": "min", "bound": "link_min", "unit": "cm"},
+    {"name": "link_2", "expr": "l2", "role": "min", "bound": "link_min", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "flap", "color": "#3b6fb6", "fill": true, "ghosts": 6},
+    {"expr": "segment(A, C)", "color": "#2f80ed", "width": 3, "label": "link 1"},
+    {"expr": "segment(B, D)", "color": "#eb5757", "width": 3, "label": "link 2"},
+    {"expr": "C", "color": "#2f80ed", "trace": true},
+    {"expr": "D", "color": "#eb5757", "trace": true},
+    {"expr": "A", "color": "#2f80ed", "label": "A"},
+    {"expr": "B", "color": "#eb5757", "label": "B"}
+  ]
+}

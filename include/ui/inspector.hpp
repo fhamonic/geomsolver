@@ -42,6 +42,7 @@ private:
     void forget_edits() {
         edits_.clear();
         held_.clear();
+        parked_bounds_.clear();
     }
 
     struct Edit {
@@ -55,9 +56,13 @@ private:
     // refilled from the document every frame: without this the release frame
     // would commit the old value.
     std::unordered_map<std::string, std::array<double, 2>> held_;
-    // Paths drawn with field() this frame: an error at any other path gets a
-    // raw JSON editor so that it can be fixed here.
+    // Paths with an editor this frame (field(), a combo, a checkbox): an
+    // error at any other path gets a raw JSON editor so that it can be fixed
+    // here.
     std::unordered_set<std::string> drawn_;
+    // "criteria[i].bound" -> the bound a criterion had before its role was
+    // switched to one without a bound, restored when it is switched back.
+    std::unordered_map<std::string, Json> parked_bounds_;
     const Instance * seen_instance_ = nullptr;
     std::uint64_t seen_compile_ = ~0ull;
     std::string new_name_;

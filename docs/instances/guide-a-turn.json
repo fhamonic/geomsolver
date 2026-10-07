@@ -1,0 +1,16 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Turn a 60 cm arm about the origin so that its tip is as low as possible.",
+  "design": {
+    "a": {"type": "scalar", "min": "-180deg", "max": "180deg", "value": 0.5, "unit": "deg"}
+  },
+  "let": {
+    "tip": "place(vec(0.6, 0), vec(0, 0), a)"
+  },
+  "criteria": [
+    {"name": "tip_height", "expr": "tip.y", "role": "minimize", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "segment(vec(0, 0), tip)", "color": "#3b6fb6", "width": 3}
+  ]
+}

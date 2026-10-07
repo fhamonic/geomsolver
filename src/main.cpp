@@ -28,6 +28,11 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// --click k starts at frame kFirstClickFrame + k * kClickFrames, after the
+// frames --drag uses.
+constexpr int kFirstClickFrame = 16;
+constexpr int kClickFrames = 10;
+
 struct Options {
     std::optional<fs::path> instance;
     std::optional<fs::path> screenshot;
@@ -43,6 +48,7 @@ struct Options {
     // drag between two pixels over the first frames.
     std::optional<std::array<float, 2>> mouse;
     std::optional<std::array<float, 4>> drag;
+    std::vector<std::array<float, 2>> clicks;
     int width = 1600, height = 1000;
     std::vector<std::pair<std::string, std::string>> edits;
 };
@@ -60,11 +66,14 @@ void usage(std::FILE * out) {
         "  --size WxH            window size (1600x1000)\n"
         "  --visible             use a visible window for --screenshot\n"
         "  --set PATH=VALUE      edit the instance after loading (VALUE is\n"
-        "                        JSON when it parses, else a string)\n"
+        "                        JSON when it parses, else a string; null\n"
+        "                        removes the key)\n"
         "  --tab inspector|solver  right-hand tab shown at start\n"
         "  --expand              expand every inspector section at start\n"
         "  --mouse X,Y           (screenshots) hover the pointer at a pixel\n"
         "  --drag X0,Y0,X1,Y1    (screenshots) left-drag between two pixels\n"
+        "  --click X,Y           (screenshots) left-click a pixel after the\n"
+        "                        drag; repeatable, the clicks run in order\n"
         "  --selftest            run the headless GUI logic checks and exit\n"
         "Without an instance: ./data/tv_corner.json, then\n"
         "<exe dir>/../data/tv_corner.json.\n",
@@ -139,6 +148,14 @@ bool parse_args(int argc, char ** argv, Options & o) {
                 return false;
             }
             o.drag = d;
+        } else if(a == "--click") {
+            const char * v = next();
+            std::array<float, 2> c{};
+            if(!v || std::sscanf(v, "%f,%f", &c[0], &c[1]) != 2) {
+                std::fputs("geomsolver: --click wants X,Y\n", stderr);
+                return false;
+            }
+            o.clicks.push_back(c);
         } else if(a == "--tab") {
             const char * v = next();
             if(!v) return false;
@@ -335,7 +352,9 @@ int main(int argc, char ** argv) {
         for(const auto & [path, text] : opt.edits) {
             gs::ui::Json value = gs::ui::Json::parse(text, nullptr, false);
             if(value.is_discarded()) value = text;
-            const bool ok = panel->document().edit(path, value);
+            const bool ok = value.is_null()
+                                ? panel->document().erase(path)
+                                : panel->document().edit(path, value);
             std::fprintf(stderr, "geomsolver: --set %s: %s\n", path.c_str(),
                          ok ? "compiled" : "does not compile");
         }
@@ -381,6 +400,21 @@ int main(int argc, char ** argv) {
                 if(frame == 14)
                     io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
             }
+            // Click k hovers its pixel for a few frames (so the item under it
+            // is hot), presses, releases, then waits for the popup or edit
+            // it opens before the next click.
+            const int click_frame = frame - kFirstClickFrame;
+            if(click_frame >= 0 && !opt.clicks.empty()) {
+                const auto k =
+                    static_cast<std::size_t>(click_frame / kClickFrames);
+                const int phase = click_frame % kClickFrames;
+                const auto & c = opt.clicks[std::min(k, opt.clicks.size() - 1)];
+                io.AddMousePosEvent(c[0], c[1]);
+                if(k < opt.clicks.size() && phase == 3)
+                    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+                if(k < opt.clicks.size() && phase == 5)
+                    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+            }
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
@@ -407,7 +441,12 @@ int main(int argc, char ** argv) {
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
             ++frame;
-            if(shot && frame >= opt.frames) {
+            const int last_click =
+                opt.clicks.empty()
+                    ? 0
+                    : kFirstClickFrame +
+                          static_cast<int>(opt.clicks.size()) * kClickFrames;
+            if(shot && frame >= std::max(opt.frames, last_click)) {
                 std::vector<unsigned char> rgb(static_cast<std::size_t>(fb_w) *
                                                static_cast<std::size_t>(fb_h) *
                                                3);

@@ -1,0 +1,26 @@
+{
+  "skill_name": "geomsolver-modelling",
+  "evals": [
+    {
+      "id": 1,
+      "name": "formalize-rotating-bookcase-panel",
+      "prompt": "I'm designing a rotating bookcase panel for the corner of my study and I'd like to use geomsolver to find where to put the pivot. The room corner is at the origin, with walls along x = 0 and y = 0. The panel is a rectangle 1.2 m long and 4 cm thick, and it turns about a vertical pivot that sits on the panel's middle line somewhere along its length. I can put the pivot anywhere in the 40 cm x 40 cm square in the corner. The panel must turn through 90 degrees: it starts lying along the x = 0 wall and ends lying along the y = 0 wall. During the whole rotation it has to stay at least 3 cm away from both walls and at least 5 cm away from my armchair, which in plan is a circle of radius 45 cm centred at (1.4, 1.2). I want the panel to stick out into the room as little as possible during the motion, measured along the 45-degree diagonal. Write the instance file as panel.json, solve it, and tell me where to put the pivot.",
+      "expected_output": "A panel.json instance that compiles without errors or warnings and solves to a feasible design: pivot at about (5.8, 5.8) cm, about 2 cm from one end of the panel, diagonal protrusion about 126.26 cm. It uses a forall sweep over the rotation for the wall and armchair clearances, the armchair as a circle, the pivot as a point design variable in a 0.4 m box, the pivot position along the panel as a design scalar, and one minimize objective max_over(sweep, max_proj(panel, dir(45deg))).",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "diagnose-infeasible-tv-instance",
+      "prompt": "geomsolver can't find any feasible design for my instance tv_corner.json (it includes example_room.json, both are in the input folder), even though the violations it reports look tiny. Is it a solver problem? Figure out why there is no feasible design and tell me exactly what I could change to get one, with the cost of each option. Don't change my file.",
+      "expected_output": "A diagnosis that the problem is over-constrained (many requirements violated by about the same small amount; more starts do not help), not a solver weakness; no advice to loosen feas_tol; at least one concrete relaxation verified by a run to give feasible designs (for example centre_setback / edge_margin from 15.5 to about 14.5 cm, about 103.9 cm protrusion, or centre_tol from 1 to about 3 cm, about 101.7 cm) with its objective; the input file left unchanged.",
+      "files": ["evals/files/diagnose/tv_corner.json", "evals/files/diagnose/example_room.json"]
+    },
+    {
+      "id": 3,
+      "name": "modify-tv-pivot-axis-and-link-clearance",
+      "prompt": "In tv_corner_ref.json (it includes example_room_ref.json; both are in the input folder), I want two changes: the two wall pivots must lie on a line at -35 degrees, and neither link may ever come within 2 cm of the TV during the swing. Keep everything else as it is. Save the modified instance as tv_modified.json, solve it, and tell me the new protrusion and whether the design is feasible.",
+      "expected_output": "tv_modified.json compiles and solves feasibly at about 107.31 cm protrusion (the original is 104.37 cm). Both links are constrained (clearance(segment(A, C), tv) and clearance(segment(B, D), tv) for every tau, at least 2 cm); constraining only one link gives 105.63 cm because the solver relabels the links. The pivot line is constrained so that AB is at -35 degrees (sin_between(B - A, dir(-35deg)) == 0, or an equivalent); everything else unchanged.",
+      "files": ["evals/files/modify/tv_corner_ref.json", "evals/files/modify/example_room_ref.json"]
+    }
+  ]
+}

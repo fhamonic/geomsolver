@@ -15,6 +15,7 @@ TEST_CASE("evaluator: display items at given sweep values, ghosts and traces") {
     const std::vector<double> x = m->initial_x();
     std::vector<ExprRef> refs;
     for(const DisplayInfo & d : m->display()) refs.push_back(d.ref);
+    const std::size_t box_probe = refs.size(), c_probe = box_probe + 1;
     refs.push_back(m->probes()[0].ref);
     refs.push_back(m->probes()[1].ref);
 
@@ -25,7 +26,8 @@ TEST_CASE("evaluator: display items at given sweep values, ghosts and traces") {
     REQUIRE(at0[0].type == ValueType::Shape);
     REQUIRE(at0[0].vertex_count() == 4);
     for(std::size_t k = 0; k < 8; ++k)
-        CHECK(at0[0].data[k] == doctest::Approx(at0[8].data[k]).epsilon(1e-12));
+        CHECK(at0[0].data[k] ==
+              doctest::Approx(at0[box_probe].data[k]).epsilon(1e-12));
     CHECK(at0[1].kind == ShapeKind::Polyline);  // screen normal segment
     CHECK(at0[4].type == ValueType::Vec);       // pivot A
     CHECK(at0[4].vec().x == doctest::Approx(0.16));
@@ -39,8 +41,10 @@ TEST_CASE("evaluator: display items at given sweep values, ghosts and traces") {
         CHECK(over[0][0].data[k] == at0[0].data[k]);
     // C (display[6], a traced point) at t = 0.5 equals the probe at(tau = 0.5,
     // C).
-    CHECK(over[2][6].vec().x == doctest::Approx(at0[9].vec().x).epsilon(1e-14));
-    CHECK(over[2][6].vec().y == doctest::Approx(at0[9].vec().y).epsilon(1e-14));
+    CHECK(over[2][6].vec().x ==
+          doctest::Approx(at0[c_probe].vec().x).epsilon(1e-14));
+    CHECK(over[2][6].vec().y ==
+          doctest::Approx(at0[c_probe].vec().y).epsilon(1e-14));
     // Link lengths are preserved along the motion.
     const Vec2d A = at0[4].vec();
     for(const auto & row : over) {
@@ -150,9 +154,8 @@ TEST_CASE("compile: warnings do not block compilation") {
     d["design"] = Json::parse(
         R"J({"s": {"type": "scalar", "min": 0, "max": 1, "value": 2}})J");
     d["constraints"] = Json::parse(R"J([{"name": "k", "expr": "1 <= 2"}])J");
-    d["criteria"] =
-        Json::parse(R"J([{"name": "a", "expr": "s", "role": "minimize"},
-                                     {"name": "b", "expr": "-s", "role": "minimize"}])J");
+    d["criteria"] = Json::parse(
+        R"J([{"name": "a", "expr": "s", "role": "minimize", "weigth": 2}])J");
     auto inst = instance_from(d);
     const CompileResult r = compile(*inst);
     REQUIRE(r.ok());
@@ -160,7 +163,7 @@ TEST_CASE("compile: warnings do not block compilation") {
     CHECK(r.diagnostics.size() == 3);
     CHECK(has_error(r.diagnostics, "constraints[0].expr",
                     "does not depend on any design variable"));
-    CHECK(has_error(r.diagnostics, "criteria", "weighted sum"));
+    CHECK(has_error(r.diagnostics, "criteria[0].weigth", "unknown key"));
     CHECK(has_error(r.diagnostics, "design.s.value", "outside [min, max]"));
     CHECK(r.model->initial_x()[0] == 1.0);
 }

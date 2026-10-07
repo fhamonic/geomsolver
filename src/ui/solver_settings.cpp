@@ -1,5 +1,7 @@
 #include "ui/solver_backend.hpp"
 
+#include "gs/solve/settings.hpp"
+
 namespace gs::ui {
 namespace {
 
@@ -23,6 +25,10 @@ void read(const nlohmann::ordered_json & j, const char * key, T & out) {
 SolverSettings SolverSettings::from_json(const nlohmann::ordered_json & j) {
     SolverSettings s;
     read(j, "algorithm", s.algorithm);
+    if(!parse_algorithm(s.algorithm)) {
+        s.note = removed_algorithm_note(s.algorithm);
+        if(!s.note.empty()) s.algorithm = "SLSQP";
+    }
     read(j, "starts", s.starts);
     read(j, "seed", s.seed);
     read(j, "threads", s.threads);

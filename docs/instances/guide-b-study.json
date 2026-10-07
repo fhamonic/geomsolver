@@ -1,0 +1,38 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Study room seen from above: the widest desk, with its chair, that fits in a room with a cut corner. The desk and the chair must stay whole inside the room.",
+  "params": {
+    "depth": "70cm",
+    "gap": "5cm",
+    "chair_r": "30cm",
+    "seat_off": "25cm"
+  },
+  "geometry": {
+    "room": {"type": "polyline", "points": [[0, 0], [3.6, 0], [3.6, 2], [2.8, 2.8], [0, 2.8]], "closed": true}
+  },
+  "design": {
+    "D": {"type": "point", "domain": "room", "value": [1.8, 1.2], "note": "centre of the desk"},
+    "Wd": {"type": "scalar", "min": "80cm", "max": "500cm", "value": 1.2, "unit": "cm", "note": "width of the desk"},
+    "da": {"type": "scalar", "min": "-90deg", "max": "90deg", "value": 0, "unit": "deg", "note": "angle of the desk"}
+  },
+  "let": {
+    "desk": "rect(D, Wd, depth, da)",
+    "seat": "place(vec(0, -(depth / 2 + seat_off)), D, da)",
+    "chair": "circle(seat, chair_r)"
+  },
+  "constraints": [
+    {"name": "desk_in_0", "expr": "clearance(vertex(desk, 0), room) <= -gap"},
+    {"name": "desk_in_1", "expr": "clearance(vertex(desk, 1), room) <= -gap"},
+    {"name": "desk_in_2", "expr": "clearance(vertex(desk, 2), room) <= -gap"},
+    {"name": "desk_in_3", "expr": "clearance(vertex(desk, 3), room) <= -gap"},
+    {"name": "chair_in", "expr": "clearance(seat, room) <= -(chair_r + gap)", "note": "the centre of the chair is chair_r + gap inside"}
+  ],
+  "criteria": [
+    {"name": "width", "expr": "Wd", "role": "maximize", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "room", "color": "#9b9b9b", "width": 2},
+    {"expr": "desk", "color": "#3b6fb6", "fill": true},
+    {"expr": "chair", "color": "#eb5757", "fill": true, "label": "chair"}
+  ]
+}

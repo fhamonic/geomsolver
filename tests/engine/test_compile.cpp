@@ -29,55 +29,55 @@ std::string first(const std::vector<Diagnostic> & ds) {
 
 TEST_CASE("compile: type and name errors carry JSON path and column") {
     CHECK(first(let_errors("dyadd(P, 1, P, 1, 1)")) ==
-          "let.e: unknown function 'dyadd' at column 0");
+          "let.e at column 0: unknown function 'dyadd'");
     CHECK(first(let_errors("P + 1")) ==
-          "let.e: type error: Vec + Scalar at column 2");
+          "let.e at column 2: type error: Vec + Scalar");
     CHECK(first(let_errors("P * P")) ==
-          "let.e: type error: Vec * Vec (use dot() or cross()) at column 2");
+          "let.e at column 2: type error: Vec * Vec (use dot() or cross())");
     CHECK(first(let_errors("1 / P")) ==
-          "let.e: type error: Scalar / Vec at column 2");
+          "let.e at column 2: type error: Scalar / Vec");
     CHECK(first(let_errors("s.x")) ==
-          "let.e: '.x' needs a Vec, got Scalar at column 1");
+          "let.e at column 1: '.x' needs a Vec, got Scalar");
     CHECK(first(let_errors("2 * foo")) ==
-          "let.e: unknown name 'foo' at column 4");
+          "let.e at column 4: unknown name 'foo'");
     CHECK(first(let_errors("dist(P)")) ==
-          "let.e: dist() takes 2 arguments, got 1 at column 0");
+          "let.e at column 0: dist() takes 2 arguments, got 1");
     CHECK(first(let_errors("sqrt(1, 2)")) ==
-          "let.e: sqrt() takes 1 argument, got 2 at column 0");
+          "let.e at column 0: sqrt() takes 1 argument, got 2");
     CHECK(first(let_errors("polygon(P, P)")) ==
-          "let.e: polygon() takes at least 3 arguments, got 2 at column 0");
+          "let.e at column 0: polygon() takes at least 3 arguments, got 2");
     CHECK(first(let_errors("norm(s)")) ==
-          "let.e: argument 1 of norm() must be a Vec, got Scalar at column 5");
+          "let.e at column 5: argument 1 of norm() must be a Vec, got Scalar");
     CHECK(first(let_errors("clearance(P, s)")) ==
-          "let.e: argument 2 of clearance() must be a Vec or a shape, got "
-          "Scalar at column 13");
+          "let.e at column 13: argument 2 of clearance() must be a Vec or a "
+          "shape, got Scalar");
     CHECK(first(let_errors("-box(0, 0, 1, 1)")) ==
-          "let.e: cannot negate a Polygon at column 0");
+          "let.e at column 0: cannot negate a Polygon");
     CHECK(first(let_errors("dist(a = P, P)")) ==
-          "let.e: named arguments are only allowed in at() at column 5");
+          "let.e at column 5: named arguments are only allowed in at()");
     CHECK(first(let_errors("vertex(box(0, 0, 1, 1), 4)")) ==
-          "let.e: vertex index 4 out of range [0, 4) at column 24");
+          "let.e at column 24: vertex index 4 out of range [0, 4)");
     CHECK(
         first(let_errors("vertex(box(0, 0, 1, 1), s)")) ==
-        "let.e: the index of vertex() must be a constant integer at column 24");
+        "let.e at column 24: the index of vertex() must be a constant integer");
     CHECK(first(let_errors("vertex(circle(P, 1), 0)")) ==
-          "let.e: vertex() needs a polygon or a polyline, got Circle at column "
-          "7");
+          "let.e at column 7: vertex() needs a polygon or a polyline, got "
+          "Circle");
     CHECK(first(let_errors("1 +")) ==
-          "let.e: unexpected end of expression at column 3");
+          "let.e at column 3: unexpected end of expression");
     CHECK(first(let_errors("s <= 1")) ==
-          "let.e: a comparison is only allowed at the top level of a "
-          "constraint at column 2");
+          "let.e at column 2: a comparison is only allowed at the top level of "
+          "a constraint");
     CHECK(first(let_errors("max_over(tau, s)")) ==
-          "let.e: max_over() is only allowed as a whole constraint side or as "
-          "a whole criterion at column 0");
+          "let.e at column 0: max_over() is only allowed as a whole constraint "
+          "side or as a whole criterion");
     CHECK(first(let_errors("at(s = 0, s)")) ==
-          "let.e: 's' is not a sweep at column 3");
+          "let.e at column 3: 's' is not a sweep");
     CHECK(first(let_errors("at(tau = tau, s)")) ==
-          "let.e: the value given to 'tau' cannot depend on 'tau' itself at "
-          "column 9");
+          "let.e at column 9: the value given to 'tau' cannot depend on 'tau' "
+          "itself");
     CHECK(first(let_errors("at(0, s)")) ==
-          "let.e: at() takes the form at(sweep = value, body) at column 0");
+          "let.e at column 0: at() takes the form at(sweep = value, body)");
 }
 
 TEST_CASE(
@@ -148,8 +148,8 @@ TEST_CASE("compile: params must be constant and lets must not leak sweeps") {
     Json d = small_doc();
     d["params"] = Json::object({{"k", "s * 2"}});
     CHECK(first(compile_errors(d)) ==
-          "params.k: 's' is a design variable and cannot appear in a constant "
-          "expression at column 0");
+          "params.k at column 0: 's' is a design variable and cannot appear in "
+          "a constant expression");
 
     d = small_doc();
     d["constraints"] =
@@ -196,8 +196,8 @@ TEST_CASE("compile: params must be constant and lets must not leak sweeps") {
     d["sweeps"]["sigma"] = Json::object({{"min", 0}, {"max", 1}});
     d["let"] = Json::object({{"e", "s + tau * sigma"}});
     CHECK(first(compile_errors(d)) ==
-          "let.e: expression depends on two free sweeps ('tau' and 'sigma') at "
-          "column 8");
+          "let.e at column 8: expression depends on two free sweeps ('tau' and "
+          "'sigma')");
 
     // at() removes the dependency on one sweep, so mixing is fine after it.
     d["let"] = Json::object({{"e", "at(sigma = 0.5, tau * sigma)"}});
@@ -212,11 +212,11 @@ TEST_CASE("compile: at(), max_over and min_over semantics") {
     d["criteria"] = Json::parse(R"J([
         {"name": "fmax", "expr": "max_over(tau, f)", "role": "report"},
         {"name": "fmin", "expr": "min_over(tau, f)", "role": "report"},
-        {"name": "obj", "expr": "max_over(tau, f)", "role": "minimize", "weight": 2}
+        {"name": "obj", "expr": "max_over(tau, f)", "role": "minimize"}
     ])J");
     d["constraints"] = Json::parse(R"J([
         {"name": "under", "expr": "max_over(tau, f) <= 7"},
-        {"name": "reach", "expr": "max_over(tau, f) >= 7"},
+        {"name": "pair", "expr": "max_over(tau, f) <= min_over(tau, 7 + tau)"},
         {"name": "floor", "expr": "min_over(tau, f) >= -1"},
         {"name": "band", "expr": "abs(s - 1) <= 0.5"},
         {"name": "all", "forall": "tau", "expr": "f <= 10"},
@@ -244,9 +244,9 @@ TEST_CASE("compile: at(), max_over and min_over semantics") {
     CHECK(V.criteria[1].value == doctest::Approx(-0.125));
     CHECK(V.criteria[1].t == 0.125);
     CHECK(V.criteria[1].sweep_value == 0.25);
-    CHECK(V.objective == doctest::Approx(12.0));
+    CHECK(V.objective == doctest::Approx(6.0));
 
-    // Groups: under (expanded per sample), reach (one aggregate row), floor
+    // Groups: under (expanded per sample), pair (one aggregate row), floor
     // (expanded), band (abs split), all (per sample); "off" is disabled.
     REQUIRE(m->groups().size() == 5);
     CHECK(m->groups()[0].sweep == 0);
@@ -256,7 +256,8 @@ TEST_CASE("compile: at(), max_over and min_over semantics") {
     CHECK(m->groups()[4].sweep == 0);
     CHECK(m->constraints()[5].groups.empty());
     CHECK(V.groups[0].violation == doctest::Approx(6.0 - 7.0));
-    CHECK(V.groups[1].violation == doctest::Approx(7.0 - 6.0));
+    // pair: max f = 6 against min (7 + tau) = 7, located at the max side.
+    CHECK(V.groups[1].violation == doctest::Approx(6.0 - 7.0));
     CHECK(V.groups[1].t == 1.0);
     CHECK(V.groups[2].violation == doctest::Approx(-1.0 - -0.125));
     CHECK(V.groups[2].t == 0.125);
@@ -277,12 +278,12 @@ TEST_CASE("compile: at(), max_over and min_over semantics") {
     CHECK(r.g[0] == doctest::Approx(f0 - 7));
     CHECK(r.g[1] == doctest::Approx(f1 - 7));
     CHECK(r.g[2] == doctest::Approx(f2 - 7));
-    CHECK(r.g[3] == doctest::Approx(7 - f2));
+    CHECK(r.g[3] == doctest::Approx(f2 - 7));
     CHECK(r.g[7] == doctest::Approx(0.5));
     CHECK(r.g[8] == doctest::Approx(-1.5));
-    // d/dx of 7 - max f: s = 4 x0, f(tau*) = s tau*^2 - tau*, tau* = 2 -> -4
-    // * 4.
-    CHECK(r.g_jac[3 * 3 + 0] == doctest::Approx(-16.0));
+    // d/dx of max f - min (7 + tau): s = 4 x0, f(tau*) = s tau*^2 - tau*,
+    // tau* = 2 -> 4 * 4; the min side does not depend on x.
+    CHECK(r.g_jac[3 * 3 + 0] == doctest::Approx(16.0));
     CHECK(r.g_jac[3 * 3 + 1] == 0.0);
     // band rows: +-(s - 1) - 0.5 -> +-4.
     CHECK(r.g_jac[7 * 3 + 0] == doctest::Approx(4.0));
@@ -290,7 +291,7 @@ TEST_CASE("compile: at(), max_over and min_over semantics") {
     // Epigraph objective: one piece per sample.
     REQUIRE(L.objective.size() == 3);
     CHECK(L.objective[2].epigraph);
-    CHECK(L.objective[2].weight == 2.0);
+    CHECK(L.objective[2].sign == 1.0);
     CHECK(r.obj[2] == doctest::Approx(f2));
     CHECK(r.obj_jac[2 * 3 + 0] == doctest::Approx(4.0 * 4.0));
 

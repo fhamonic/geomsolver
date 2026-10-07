@@ -1,0 +1,40 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Swing-arm wall lamp, seen from above. The arm turns about a pivot H on the wall y = 0. It must reach over the book at some angle, clear the plant over its whole swing, and fold flat enough at rest. Make the swing as shallow as possible.",
+  "params": {
+    "gap": "3cm",
+    "reach_tol": "5cm",
+    "rest_max": "35cm"
+  },
+  "geometry": {
+    "wall": {"type": "polyline", "points": [[0, 0], [2.6, 0]]},
+    "plant": {"type": "circle", "x": 2.0, "y": 0.5, "r": 0.15},
+    "book": {"type": "point", "x": 1.5, "y": 0.8, "note": "where the book is held"}
+  },
+  "design": {
+    "H": {"type": "point", "domain": "segment(vec(0.2, 0), vec(1.8, 0))", "value": [1.0, 0], "note": "pivot on the wall"},
+    "L": {"type": "scalar", "min": "30cm", "max": "120cm", "value": 0.9, "unit": "cm", "note": "arm length"},
+    "w": {"type": "scalar", "min": "20deg", "max": "160deg", "value": 1.2, "unit": "deg", "note": "witness: the angle at which the lamp is over the book"}
+  },
+  "sweeps": {
+    "a": {"min": "20deg", "max": "160deg"}
+  },
+  "let": {
+    "tip": "H + L * dir(a)",
+    "arm": "place(box(0, -0.02, L, 0.02), H, a)"
+  },
+  "constraints": [
+    {"name": "plant", "forall": "a", "expr": "clearance(arm, plant) >= gap"},
+    {"name": "over_book", "expr": "at(a = w, dist(tip, book)) <= reach_tol"}
+  ],
+  "criteria": [
+    {"name": "depth", "expr": "max_over(a, max_y(arm))", "role": "minimize", "unit": "cm", "note": "how far the swing reaches into the room"},
+    {"name": "rest_depth", "expr": "at(a = 160deg, max_y(arm))", "role": "max", "bound": "rest_max", "unit": "cm", "note": "folded to the left"}
+  ],
+  "display": [
+    {"expr": "arm", "color": "#3b6fb6", "fill": true, "ghosts": 8},
+    {"expr": "tip", "color": "#3b6fb6", "trace": true},
+    {"expr": "at(a = w, arm)", "color": "#f2c94c", "fill": true, "label": "over the book"},
+    {"expr": "H", "color": "#eb5757", "label": "H"}
+  ]
+}

@@ -102,7 +102,12 @@ std::vector<Token> lex(std::string_view s) {
                 std::from_chars(lit.data(), lit.data() + lit.size(), v);
             if(res.ec != std::errc{} || res.ptr != lit.data() + lit.size())
                 throw SyntaxError{i, std::format("invalid number '{}'", lit)};
-            if(ident_start(at(j))) {
+            // Every display unit is also a suffix, so a bound written in its
+            // criterion's unit ("85%", as --write-instance does) parses.
+            if(at(j) == '%') {
+                v *= 0.01;
+                ++j;
+            } else if(ident_start(at(j))) {
                 int k = j;
                 while(ident_char(at(k))) ++k;
                 const std::string_view u =
@@ -110,10 +115,10 @@ std::vector<Token> lex(std::string_view s) {
                              static_cast<std::size_t>(k - j));
                 const double f = unit_suffix_factor(u);
                 if(f == 0.0)
-                    throw SyntaxError{j,
-                                      std::format("unknown unit suffix '{}' "
-                                                  "(use deg, rad, m, cm or mm)",
-                                                  u)};
+                    throw SyntaxError{
+                        j, std::format("unknown unit suffix '{}' "
+                                       "(use deg, rad, m, cm, mm or %)",
+                                       u)};
                 v *= f;
                 j = k;
             }

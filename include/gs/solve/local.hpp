@@ -66,7 +66,7 @@ struct LocalOptions {
     // is meaningless for unbounded coordinates.
     std::vector<std::pair<int, double>> initial_step;
     // Polled in every callback; raising it ends the solve within one
-    // evaluation (MMA / CCSAQ: within one inner dual solve). nlopt's own
+    // evaluation. nlopt's own
     // force_stop() must not be called from another thread.
     const std::atomic<bool> * stop = nullptr;
 };

@@ -111,6 +111,13 @@ Model::~Model() = default;
 
 int Model::n() const { return n_; }
 
+double Model::objective_sign() const {
+    return objective_ >= 0 &&
+                   criteria_[uz(objective_)].role == CriterionRole::Maximize
+               ? -1.0
+               : 1.0;
+}
+
 namespace {
 template <class V>
 int find_named(const std::vector<V> & v, std::string_view name) {
@@ -252,9 +259,9 @@ NlpLayout Model::nlp_layout(const SampleSets & samples) const {
     for(const detail::ObjTerm & o : program_->objective) {
         if(o.epigraph) {
             for(int i = 0; i < ns(o.term.sweep); ++i)
-                L.objective.push_back({o.criterion, o.weight, i, true});
+                L.objective.push_back({o.criterion, o.sign, i, true});
         } else {
-            L.objective.push_back({o.criterion, o.weight, -1, false});
+            L.objective.push_back({o.criterion, o.sign, -1, false});
         }
     }
     return L;

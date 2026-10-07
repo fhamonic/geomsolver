@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="geomsolver">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#3b6fb6"/>
+  <g stroke="#ffffff" stroke-linecap="round" fill="none">
+    <line x1="12" y1="50" x2="52" y2="50" stroke-width="2.5" opacity="0.55"/>
+    <line x1="21" y1="50" x2="22" y2="24" stroke-width="3.5"/>
+    <line x1="44" y1="50" x2="41" y2="19" stroke-width="3.5"/>
+    <line x1="12" y1="27" x2="52" y2="16" stroke-width="6"/>
+  </g>
+  <g fill="#eb5757" stroke="#ffffff" stroke-width="1.2">
+    <circle cx="21" cy="50" r="3.2"/>
+    <circle cx="44" cy="50" r="3.2"/>
+    <circle cx="22" cy="24" r="3.2"/>
+    <circle cx="41" cy="19" r="3.2"/>
+  </g>
+</svg>

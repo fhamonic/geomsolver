@@ -43,10 +43,6 @@ nlopt::algorithm nlopt_algorithm(Algorithm a) {
             return nlopt::LD_SLSQP;
         case Algorithm::COBYLA:
             return nlopt::LN_COBYLA;
-        case Algorithm::MMA:
-            return nlopt::LD_MMA;
-        case Algorithm::CCSAQ:
-            return nlopt::LD_CCSAQ;
     }
     return nlopt::LD_SLSQP;
 }
@@ -89,6 +85,39 @@ bool replace_nonfinite(double * p, std::size_t count, double value) {
             found = true;
         }
     return found;
+}
+
+// The merge below looks like a no-op, but without it NLopt's COBYLA can spin
+// forever without calling back, so neither maxeval nor the stop flag ends the
+// solve: when constraints that agree only up to rounding are active together,
+// its LP subproblem (trstlp) cycles, each pass lowering its objective by
+// rounding noise, which defeats its anti-cycling test. A for-all row whose
+// value does not change along the sweep (a link's joint against the TV that
+// carries it) gives such copies, one per sample. Bitwise-equal copies do not
+// cycle, so each chain of sorted values whose neighbours are within
+// 1e-12 * max(1, |v|) gets one value, its largest (no row reads as less
+// violated than it is). The chain is what keeps two copies together: groups
+// of limited width around a first value can split them. Its price is that in
+// a chain of k values, unrelated rows included, the lowest rises by up to
+// (k - 1) * 1e-12 * max(1, |v|) for the largest |v| of the chain, not 1e-12.
+constexpr double kCobylaMergeTol = 1e-12;
+
+void merge_near_equal(double * v, std::size_t count,
+                      std::vector<std::size_t> & order) {
+    order.resize(count);
+    for(std::size_t i = 0; i < count; ++i) order[i] = i;
+    std::sort(order.begin(), order.end(),
+              [&](std::size_t a, std::size_t b) { return v[a] < v[b]; });
+    for(std::size_t lo = 0; lo < count;) {
+        std::size_t hi = lo + 1;
+        while(hi < count &&
+              v[order[hi]] - v[order[hi - 1]] <=
+                  kCobylaMergeTol * std::max(1.0, std::fabs(v[order[hi]])))
+            ++hi;
+        const double top = v[order[hi - 1]];
+        for(std::size_t k = lo; k < hi; ++k) v[order[k]] = top;
+        lo = hi;
+    }
 }
 
 // Evaluates the problem once per point for the objective and constraint
@@ -145,6 +174,10 @@ struct Driver {
             bad |= replace_nonfinite(dh.data(), dh.size(), 0.0);
         }
         if(bad) ++nonfinite;
+        if(opt.algorithm == Algorithm::COBYLA) {
+            merge_near_equal(g.data(), mi, order);
+            merge_near_equal(h.data(), me, order);
+        }
         std::copy(x, x + n, cx.begin());
         have = true;
         have_grad = grad;
@@ -179,6 +212,7 @@ struct Driver {
     bool have = false, have_grad = false;
     double f = 0.0;
     std::vector<double> df, g, dg, h, dh;
+    std::vector<std::size_t> order;
     std::exception_ptr error;
     bool stopped = false;
     long evaluations = 0, gradient_evaluations = 0, nonfinite = 0;
@@ -196,10 +230,6 @@ LocalResult minimize(LocalProblem & problem, std::vector<double> x0,
        static_cast<int>(options.ub.size()) != n)
         throw std::invalid_argument(
             "minimize: x0 / bounds size differs from n");
-    if(problem.m_eq() > 0 && !supports_equality(options.algorithm))
-        throw std::invalid_argument(
-            "minimize: equality rows given to an algorithm without equality "
-            "support");
     for(uz j = 0; j < x0.size(); ++j)
         x0[j] = std::clamp(x0[j], options.lb[j], options.ub[j]);
 

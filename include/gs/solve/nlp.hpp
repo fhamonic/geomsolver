@@ -21,9 +21,10 @@ enum class NlpMode : std::uint8_t {
     // Variables [x | v]: minimise v subject to row - v <= 0 for every model
     // row (equality rows as +h - v and -h - v). Epigraph rows are left out.
     Phase1,
-    // Variables [x | z_1..z_k], one z per minimize criterion whose expression
-    // is a top-level max_over: minimise sum w_c z_c + the other minimize
-    // criteria, subject to the model rows and e_c(t_i) - z_c <= 0.
+    // Variables [x | z] with z only for an epigraph objective (minimize
+    // max_over, maximize min_over): minimise z subject to the model rows and
+    // sign * e(t_i) - z <= 0; any other objective is minimised as
+    // sign * value. sign is -1 for maximize, so z is -(the objective) then.
     Phase2,
 };
 
@@ -32,10 +33,8 @@ enum class NlpMode : std::uint8_t {
 class NlpProblem final : public LocalProblem {
 public:
     // `ev` must outlive the problem; it is used by every evaluate().
-    // `split_equalities` hands equality rows to the solver as two
-    // inequalities (for algorithms without equality support).
     NlpProblem(Evaluator & ev, SampleSets samples, NlpMode mode,
-               bool split_equalities, std::span<const BoundOverride> bounds);
+               std::span<const BoundOverride> bounds);
 
     int n() const override { return n_; }
     int m_ineq() const override { return static_cast<int>(ineq_.size()); }
@@ -58,7 +57,8 @@ public:
     // Largest model row at x in solver units (equality rows as |h|); -inf
     // without rows; NaN when a row is not finite.
     double max_row(std::span<const double> x);
-    // Max over the sampled pieces of each epigraph criterion at x.
+    // Max over the sampled pieces of sign * e for each epigraph criterion at
+    // x: the smallest z its rows allow (-(sampled min) for maximize).
     std::vector<double> epigraph_values(std::span<const double> x);
 
 private:

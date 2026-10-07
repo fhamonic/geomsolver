@@ -1,0 +1,56 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Largest round side table on the rug that stays clear of the furniture and of a person walking from the kitchen to the couch",
+  "include": ["../../tests/data/example_room_ref.json"],
+  "params": {
+    "clr": "5cm",
+    "r_max": 0.6,
+    "walker_r": "25cm",
+    "reach": 1.5
+  },
+  "geometry": {
+    "rug": {"type": "rect", "x": 1.7, "y": 2.0, "width": 1.4, "height": 1.0, "angle": 20, "note": "where the table may stand"},
+    "lamp": {"type": "point", "x": 1.3, "y": 1.2},
+    "pouf": {"type": "circle", "x": 1.35, "y": 2.85, "r": 0.2},
+    "route": {"type": "polyline", "points": [[1.1, 4.0], [2.0, 2.9], [2.2, 1.27]], "closed": false, "note": "the walker's path"}
+  },
+  "design": {
+    "T": {"type": "point", "domain": "rug", "value": [1.7, 2.0], "note": "table centre"},
+    "r": {"type": "scalar", "min": 0.2, "max": "r_max", "value": 0.3, "unit": "cm", "note": "table radius"},
+    "lamp_offset": {"type": "scalar", "min": 0, "max": 0.5, "value": 0.1, "fixed": true, "unit": "cm"}
+  },
+  "sweeps": {
+    "s": {"min": 0, "max": 1}
+  },
+  "let": {
+    "top": "circle(T, r)",
+    "walker_at": "vertex(route, 0) + clamp(2 * s, 0, 1) * (vertex(route, 1) - vertex(route, 0)) + clamp(2 * s - 1, 0, 1) * (vertex(route, 2) - vertex(route, 1))",
+    "walker": "circle(walker_at, walker_r)"
+  },
+  "constraints": [
+    {"name": "chair", "expr": "clearance(top, chair1) >= clr"},
+    {"name": "pouf", "expr": "clearance(top, pouf) >= clr", "note": "the pouf moves around; disable to ignore it"},
+    {"name": "cabinet", "expr": "clearance(top, meuble_TV) >= clr"},
+    {"name": "walkway", "forall": "s", "expr": "clearance(top, walker) >= 0"},
+    {"name": "lamp_cord", "expr": "dist(T, lamp) <= 1.2 + lamp_offset", "enabled": false}
+  ],
+  "criteria": [
+    {"name": "radius", "expr": "r", "role": "maximize", "unit": "cm"},
+    {"name": "to_seat", "expr": "dist(T, couch_seat_2)", "role": "max", "bound": "reach", "unit": "cm", "note": "a cup on the table is within reach of the right seat"},
+    {"name": "couch_gap", "expr": "clearance(top, couch)", "role": "min", "bound": "clr", "unit": "cm"},
+    {"name": "walk_gap", "expr": "min_over(s, clearance(top, walker))", "role": "report", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "top", "color": "#3b6fb6", "fill": true, "label": "side table"},
+    {"expr": "walker", "color": "#eb5757", "width": 1.5, "ghosts": 8},
+    {"expr": "walker_at", "color": "#eb5757", "trace": true},
+    {"expr": "at(s = 0, walker_at)", "color": "#eb5757", "label": "kitchen"},
+    {"expr": "rug", "color": "#f2c94c80", "width": 2, "label": "rug"}
+  ],
+  "solver": {
+    "algorithm": "SLSQP",
+    "starts": 32,
+    "seed": 1
+  },
+  "author_notes": "unknown top-level keys like this one are kept when the GUI saves the file"
+}

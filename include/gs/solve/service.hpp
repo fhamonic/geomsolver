@@ -104,8 +104,7 @@ public:
     // publishes its first snapshot.
     bool start(SolveJob job, std::string * error = nullptr);
     // Asks the running job to stop: runs in flight end within a few
-    // milliseconds (SLSQP / COBYLA; MMA / CCSAQ after their current inner
-    // solve), no new run starts, and the final outcome has stopped = true
+    // milliseconds, no new run starts, and the final outcome has stopped = true
     // with the runs finished so far. No effect when idle.
     void request_stop();
     bool running() const;

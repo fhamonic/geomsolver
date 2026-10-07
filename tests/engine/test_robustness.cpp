@@ -167,10 +167,8 @@ TEST_CASE("instance: save failures leave no temp file and do not throw") {
 
 TEST_CASE("instance: saved lines stay within 120 columns") {
     TempDir tmp;
-    std::filesystem::copy_file(data_dir() / "tv_corner.json",
-                               tmp.path / "tv_corner.json");
-    std::filesystem::copy_file(data_dir() / "example_room.json",
-                               tmp.path / "example_room.json");
+    std::filesystem::copy_file(tv_file(), tmp.path / "tv_corner.json");
+    std::filesystem::copy_file(room_file(), tmp.path / room_file().filename());
     LoadResult r = Instance::load(tmp.path / "tv_corner.json");
     REQUIRE(r.ok());
     std::string err;
@@ -324,23 +322,6 @@ TEST_CASE("compile: at() combines lets that depend on different sweeps") {
     Json e = d;
     e["let"]["c"] = "a * b";
     CHECK(has_error(compile_errors(e), "let.c", "two free sweeps"));
-}
-
-TEST_CASE("compile: a max_over objective with weight <= 0 is not an epigraph") {
-    Json d = one_scalar_doc();
-    d["criteria"] = Json::array({Json{{"name", "o"},
-                                      {"expr", "max_over(tau, x * tau)"},
-                                      {"role", "minimize"},
-                                      {"weight", -1}}});
-    auto m = compile_ok(*instance_from(d));
-    const NlpLayout L = m->nlp_layout(SampleSets::uniform(*m, 5));
-    REQUIRE(L.objective.size() == 1);
-    CHECK_FALSE(L.objective[0].epigraph);
-    d["criteria"][0]["weight"] = 2;
-    auto m2 = compile_ok(*instance_from(d));
-    const NlpLayout L2 = m2->nlp_layout(SampleSets::uniform(*m2, 5));
-    CHECK(L2.objective.size() == 5);
-    CHECK(L2.objective[0].epigraph);
 }
 
 TEST_CASE(

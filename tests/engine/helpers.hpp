@@ -16,7 +16,15 @@ namespace gs::test {
 
 using Json = nlohmann::ordered_json;
 
-inline std::filesystem::path data_dir() { return GS_DATA_DIR; }
+// Frozen copies of data/tv_corner.json and the room it includes: the
+// numbers the tests pin hold for these, not for whatever data/ holds now.
+inline std::filesystem::path test_data_dir() { return GS_TEST_DATA_DIR; }
+inline std::filesystem::path tv_file() {
+    return test_data_dir() / "tv_corner_ref.json";
+}
+inline std::filesystem::path room_file() {
+    return test_data_dir() / "example_room_ref.json";
+}
 
 inline std::shared_ptr<Instance> instance_from(
     const Json & doc, const std::filesystem::path & file = "mem.json") {
@@ -74,7 +82,7 @@ inline std::vector<GeoValue> probe_values(const Model & m,
 }
 
 inline std::shared_ptr<Instance> tv_instance() {
-    LoadResult r = Instance::load(data_dir() / "tv_corner.json");
+    LoadResult r = Instance::load(tv_file());
     INFO(to_string(r.diagnostics));
     REQUIRE(r.ok());
     return r.instance;

@@ -165,7 +165,9 @@ void SolverService::execute(SolveJob job, std::uint64_t id) {
         {
             std::lock_guard lock(mutex_);
             ++progress_.runs_done;
-            if(r.feasible && !(r.objective >= progress_.best_objective))
+            const double sign = m.objective_sign();
+            if(r.feasible &&
+               !(sign * r.objective >= sign * progress_.best_objective))
                 progress_.best_objective = r.objective;
             revision_.fetch_add(1);
         }
@@ -181,11 +183,20 @@ void SolverService::execute(SolveJob job, std::uint64_t id) {
         auto snap = std::make_shared<SolveOutcome>(*base);
         snap->multistart.runs_total = runs_total;
         snap->multistart.threads = resolved_threads(job.settings);
-        for(std::size_t k = 0; k < sols.size(); ++k) {
-            snap->multistart.runs.push_back(
-                done[static_cast<std::size_t>(sols[k].run)]);
-            snap->multistart.solutions.push_back(Solution{
-                static_cast<int>(k), sols[k].hits, {}, sols[k].variants});
+        // The snapshot keeps only the best run of every variant: the run
+        // indices of `sols` point into `done`, not into these runs.
+        for(const Solution & sol : sols) {
+            Solution kept{static_cast<int>(snap->multistart.runs.size()),
+                          sol.hits,
+                          {},
+                          {}};
+            for(const Solution::Variant & v : sol.variants) {
+                kept.variants.push_back(
+                    {static_cast<int>(snap->multistart.runs.size()), v.hits});
+                snap->multistart.runs.push_back(
+                    done[static_cast<std::size_t>(v.run)]);
+            }
+            snap->multistart.solutions.push_back(std::move(kept));
         }
         publish(std::move(snap));
     };

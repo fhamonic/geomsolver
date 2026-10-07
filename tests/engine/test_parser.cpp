@@ -64,8 +64,10 @@ TEST_CASE("parser: numbers and unit suffixes") {
     CHECK(number("2cm") == doctest::Approx(0.02).epsilon(1e-15));
     CHECK(number("7mm") == doctest::Approx(0.007).epsilon(1e-15));
     CHECK(number("1e2mm") == doctest::Approx(0.1).epsilon(1e-15));
+    CHECK(number("85%") == doctest::Approx(0.85).epsilon(1e-15));
     // A space ends the number: "15 deg" is a number followed by a name.
     CHECK(parse_expression("15 deg").ok() == false);
+    CHECK(parse_expression("85 %").ok() == false);
 }
 
 TEST_CASE("parser: errors carry the 0-based column of the offending token") {

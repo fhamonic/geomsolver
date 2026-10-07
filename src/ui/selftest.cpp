@@ -52,16 +52,16 @@ double criterion(const Scene & s, const char * name) {
                                     : std::nan("");
 }
 
-// Verified optimum, contract section 7.
+// Optimum of tests/data/tv_corner_ref.json (view_tol 2 deg, min_visible 86 %).
 const std::vector<std::pair<std::string, std::vector<double>>> kOptimum = {
-    {"A", {0.3169048760460707, 0.023257031027451074}},
-    {"B", {8.055287993847735e-05, 0.24509981039656606}},
-    {"c", {0.1392422822668392, 0.0}},
-    {"d", {-0.11151459378589386, -0.03650882642838018}},
-    {"p0", {0.19109362318188705, 0.6310993655970135}},
-    {"phi0", {-1.458109052736341}},
-    {"span", {1.299292818565645}},
-    {"tstar", {0.636576761516744}},
+    {"A", {0.04124141278724899, 0.3038836104289831}},
+    {"B", {0.3501042214046246, 1.059914376411293e-05}},
+    {"c", {-0.16169443493060132, 0.0}},
+    {"d", {0.11211739507420804, -0.08347212552276656}},
+    {"p0", {0.3752252853661016, 0.6075222732478925}},
+    {"phi0", {-1.2707431383321104}},
+    {"span", {1.1391888732985331}},
+    {"tstar", {0.5615694774545104}},
 };
 
 double dist_to_boundary(Vec2d p, const GeoValue & dom) {
@@ -153,7 +153,7 @@ void test_solver_seam(const fs::path & instance) {
           "defaults and the current model snapshot");
     SceneCache cache;
     const Scene & s = cache.update(doc, false);
-    check(near(criterion(s, "protrusion"), 1.0193394755, 1e-6),
+    check(near(criterion(s, "protrusion"), 1.0437292638, 1e-6),
           std::format("fake backend: best solution loaded into the document "
                       "(protrusion {:.10f}; {})",
                       criterion(s, "protrusion"), msg));
@@ -200,7 +200,7 @@ void test_document(const fs::path & instance) {
     {
         const int g = [&] {
             for(std::size_t i = 0; i < s1.model->groups().size(); ++i)
-                if(s1.model->groups()[i].name == "link_angle")
+                if(s1.model->groups()[i].name == "link_angle:bound")
                     return static_cast<int>(i);
             return -1;
         }();
@@ -384,9 +384,9 @@ void test_document(const fs::path & instance) {
             check(doc.edit("params.clr", 0.02), "clr back to 0.02");
             SceneCache c2;
             const Scene & so = c2.update(doc, false);
-            check(near(criterion(so, "protrusion"), 1.0193394755, 1e-6) &&
+            check(near(criterion(so, "protrusion"), 1.0437292638, 1e-6) &&
                       so.verification->feasible(1e-6),
-                  std::format("loaded optimum: protrusion 1.0193394755, "
+                  std::format("loaded optimum: protrusion 1.0437292638, "
                               "feasible (got {:.10f}, max violation {:.2e})",
                               criterion(so, "protrusion"),
                               so.verification->max_violation));
@@ -630,10 +630,10 @@ void test_service_backend(const fs::path & instance) {
                 ms_since(t0), msg.c_str());
     SceneCache cache;
     const Scene & s = cache.update(doc, false);
-    check(ok && near(criterion(s, "protrusion"), 1.0193394755, 1e-6) &&
+    check(ok && near(criterion(s, "protrusion"), 1.0437292638, 1e-6) &&
               s.verification->feasible(1e-6),
           std::format("service backend: best solution loaded, protrusion "
-                      "1.0193394755 and feasible (got {:.10f})",
+                      "1.0437292638 and feasible (got {:.10f})",
                       criterion(s, "protrusion")));
     check(doc.dirty(), "loading a solution marks the document modified");
 
@@ -649,7 +649,7 @@ void test_service_backend(const fs::path & instance) {
         const double p = loaded && again.model()
                              ? criterion(c2.update(again, false), "protrusion")
                              : std::nan("");
-        check(near(p, 1.0193394755, 1e-6),
+        check(near(p, 1.0437292638, 1e-6),
               std::format("the saved instance holds the loaded solution "
                           "(protrusion {:.10f}{})",
                           p, err.empty() ? "" : ", " + err));
@@ -671,6 +671,13 @@ void test_service_backend(const fs::path & instance) {
         std::string err;
         const bool refused = !b.start(bad, &err);
         check(refused && !err.empty(), "unknown algorithm refused: " + err);
+        const SolverSettings mma =
+            SolverSettings::from_json(Json{{"algorithm", "MMA"}});
+        check(mma.algorithm == "SLSQP" &&
+                  mma.note.starts_with("MMA is no longer offered") &&
+                  SolverSettings::from_json(Json{{"algorithm", "COBYLA"}})
+                      .note.empty(),
+              "an instance asking for MMA runs SLSQP with a note: " + mma.note);
     }
 
     {
@@ -687,10 +694,38 @@ void test_service_backend(const fs::path & instance) {
         const bool one = r.kind == SolveKind::Polish && r.solutions.size() == 1;
         const double f = one ? r.solutions[0].objective : std::nan("");
         check(idle && one && r.solutions[0].feasible &&
-                  near(f, 1.0193394755, 1e-6),
+                  near(f, 1.0437292638, 1e-6),
               std::format("polish from the hand design: one feasible run at "
-                          "1.0193394755 (got {:.10f}{})",
+                          "1.0437292638 (got {:.10f}{})",
                           f, err.empty() ? "" : ", " + err));
+    }
+
+    {
+        // The optimum's A/B mirror image is a variant: its design reaches the
+        // GUI too, and loads with the same protrusion.
+        Document hand;
+        hand.load(instance);
+        SolveRequest ms = req;
+        ms.kind = SolveKind::Multistart;
+        ms.model = hand.model();
+        ms.x.assign(hand.x().begin(), hand.x().end());
+        std::string err;
+        const bool done = b.start(ms, &err) && wait_idle(b, 60.0);
+        const SolverResults r = b.results();
+        const bool two =
+            done && !r.solutions.empty() && r.solutions[0].variants.size() >= 2;
+        double p = std::nan("");
+        if(two && hand.load_values(*r.model, r.solutions[0].variants[1].x) > 0)
+            p = criterion(SceneCache{}.update(hand, false), "protrusion");
+        check(two && r.solutions[0].variants[0].x == r.solutions[0].x &&
+                  r.solutions[0].variants[1].differs.starts_with("A (") &&
+                  near(p, 1.0437292638, 1e-6),
+              std::format(
+                  "multistart: the best solution's variants carry "
+                  "their designs; the mirror loads at 1.0437292638 "
+                  "(got {:.10f}; '{}'{})",
+                  p, two ? r.solutions[0].variants[1].differs : std::string(),
+                  err.empty() ? "" : ", " + err));
     }
 
     req.kind = SolveKind::Pareto;
@@ -703,11 +738,11 @@ void test_service_backend(const fs::path & instance) {
     const SolverResults pr = b.results();
     const bool two = pr.pareto.size() == 2 && pr.kind == SolveKind::Pareto;
     check(started && idle && two &&
-              near(pr.pareto[0].solution.objective, 1.034060, 1e-6) &&
-              near(pr.pareto[1].solution.objective, 1.004021, 1e-6) &&
+              near(pr.pareto[0].solution.objective, 1.057293, 1e-6) &&
+              near(pr.pareto[1].solution.objective, 1.031087, 1e-6) &&
               pr.pareto[0].solution.feasible && pr.pareto[1].solution.feasible,
           std::format("Pareto of view_couch + view_kitchen at 0 / 4 deg: "
-                      "1.034060 / 1.004021 (got {:.7f} / {:.7f}{})",
+                      "1.057293 / 1.031087 (got {:.7f} / {:.7f}{})",
                       two ? pr.pareto[0].solution.objective : std::nan(""),
                       two ? pr.pareto[1].solution.objective : std::nan(""),
                       err.empty() ? "" : ", " + err));

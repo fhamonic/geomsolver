@@ -31,7 +31,9 @@ struct LocalSummary {
 enum class ExchangeStatus : std::uint8_t {
     Converged,            // fine-grid feasible and objective resolved
     InfeasibleOnSamples,  // the solve could not satisfy its own samples
-    Stalled,              // the fine-grid argmax samples are already used
+    // The fine-grid argmax samples are already used, or every warm re-solve
+    // of a feasible point failed (nlopt ROUNDOFF_LIMITED / FAILURE).
+    Stalled,
     IterationLimit,
     Stopped,
     NonFinite,
@@ -47,13 +49,14 @@ struct RunResult {
     int index = -1;      // position in the start list
     std::string origin;  // "current", "uniform 12", "previous best", ...
     std::uint64_t seed = 0;
-    // x is the best verified exchange iterate (feasible first, then lowest
+    // x is the best verified exchange iterate (feasible first, then best
     // objective), usually the last one.
     std::vector<double> x0, x;
     std::vector<double> values;  // Model::values_from_x(x), SI
     // Verified on settings.verify_samples with the run's bound overrides.
     bool feasible = false;
     bool finite = true;
+    // Value of Model::objective() (as is for maximize: larger is better then).
     double objective = std::numeric_limits<double>::quiet_NaN();
     double max_violation = std::numeric_limits<double>::quiet_NaN();
     int worst_group = -1;
@@ -92,22 +95,28 @@ std::vector<Start> seeded_starts(const Model & m, int count,
 std::uint64_t extra_seed(std::uint64_t seed, std::uint64_t which);
 
 // A distinct solution: runs that ended at the same point, or at points with
-// the same objective and the same value of every non-report criterion
-// (variants: a relabelled mirror image, or a variable the optimum leaves
-// free).
+// the same objective and the same value of every criterion that is neither
+// report-only nor slack in both (variants: a relabelled mirror image, a
+// variable the optimum leaves free, or another design with those values).
 struct Solution {
+    struct Variant {
+        int run = -1;  // index into MultistartResult::runs of its best member
+        int hits = 0;
+    };
     int run = -1;  // index into MultistartResult::runs of the best member
     int hits = 0;
     std::vector<int> members;
-    // Groups of members within cluster_x_tol of each other; 1 when all the
-    // members ended at the same point.
-    int variants = 1;
+    // One per group of members within cluster_x_tol of each other, the
+    // group of `run` first. A variant can be a genuinely different design
+    // (a table in either of two alcoves), so showing only `run` hides it.
+    std::vector<Variant> variants;
 };
 
 struct MultistartResult {
     std::vector<RunResult> runs;  // sorted by RunResult::index
     int runs_total = 0;           // starts requested (stopped jobs run fewer)
-    // Feasible solutions first by objective, then the others by violation.
+    // Feasible solutions first, best objective first, then the others by
+    // violation.
     std::vector<Solution> solutions;
     bool stopped = false;
     int threads = 1;
@@ -147,9 +156,11 @@ MultistartResult polish(const Model & m, const SolverSettings & s,
                         const RunCallback & on_run = {});
 
 // Groups runs within cluster_x_tol (max |dx|), then merges feasible groups
-// whose objective and criteria agree within cluster_f_tol. `model` tells
-// which criteria are report-only (ignored in that comparison); without it
-// every criterion is compared.
+// whose objective and criteria agree within cluster_f_tol; a bound slack by
+// more than cluster_f_tol in both groups is not compared. `model` tells
+// which criteria are report-only (ignored in that comparison) and whether the
+// objective is maximised; without it every criterion is compared and the
+// objective is minimised.
 std::vector<Solution> cluster(const std::vector<RunResult> & runs,
                               const SolverSettings & s,
                               const Model * model = nullptr);

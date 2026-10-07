@@ -84,7 +84,7 @@ TEST_CASE("NlpProblem: layout of phase 1 and phase 2 on the TV instance") {
     auto m = tv_model();
     Evaluator ev(*m);
     const SampleSets S = SampleSets::uniform(*m, 5);
-    NlpProblem p2(ev, S, NlpMode::Phase2, false, {});
+    NlpProblem p2(ev, S, NlpMode::Phase2, {});
     const int rows = p2.layout().m();
     // One epigraph variable (protrusion) and one piece per sample.
     CHECK(p2.n() == m->n() + 1);
@@ -92,7 +92,7 @@ TEST_CASE("NlpProblem: layout of phase 1 and phase 2 on the TV instance") {
           std::vector<int>{criterion(*m, "protrusion")});
     CHECK(p2.m_ineq() == rows + 5);
     CHECK(p2.m_eq() == 0);
-    NlpProblem p1(ev, S, NlpMode::Phase1, true, {});
+    NlpProblem p1(ev, S, NlpMode::Phase1, {});
     CHECK(p1.n() == m->n() + 1);
     CHECK(p1.m_ineq() == rows);
 
@@ -112,7 +112,7 @@ TEST_CASE("NlpProblem: Jacobians match finite differences") {
     S.t[0].push_back(0.6113);
     std::sort(S.t[0].begin(), S.t[0].end());
     for(const NlpMode mode : {NlpMode::Phase1, NlpMode::Phase2}) {
-        NlpProblem P(ev, S, mode, true, {});
+        NlpProblem P(ev, S, mode, {});
         int compared = 0;
         double worst = 0.0;
         for(const std::vector<double> & x : sample_points(*m))
@@ -135,8 +135,8 @@ TEST_CASE("bound overrides equal a recompiled model with the new bound") {
     Evaluator eb(*base), et(*tight);
     const SampleSets S = SampleSets::uniform(*base, 9);
     for(const std::vector<double> & x : sample_points(*base)) {
-        NlpProblem pb(eb, S, NlpMode::Phase2, false, ov);
-        NlpProblem pt(et, S, NlpMode::Phase2, false, {});
+        NlpProblem pb(eb, S, NlpMode::Phase2, ov);
+        NlpProblem pt(et, S, NlpMode::Phase2, {});
         const Values vb = values_at(pb, pb.start(x));
         const Values vt = values_at(pt, pt.start(x));
         REQUIRE(vb.g.size() == vt.g.size());
@@ -161,9 +161,9 @@ TEST_CASE("bound overrides equal a recompiled model with the new bound") {
               doctest::Approx(ct.v.max_violation).epsilon(1e-14).scale(1));
         CHECK(cb.v.worst_group == ct.v.worst_group);
     }
-    CHECK_THROWS_AS(NlpProblem(eb, S, NlpMode::Phase2, false,
+    CHECK_THROWS_AS(NlpProblem(eb, S, NlpMode::Phase2,
                                std::vector<BoundOverride>{
-                                   {criterion(*base, "link_1"), 0.3}}),
+                                   {criterion(*base, "protrusion"), 0.3}}),
                     std::invalid_argument);
 }
 

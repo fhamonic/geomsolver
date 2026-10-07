@@ -26,14 +26,15 @@ struct NlpRow {
     int sample = -1;
 };
 
-// One objective piece. A minimize criterion whose expression is a top-level
-// max_over(s, e) contributes one epigraph piece e(t_i) per sample of s (the
-// solver adds e(t_i) - z <= 0 and minimises z); any other minimize criterion
-// contributes one piece equal to its value.
+// One objective piece; the solver minimises sign * value. A minimize
+// max_over(s, e) or maximize min_over(s, e) contributes one epigraph piece
+// e(t_i) per sample of s (the solver adds sign * e(t_i) - z <= 0 and
+// minimises z); any other objective contributes one piece equal to its value.
+// Pieces hold e, not sign * e.
 struct NlpObjPiece {
     int criterion = -1;
-    double weight = 1.0;
-    int sample = -1;  // epigraph pieces only
+    double sign = 1.0;  // -1 for a maximize criterion
+    int sample = -1;    // epigraph pieces only
     bool epigraph = false;
 };
 
@@ -85,7 +86,7 @@ struct Verification {
     std::vector<double> t;                 // the grid, shared by all sweeps
     std::vector<GroupCheck> groups;        // aligned with Model::groups()
     std::vector<CriterionCheck> criteria;  // aligned with Model::criteria()
-    double objective = 0.0;  // sum of weight * value over minimize criteria
+    double objective = 0.0;  // value of Model::objective(), 0 without one
     double max_violation = -std::numeric_limits<double>::infinity();
     int worst_group = -1;
     bool feasible(double tol) const { return max_violation <= tol; }

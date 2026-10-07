@@ -1,0 +1,33 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Where to put the kitchen bin: as close as possible to the sink, out of the work zone, the door swing and the furniture.",
+  "include": ["guide-a-geometry/kitchen.json"],
+  "x_reviewed": "2026-10-07, layout checked on site",
+  "params": {
+    "gap": 0.02,
+    "bin_r": "18cm",
+    "door_w": "dist(vertex(door, 0), vertex(door, 1))",
+    "hinge": "vertex(door, 0)"
+  },
+  "design": {
+    "S": {"type": "point", "domain": "bin_zone", "value": [3.0, 2.6], "note": "centre of the bin"}
+  },
+  "let": {
+    "bin": "circle(S, bin_r)"
+  },
+  "constraints": [
+    {"name": "counter", "expr": "clearance(bin, counter) >= gap"},
+    {"name": "fridge", "expr": "clearance(bin, fridge) >= gap"},
+    {"name": "table", "expr": "clearance(bin, table) >= gap"},
+    {"name": "work_zone", "expr": "clearance(bin, work_zone) >= 0"},
+    {"name": "door_swing", "expr": "clearance(bin, circle(hinge, door_w)) >= gap", "note": "the door sweeps a quarter disc of radius door_w about its hinge"}
+  ],
+  "criteria": [
+    {"name": "walk", "expr": "dist(S, sink_front)", "role": "minimize", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "bin", "color": "#eb5757", "fill": true, "label": "bin"},
+    {"expr": "segment(sink_front, S)", "color": "#f2c94c"},
+    {"expr": "circle(hinge, door_w)", "color": "#9cc1ee60"}
+  ]
+}

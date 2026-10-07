@@ -1,0 +1,50 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Wrong on purpose: guide-b-desk.json with the mistakes of the troubleshooting page (compile errors).",
+  "params": {
+    "t": "2.5cm",
+    "gap": "1cm",
+    "desk_top": "74cm",
+    "desk_tol": "2cm",
+    "chain_len": "90cm"
+  },
+  "geometry": {
+    "wall": {"type": "polyline", "points": [[0, 0], [0, 2]]},
+    "floor": {"type": "polyline", "points": [[0, 0], [1.2, 0]]},
+    "shelf": {"type": "rect", "x": 0.15, "y": 1.45, "width": 0.3, "height": 0.04, "angle": 0},
+    "lamp": {"type": "circle", "x": 0.45, "y": 1.3, "r": 0.08, "note": "wall lamp on an arm"}
+  },
+  "design": {
+    "H": {"type": "point", "domain": "segment(vec(0, 0.6), vec(0, 1))", "value": [0, 0.8], "note": "hinge, on the wall"},
+    "w": {"type": "scalar", "min": 0.3, "max": 1, "value": 0.5, "unit": "cm", "note": "depth of the board"},
+    "E": {"type": "point", "domain": "segment(vec(0, 0.8), vec(0, 1.4))", "value": [0, 1.2], "note": "wall anchor of the chain that holds the open desk"}
+  },
+  "sweeps": {
+    "a": {"min": 0, "max": "90deg"}
+  },
+  "let": {
+    "board": "place(box(0, -t, w, 0), H, a)",
+    "front": "place(vec(w, 0), H, a)"
+  },
+  "constraints": [
+    {"name": "lamp", "for_all": "a", "expr": "clearance(board, lamp) >= gap"},
+    {"name": "shelf", "forall": "a", "expr": "clearance(board, shelf) >= gap"},
+    {"name": "desk_height", "expr": "abs(H.y - desk_top) <= desk_tol", "note": "top of the open desk between 72 and 76 cm"},
+    {"name": "chain", "expr": "dist(E, at(a = 0, front)) == chain_len", "note": "the chain is taut when the desk is open"},
+    {"name": "reach", "expr": "max_over(a, max_y(board)) >= 1.3"},
+    {"name": "height_range", "expr": "72cm <= H.y <= 76cm"}
+  ],
+  "criteria": [
+    {"name": "depth", "expr": "w", "role": "maximize", "unit": "cm"},
+    {"name": "low_hinge", "expr": "H.y", "role": "minimize", "unit": "cm", "weight": 0.1}
+  ],
+  "display": [
+    {"expr": "board", "color": "#3b6fb6", "fill": true, "label": "board", "ghosts": 7},
+    {"expr": "front", "color": "#3b6fb6", "trace": true},
+    {"expr": "segment(E, at(a = 0, front))", "color": "#eb5757", "width": 2, "label": "chain"},
+    {"expr": "lamp", "color": "#f2c94c", "fill": true},
+    {"expr": "shelf", "color": "#9b9b9b", "fill": true},
+    {"expr": "wall", "color": "#9b9b9b", "width": 3},
+    {"expr": "floor", "color": "#9b9b9b", "width": 3}
+  ]
+}

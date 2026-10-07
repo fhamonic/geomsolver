@@ -1,0 +1,93 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "FOUR-BAR TEMPLATE. Side view of a wall cabinet: a flap (the moving body, a rectangle in its own frame) is carried by two links from ground pivots A, B (in pivot_zone) to body pivots c, d (on brackets behind the flap, in the BODY FRAME). The flap turns by span from the reference pose p0, phi0 (tau = 0, closed) to tau = 1 (open, above the cabinet). The flap and both links clear the top panel and the wall, BOTH links clear the flap, the links never come within 15 deg of parallel. Minimise how far the mechanism reaches out from the wall during the motion. Solved with its 256 starts: feasible, 21 of 257 runs at the optimum reach = 66.28354 cm (2nd best 70.39331 cm); active: body_top, link1_top, wall, link_angle.",
+  "how_to_edit": {
+    "params.body_w, params.body_h": "size of the moving body, in its own frame: box(0, 0, body_w, body_h)",
+    "params.p0, params.phi0": "REFERENCE POSE: where the body is (origin p0, angle phi0) at tau = 0. To let the solver choose it, move p0 to design as a point with a box domain and phi0 as a scalar (see tests/data/tv_corner_ref.json)",
+    "params.span": "total rotation of the body from tau = 0 to tau = 1 (may also be a design scalar)",
+    "params.gap, params.link_gap": "clearances: body/links to obstacles, links to the body",
+    "params.link_min": "shortest allowed link",
+    "params.sep_min": "smallest distance between the two ground pivots, and between the two body pivots",
+    "params.min_link_angle": "bound of link_angle: keeps the linkage away from dead centres (links parallel)",
+    "let.phi": "body angle along the motion: the motion is driven by the body's angle",
+    "let.l1, let.l2": "link lengths BY CONSTRUCTION: measured in the reference pose, so the linkage always assembles at tau = 0",
+    "let.K1, let.K2": "centres of the two circles on which the body origin p must lie at angle phi",
+    "let.branch": "which of the two circle intersections; taken ONCE at tau = 0 on the side of p0 (never let it depend on tau)",
+    "let.p": "body origin at every tau: dyad() adds the implicit row 'assembly of p'",
+    "let.C, let.D": "body pivots in the world (place c, d with the body pose)",
+    "let.body": "the moving body in the world",
+    "let.link1, let.link2": "the two links as segments; every link requirement is written for BOTH",
+    "solver": "linkages need many starts: starts 256",
+    "display": "GUI drawing only; no effect on the solve",
+    "delete": "this how_to_edit object is ignored by geomsolver; delete it when you are done"
+  },
+  "params": {
+    "body_w": "2cm",
+    "body_h": "60cm",
+    "p0": "vec(0.36, 0)",
+    "phi0": "0deg",
+    "span": "90deg",
+    "gap": "5mm",
+    "link_gap": "1cm",
+    "link_min": "8cm",
+    "sep_min": "3cm",
+    "min_link_angle": "15deg"
+  },
+  "geometry": {
+    "wall": {"type": "polyline", "points": [[0, -0.05], [0, 1.1]], "note": "EDIT: the wall x = 0 (drawn only; the wall row uses min_x)"},
+    "top_panel": {"type": "rect", "x": 0.175, "y": 0.59, "width": 0.35, "height": 0.02, "angle": 0, "note": "EDIT: an obstacle; rect angle is in DEGREES"},
+    "pivot_zone": {"type": "rect", "x": 0.27, "y": 0.42, "width": 0.1, "height": 0.24, "angle": 0, "note": "EDIT: where the ground pivots A and B may go"}
+  },
+  "design": {
+    "A": {"type": "point", "domain": "pivot_zone", "value": [0.27, 0.5], "note": "EDIT: ground pivot of link 1"},
+    "B": {"type": "point", "domain": "pivot_zone", "value": [0.3, 0.35], "note": "EDIT: ground pivot of link 2 (same domain as A: the links are interchangeable)"},
+    "c": {"type": "point", "domain": "box(-0.08, 0.05, -0.01, 0.55)", "value": [-0.04, 0.45], "note": "EDIT: body pivot of link 1 in the BODY FRAME (origin = body's inner bottom edge, +y up the body), here on a bracket behind the body"},
+    "d": {"type": "point", "domain": "box(-0.08, 0.05, -0.01, 0.55)", "value": [-0.04, 0.2], "note": "EDIT: body pivot of link 2, BODY FRAME, same domain as c"}
+  },
+  "sweeps": {
+    "tau": {"min": 0, "max": 1, "note": "0 = reference pose, 1 = end pose"}
+  },
+  "let": {
+    "phi": "phi0 + tau * span",
+    "l1": "dist(A, place(c, p0, phi0))",
+    "l2": "dist(B, place(d, p0, phi0))",
+    "K1": "A - rotate(c, phi)",
+    "K2": "B - rotate(d, phi)",
+    "branch": "branch_of(at(tau = 0, K1), at(tau = 0, K2), p0)",
+    "p": "dyad(K1, l1, K2, l2, branch)",
+    "C": "place(c, p, phi)",
+    "D": "place(d, p, phi)",
+    "body": "place(box(0, 0, body_w, body_h), p, phi)",
+    "link1": "segment(A, C)",
+    "link2": "segment(B, D)"
+  },
+  "constraints": [
+    {"name": "body_top", "forall": "tau", "expr": "clearance(body, top_panel) >= gap", "note": "EDIT: the body clears an obstacle during the whole motion"},
+    {"name": "link1_top", "forall": "tau", "expr": "clearance(link1, top_panel) >= gap", "note": "EDIT: link 1 clears the obstacle"},
+    {"name": "link2_top", "forall": "tau", "expr": "clearance(link2, top_panel) >= gap", "note": "EDIT: link 2 too: always constrain both links"},
+    {"name": "link1_body", "forall": "tau", "expr": "clearance(link1, body) >= link_gap", "note": "link 1 never touches the body"},
+    {"name": "link2_body", "forall": "tau", "expr": "clearance(link2, body) >= link_gap", "note": "link 2 never touches the body (both links!)"},
+    {"name": "wall", "forall": "tau", "expr": "min_x(body, C, D) >= gap", "note": "EDIT: body and moving joints stay on the room side of the wall x = 0"},
+    {"name": "open", "expr": "at(tau = 1, min_y(body)) >= max_y(top_panel) + gap", "note": "EDIT: a requirement on the end pose only"},
+    {"name": "pivot_spacing", "expr": "dist(A, B) >= sep_min", "note": "the two ground pivots apart"},
+    {"name": "bracket_spacing", "expr": "dist(c, d) >= sep_min", "note": "the two body pivots apart"}
+  ],
+  "criteria": [
+    {"name": "reach", "expr": "max_over(tau, max_x(body, C, D))", "role": "minimize", "unit": "cm", "note": "EDIT: the ONE objective: the worst reach over the motion"},
+    {"name": "link_angle", "expr": "min_over(tau, asin(abs(sin_between(C - A, D - B))))", "role": "min", "bound": "min_link_angle", "unit": "deg", "note": "smallest angle between the links over the motion; keep it"},
+    {"name": "link_1", "expr": "l1", "role": "min", "bound": "link_min", "unit": "cm", "note": "link 1 not shorter than link_min"},
+    {"name": "link_2", "expr": "l2", "role": "min", "bound": "link_min", "unit": "cm", "note": "link 2 too (both links)"}
+  ],
+  "display": [
+    {"expr": "body", "color": "#3b6fb6", "fill": true, "ghosts": 6, "note": "the body at 6 poses"},
+    {"expr": "link1", "color": "#2f80ed", "width": 3, "label": "link 1", "note": "link 1"},
+    {"expr": "link2", "color": "#eb5757", "width": 3, "label": "link 2", "note": "link 2"},
+    {"expr": "C", "color": "#2f80ed", "trace": true, "note": "path of body pivot C"},
+    {"expr": "D", "color": "#eb5757", "trace": true, "note": "path of body pivot D"},
+    {"expr": "top_panel", "color": "#9b9b9b", "fill": true, "note": "obstacle"},
+    {"expr": "wall", "color": "#9b9b9b", "width": 3, "note": "wall"}
+  ],
+  "solver": {
+    "starts": 256
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Widest door that swings 90 deg next to a cabinet, hinge on the wall y = 0",
+  "params": {"t": "4cm", "gap": "1cm", "reach_max": 0.9},
+  "geometry": {
+    "cabinet": {"type": "rect", "x": 1.0, "y": 0.7, "width": 0.6, "height": 0.4, "angle": 0}
+  },
+  "design": {
+    "H": {"type": "point", "domain": "segment(vec(0, 0), vec(0.6, 0))", "value": [0.3, 0], "note": "hinge"},
+    "w": {"type": "scalar", "min": 0.5, "max": 1.2, "value": 0.6, "unit": "cm", "note": "door width"}
+  },
+  "sweeps": {"a": {"min": 0, "max": "90deg"}},
+  "let": {"door": "place(box(0, 0, w, t), H, a)"},
+  "constraints": [
+    {"name": "cabinet", "forall": "a", "expr": "clearance(door, cabinet) >= gap"},
+    {"name": "wall", "forall": "a", "expr": "min_x(door) >= 0"}
+  ],
+  "criteria": [
+    {"name": "width", "expr": "w", "role": "maximize", "unit": "cm"},
+    {"name": "reach", "expr": "max_over(a, max_y(door))", "role": "max", "bound": "reach_max", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "door", "color": "#3b6fb6", "fill": true, "ghosts": 6},
+    {"expr": "H", "color": "#eb5757", "label": "hinge"}
+  ],
+  "solver": {"starts": 16}
+}

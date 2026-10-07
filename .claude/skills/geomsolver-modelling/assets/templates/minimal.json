@@ -1,0 +1,45 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "MINIMAL TEMPLATE: one scalar, one point, one sweep, a for-all constraint, one objective, one bound. Swing arm seen from above: an arm hinged at H on the wall y = 0 turns from 20 to 160 deg; it must clear the plant at every angle and its swing must stay within depth_max of the wall; make the arm as long as possible. Solved with the default 64 starts: feasible, 22 of 65 runs at the optimum L = 98.59876 cm, H = (0.2, 0) m; plant active, depth 98.61903 cm <= 100 cm.",
+  "how_to_edit": {
+    "params": "Every number you may want to change, by name. A string may carry a unit (\"3cm\", \"2deg\", \"84%\"); a JSON number is SI (m, rad).",
+    "params.gap": "smallest allowed distance between the arm and the plant",
+    "params.arm_w": "width of the arm (a known size, so a param, not a design variable)",
+    "params.depth_max": "the bound of criterion 'depth'; try other values with --bound depth=90 (cm, the criterion's unit)",
+    "let.arm": "the moving shape: a box in its own frame (origin at the hinge, x along the arm), placed at H and turned by the sweep a",
+    "display": "GUI drawing only; no effect on the solve",
+    "delete": "this how_to_edit object is ignored by geomsolver; delete it when you are done"
+  },
+  "params": {
+    "gap": "3cm",
+    "arm_w": "4cm",
+    "depth_max": "1m"
+  },
+  "geometry": {
+    "wall": {"type": "polyline", "points": [[0, 0], [2.6, 0]], "note": "EDIT: fixed scene. An open polyline has no inside: clearance to it is unsigned"},
+    "plant": {"type": "circle", "x": 1.2, "y": 0.6, "r": 0.15, "note": "EDIT: an obstacle; x, y = centre, r = radius, in metres"}
+  },
+  "design": {
+    "H": {"type": "point", "domain": "segment(vec(0.2, 0), vec(1.8, 0))", "value": [1.0, 0], "note": "EDIT: a point the solver chooses; domain = where it may go (segment, box, rect, polygon or circle); value = start, [x, y] in metres"},
+    "L": {"type": "scalar", "min": "30cm", "max": "150cm", "value": 0.6, "unit": "cm", "note": "EDIT: a number the solver chooses; min/max are hard limits; value is SI (0.6 = 60 cm) whatever the unit"}
+  },
+  "sweeps": {
+    "a": {"min": "20deg", "max": "160deg", "note": "EDIT: the motion parameter, here the arm angle; use min 0, max 1 when the motion has no natural parameter"}
+  },
+  "let": {
+    "arm": "place(box(0, -arm_w / 2, L, arm_w / 2), H, a)"
+  },
+  "constraints": [
+    {"name": "plant", "forall": "a", "expr": "clearance(arm, plant) >= gap", "note": "EDIT: a hard requirement; forall a = at every angle of the motion. One row per obstacle"}
+  ],
+  "criteria": [
+    {"name": "length", "expr": "L", "role": "maximize", "unit": "cm", "note": "EDIT: the ONE objective (role minimize or maximize); every other wish is a bound"},
+    {"name": "depth", "expr": "max_over(a, max_y(arm))", "role": "max", "bound": "depth_max", "unit": "cm", "note": "EDIT: a bound: role max means expr <= bound, here at every angle (max_over). Role min means expr >= bound"}
+  ],
+  "display": [
+    {"expr": "arm", "color": "#3b6fb6", "fill": true, "ghosts": 8, "note": "the arm, drawn at 8 angles"},
+    {"expr": "plant", "color": "#27ae60", "fill": true, "note": "obstacle"},
+    {"expr": "wall", "color": "#9b9b9b", "width": 3, "note": "wall"},
+    {"expr": "H", "color": "#eb5757", "label": "H", "note": "hinge"}
+  ]
+}

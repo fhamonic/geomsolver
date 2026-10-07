@@ -154,6 +154,26 @@ void pretty(const Json & j, int indent, int lead, int trail, int width,
 
 }  // namespace
 
+bool schema_lists_key(std::string_view json_path) {
+    std::vector<Step> steps;
+    if(!parse_path(json_path, steps, nullptr)) return true;
+    const std::string * key = std::get_if<std::string>(&steps.back());
+    if(!key) return true;
+    std::string parent;
+    for(std::size_t i = 0; i + 1 < steps.size(); ++i) {
+        parent += '/';
+        if(const std::string * k = std::get_if<std::string>(&steps[i])) {
+            for(const char c : *k)
+                parent += c == '~'   ? std::string("~0")
+                          : c == '/' ? std::string("~1")
+                                     : std::string(1, c);
+        } else {
+            parent += std::to_string(std::get<std::size_t>(steps[i]));
+        }
+    }
+    return detail::schema_lists_key(parent, *key);
+}
+
 std::string dump_pretty(const Json & j, int width) {
     std::string out;
     pretty(j, 0, 0, 0, width, true, out);

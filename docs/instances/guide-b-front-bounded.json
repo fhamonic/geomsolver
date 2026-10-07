@@ -1,0 +1,23 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "A lamp P in the corner of a room must stay 1 m away from the corner; you want it close to both walls. One distance is the objective, the other is bounded.",
+  "params": {
+    "y_max": "50cm"
+  },
+  "geometry": {
+    "keep_out": {"type": "circle", "x": 0, "y": 0, "r": 1, "note": "nothing within 1 m of the corner"}
+  },
+  "design": {
+    "P": {"type": "point", "domain": "box(0, 0, 1.5, 1.5)", "value": [1, 1]}
+  },
+  "constraints": [
+    {"name": "keep_out", "expr": "clearance(P, keep_out) >= 0"}
+  ],
+  "criteria": [
+    {"name": "wall_x", "expr": "P.x", "role": "minimize", "unit": "cm"},
+    {"name": "wall_y", "expr": "P.y", "role": "max", "bound": "y_max", "unit": "cm"}
+  ],
+  "display": [
+    {"expr": "P", "color": "#eb5757", "label": "P"}
+  ]
+}

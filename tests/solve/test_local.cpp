@@ -52,8 +52,7 @@ LocalOptions box_options(Algorithm a, int n) {
     return o;
 }
 
-const Algorithm kAll[] = {Algorithm::SLSQP, Algorithm::COBYLA, Algorithm::MMA,
-                          Algorithm::CCSAQ};
+const Algorithm kAll[] = {Algorithm::SLSQP, Algorithm::COBYLA};
 
 }  // namespace
 
@@ -81,10 +80,6 @@ TEST_CASE("minimize: equality rows go to algorithms that support them") {
         CHECK(r.x[0] == doctest::Approx(0.25).epsilon(1e-5));
         CHECK(r.x[1] == doctest::Approx(0.55).epsilon(1e-5));
     }
-    Quadratic q;
-    q.equality = true;
-    CHECK_THROWS_AS(minimize(q, {0.9, 0.9}, box_options(Algorithm::MMA, 2)),
-                    std::invalid_argument);
 }
 
 namespace {
@@ -160,7 +155,7 @@ TEST_CASE(
     Poisoned p;
     p.where = Poisoned::Where::Constraint;
     const LocalResult r =
-        minimize(p, {0.9, 0.9}, box_options(Algorithm::MMA, 2));
+        minimize(p, {0.9, 0.9}, box_options(Algorithm::SLSQP, 2));
     CHECK(r.status == LocalStatus::NonFinite);
 }
 

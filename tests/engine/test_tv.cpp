@@ -17,25 +17,47 @@ const std::vector<std::string> kCentredProbes = {
     "at(tau = tstar, phi) - angle(front_dir)",
     "angle(front_dir)",
     "front_mid",
+    // The view error against the single couch seat the hand design aims at.
+    "abs(at(tau = 0, angle_between(normal, couch_seat - screen)))",
+    "at(tau = 1, vertex(screen_face, 0))",
+    "at(tau = 1, vertex(screen_face, 1))",
+    // The TV body as an extra occluder must not hide its own screen face.
+    "at(tau = 1, visible_fraction(kitchen_view, screen_face, fridge, tv))",
 };
 
-struct Optimum {
-    // contract section 7, verified optimum
-    std::vector<std::pair<std::string, std::vector<double>>> values = {
-        {"A", {0.3169048760460707, 0.023257031027451074}},
-        {"B", {8.055287993847735e-05, 0.24509981039656606}},
-        {"c", {0.1392422822668392, 0.0}},
-        {"d", {-0.11151459378589386, -0.03650882642838018}},
-        {"p0", {0.19109362318188705, 0.6310993655970135}},
-        {"phi0", {-1.458109052736341}},
-        {"span", {1.299292818565645}},
-        {"tstar", {0.636576761516744}},
-    };
+using Design = std::vector<std::pair<std::string, std::vector<double>>>;
+
+// Optimum of the instance with its default bounds (view_tol 2 deg,
+// min_visible 86 %): found by 51 of the 65 runs of the default multistart.
+const Design kOptimum = {
+    {"A", {0.04124141278724899, 0.3038836104289831}},
+    {"B", {0.3501042214046246, 1.059914376411293e-05}},
+    {"c", {-0.16169443493060132, 0.0}},
+    {"d", {0.11211739507420804, -0.08347212552276656}},
+    {"p0", {0.3752252853661016, 0.6075222732478925}},
+    {"phi0", {-1.2707431383321104}},
+    {"span", {1.1391888732985331}},
+    {"tstar", {0.5615694774545104}},
 };
 
-std::vector<double> optimum_x(const Model & m) {
+// The optimum of the instance before the view target moved to living_target
+// and the visibility and setback rows were added; kept as a fixed design for
+// the comparison with the independent Python checker, which printed its
+// geometry.
+const Design kCheckerDesign = {
+    {"A", {0.3169048760460707, 0.023257031027451074}},
+    {"B", {8.055287993847735e-05, 0.24509981039656606}},
+    {"c", {0.1392422822668392, 0.0}},
+    {"d", {-0.11151459378589386, -0.03650882642838018}},
+    {"p0", {0.19109362318188705, 0.6310993655970135}},
+    {"phi0", {-1.458109052736341}},
+    {"span", {1.299292818565645}},
+    {"tstar", {0.636576761516744}},
+};
+
+std::vector<double> design_x(const Model & m, const Design & design) {
     std::vector<double> vals(static_cast<std::size_t>(m.values_size()));
-    for(const auto & [name, v] : Optimum{}.values) {
+    for(const auto & [name, v] : design) {
         const int i = m.find_var(name);
         REQUIRE(i >= 0);
         std::copy(v.begin(), v.end(),
@@ -56,6 +78,22 @@ GroupCheck group(const Model & m, const Verification & V, const char * name) {
         if(m.groups()[g].name == name) return V.groups[g];
     FAIL("no group " << name);
     return {};
+}
+
+// Visible share of the screen from kitchen_view, computed without
+// visible_fraction(): the fridge corner nearest the screen, (0.7, 2.15),
+// casts the only shadow edge, and it hides the screen from vertex 0 (its
+// left end, seen from the kitchen) up to where the ray through the corner
+// meets the screen line.
+double kitchen_visible_by_hand(Vec2d s0, Vec2d s1) {
+    REQUIRE(s0.x < s1.x);
+    const Vec2d eye{1.1, 4.0}, corner{0.7, 2.15};
+    const double dx = corner.x - eye.x, dy = corner.y - eye.y;
+    const double ex = s1.x - s0.x, ey = s1.y - s0.y;
+    // eye + t (corner - eye) = s0 + u (s1 - s0)
+    const double den = dx * ey - dy * ex;
+    const double u = (dx * (eye.y - s0.y) - dy * (eye.x - s0.x)) / den;
+    return 1.0 - std::clamp(u, 0.0, 1.0);
 }
 
 // x in [0,1]^n: even indices near the hand design, odd ones uniform.
@@ -84,10 +122,11 @@ TEST_CASE("tv_corner: acceptance numbers of the hand design (2001 samples)") {
     for(const RowGroup & g : m->groups())
         if(g.kind == GroupKind::Assembly) assembly.push_back(g.name);
     // Implicit assembly groups: the swept dyad, then its at() instances in
-    // compile order (constraints before criteria).
-    CHECK(assembly == std::vector<std::string>{
-                          "assembly of p", "assembly of p at tau=tstar",
-                          "assembly of p at tau=0", "assembly of p at tau=1"});
+    // compile order (criteria in file order).
+    CHECK(assembly == std::vector<std::string>{"assembly of p",
+                                               "assembly of p at tau=0",
+                                               "assembly of p at tau=1",
+                                               "assembly of p at tau=tstar"});
     Evaluator ev(*m);
     const std::vector<double> x = m->initial_x();
     const Verification V = ev.verify(x, 2001);
@@ -96,27 +135,41 @@ TEST_CASE("tv_corner: acceptance numbers of the hand design (2001 samples)") {
     MESSAGE("hand protrusion = " << std::to_string(prot));
     CHECK(std::fabs(prot - 1.074117) < 1e-6);
 
-    const int ila = m->find_criterion("min_link_angle");
+    const int ila = m->find_criterion("link_angle");
     const CriterionCheck & la = V.criteria[static_cast<std::size_t>(ila)];
-    MESSAGE("hand min_link_angle = " << la.value * kDeg
-                                     << " deg at tau = " << la.t);
+    MESSAGE("hand link_angle = " << la.value * kDeg
+                                 << " deg at tau = " << la.t);
     CHECK(std::fabs(la.value * kDeg - 7.1707) < 5e-5);
     CHECK(la.t == 0.625);
+    CHECK(std::fabs(group(*m, V, "link_angle:bound").violation -
+                    (15.0 / kDeg - la.value)) < 1e-15);
 
-    const double gap = crit(*m, V, "min_wall_gap");
-    MESSAGE("hand min_wall_gap = " << gap);
+    const double gap = crit(*m, V, "wall_y");
+    MESSAGE("hand wall_y = " << gap);
     CHECK(std::fabs(gap - (-0.06796)) < 5e-6);
-    const GroupCheck wy = group(*m, V, "wall_y");
+    CHECK(std::fabs(crit(*m, V, "wall_x") - (-0.020371)) < 5e-7);
+    const GroupCheck wy = group(*m, V, "wall_y:bound");
     CHECK(wy.violation > 0.0);
     CHECK(wy.t == 0.0);
     CHECK(std::fabs(wy.violation - (0.02 + 0.06796)) < 5e-6);
 
-    CHECK(std::fabs(crit(*m, V, "view_couch") * kDeg) < 1e-9);
+    const std::vector<GeoValue> pv = probe_values(*m, x);
+    // The hand design faces couch_seat exactly; view_couch measures against
+    // living_target, the barycentre of the chair and the two seats.
+    CHECK(pv[4].scalar() * kDeg < 1e-9);
+    MESSAGE("hand view_couch = " << crit(*m, V, "view_couch") * kDeg << " deg");
+    CHECK(std::fabs(crit(*m, V, "view_couch") * kDeg - 9.524704) < 5e-6);
     CHECK(std::fabs(crit(*m, V, "view_kitchen") * kDeg) < 1e-9);
     CHECK(std::fabs(crit(*m, V, "link_1") - 0.465) < 1e-6);
     CHECK(std::fabs(crit(*m, V, "link_2") - 0.450) < 1e-6);
 
-    const std::vector<GeoValue> pv = probe_values(*m, x);
+    const double vis = crit(*m, V, "kitchen_visible");
+    MESSAGE("hand kitchen_visible = " << vis * 100 << " %");
+    CHECK(std::fabs(vis - 0.85805263) < 5e-9);
+    CHECK(std::fabs(vis - kitchen_visible_by_hand(pv[5].vec(), pv[6].vec())) <
+          1e-12);
+    CHECK(std::fabs(crit(*m, V, "centre_setback") - 0.14361372) < 5e-9);
+
     MESSAGE("hand centred offset = "
             << pv[0].scalar() << " m, angle = " << pv[1].scalar() * kDeg
             << " deg, front_dir = " << pv[2].scalar() * kDeg
@@ -127,30 +180,37 @@ TEST_CASE("tv_corner: acceptance numbers of the hand design (2001 samples)") {
     CHECK(std::fabs(pv[3].scalar() - 0.243641) < 5e-7);
 }
 
-TEST_CASE(
-    "tv_corner: acceptance numbers of the verified optimum (2001 samples)") {
+TEST_CASE("tv_corner: acceptance numbers of the optimum (2001 samples)") {
     auto inst = tv_instance();
     auto m = compile_ok(*inst, kCentredProbes);
     Evaluator ev(*m);
-    const std::vector<double> x = optimum_x(*m);
+    const std::vector<double> x = design_x(*m, kOptimum);
     const Verification V = ev.verify(x, 2001);
 
     const double prot = crit(*m, V, "protrusion");
     char buf[64];
     std::snprintf(buf, sizeof buf, "%.12f", prot);
     MESSAGE("optimum protrusion = " << buf);
-    CHECK(std::fabs(prot - 1.0193394755) < 1e-9);
+    CHECK(std::fabs(prot - 1.0437292638) < 1e-9);
     CHECK(std::fabs(crit(*m, V, "view_couch") * kDeg - 2.0) < 5e-4);
     CHECK(std::fabs(crit(*m, V, "view_kitchen") * kDeg - 2.0) < 5e-4);
-    CHECK(std::fabs(crit(*m, V, "min_link_angle") * kDeg - 15.0) < 5e-4);
-    CHECK(std::fabs(crit(*m, V, "min_wall_gap") - 0.02) < 5e-6);
-    CHECK(std::fabs(crit(*m, V, "link_1") - 0.48223260796612155) < 1e-9);
-    CHECK(std::fabs(crit(*m, V, "link_2") - 0.5128103838780291) < 1e-9);
+    const double vis = crit(*m, V, "kitchen_visible");
+    CHECK(std::fabs(vis - 0.86) < 1e-9);
     const std::vector<GeoValue> pv = probe_values(*m, x);
+    CHECK(std::fabs(vis - kitchen_visible_by_hand(pv[5].vec(), pv[6].vec())) <
+          1e-12);
+    CHECK(pv[7].scalar() == vis);
+    CHECK(std::fabs(crit(*m, V, "link_angle") * kDeg - 15.0) < 5e-4);
+    CHECK(std::fabs(crit(*m, V, "wall_y") - 0.02) < 5e-6);
+    CHECK(std::fabs(crit(*m, V, "link_1") - 0.5401567128084933) < 1e-9);
+    CHECK(std::fabs(crit(*m, V, "link_2") - 0.47621646956803604) < 1e-9);
+    // The setback is active: the default bound sits where it starts to bind.
+    CHECK(std::fabs(crit(*m, V, "centre_setback") - 0.10) < 1e-9);
     MESSAGE("optimum centred offset = " << pv[0].scalar() << " m, angle = "
                                         << pv[1].scalar() * kDeg << " deg");
-    CHECK(std::fabs(pv[0].scalar() - 0.0100) < 5e-5);
-    CHECK(std::fabs(pv[1].scalar() * kDeg - (-1.000)) < 5e-4);
+    CHECK(std::fabs(std::fabs(pv[0].scalar()) - 0.0100) < 1e-9);
+    CHECK(std::fabs(crit(*m, V, "centred_offset") - 0.0100) < 1e-9);
+    CHECK(std::fabs(std::fabs(pv[1].scalar()) * kDeg - 1.0) < 1e-9);
     MESSAGE("optimum max violation = "
             << V.max_violation << " (worst group "
             << (V.worst_group >= 0
@@ -306,8 +366,9 @@ namespace gs::test {
 
 // Reference values printed by the independent v2 checker
 // (scratchpad/proto/v2/checker/check_solution.py, numerical continuation in
-// phi, no code shared with the engine) for the hand design and the verified
-// optimum, on the same 2001-sample grid (2000 substeps).
+// phi, no code shared with the engine) for the hand design and
+// kCheckerDesign, on the same 2001-sample grid (2000 substeps). Its couch view
+// error e_c is measured against couch_seat, the target of that time.
 TEST_CASE("tv_corner: agrees with the independent Python checker") {
     struct Ref {
         double J1, e_c, e_k, l1, l2, link_deg, link_tau, wall, wall_tau;
@@ -349,27 +410,30 @@ TEST_CASE("tv_corner: agrees with the independent Python checker") {
                   1.9959602635042764,
                   1.0};
     auto inst = tv_instance();
-    auto m = compile_ok(*inst);
+    auto m = compile_ok(*inst, kCentredProbes);
     Evaluator ev(*m);
     for(const bool is_opt : {false, true}) {
         const Ref & r = is_opt ? opt : hand;
-        const std::vector<double> x = is_opt ? optimum_x(*m) : m->initial_x();
+        const std::vector<double> x =
+            is_opt ? design_x(*m, kCheckerDesign) : m->initial_x();
         const Verification V = ev.verify(x, 2001);
-        INFO((is_opt ? "optimum" : "hand design"));
+        INFO((is_opt ? "checker design" : "hand design"));
         CHECK(std::fabs(crit(*m, V, "protrusion") - r.J1) < 1e-12);
-        CHECK(std::fabs(crit(*m, V, "view_couch") * kDeg - r.e_c) < 1e-9);
+        CHECK(std::fabs(probe_values(*m, x)[4].scalar() * kDeg - r.e_c) < 1e-9);
         CHECK(std::fabs(crit(*m, V, "view_kitchen") * kDeg - r.e_k) < 1e-9);
         CHECK(std::fabs(crit(*m, V, "link_1") - r.l1) < 1e-12);
         CHECK(std::fabs(crit(*m, V, "link_2") - r.l2) < 1e-12);
         const CriterionCheck & la = V.criteria[static_cast<std::size_t>(
-            m->find_criterion("min_link_angle"))];
+            m->find_criterion("link_angle"))];
         CHECK(std::fabs(la.value * kDeg - r.link_deg) < 1e-8);
         CHECK(std::fabs(la.t - r.link_tau) < 1e-12);
-        // Walls: min over the wall_x and wall_y groups of clr - violation.
-        const GroupCheck wx = group(*m, V, "wall_x"),
-                         wy = group(*m, V, "wall_y");
-        const GroupCheck & w = wx.violation > wy.violation ? wx : wy;
-        CHECK(std::fabs((0.02 - w.violation) - r.wall) < 1e-9);
+        // The checker's wall gap is the smaller of the two walls'.
+        const CriterionCheck & wx =
+            V.criteria[static_cast<std::size_t>(m->find_criterion("wall_x"))];
+        const CriterionCheck & wy =
+            V.criteria[static_cast<std::size_t>(m->find_criterion("wall_y"))];
+        const CriterionCheck & w = wx.value < wy.value ? wx : wy;
+        CHECK(std::fabs(w.value - r.wall) < 1e-9);
         CHECK(std::fabs(w.t - r.wall_tau) < 1e-12);
         const std::pair<const char *, std::pair<double, double>> obstacles[] = {
             {"couch", {r.couch, r.couch_tau}},

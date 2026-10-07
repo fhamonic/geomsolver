@@ -1,0 +1,19 @@
+{
+  "description": "Kitchen floor plan, seen from above. Origin at the bottom-left corner, x along the counter wall.",
+  "units": "m",
+  "geometry": {
+    "walls": {"type": "polyline", "points": [[0, 3], [0, 0], [4, 0], [4, 3]], "note": "three walls; open polyline"},
+    "counter": {
+      "type": "polyline",
+      "points": [[0, 0], [2.4, 0], [2.4, 0.6], [0.6, 0.6], [0.6, 2.0], [0, 2.0]],
+      "closed": true,
+      "note": "L-shaped worktop; closed polyline, non-convex"
+    },
+    "fridge": {"type": "rect", "x": 3.65, "y": 0.35, "width": 0.7, "height": 0.7, "angle": 0},
+    "table": {"type": "circle", "x": 2.6, "y": 2.0, "r": 0.5},
+    "sink_front": {"type": "point", "x": 1.2, "y": 0.85, "note": "where you stand at the sink"},
+    "door": {"type": "polyline", "points": [[4, 2.0], [4, 2.8]], "note": "doorway in the right wall, hinge at the first point"},
+    "work_zone": {"type": "rect", "x": 1.5, "y": 1.05, "width": 1.8, "height": 0.9, "angle": 0, "note": "floor in front of the worktop, kept free"},
+    "bin_zone": {"type": "rect", "x": 2.3, "y": 1.75, "width": 3.0, "height": 2.1, "angle": 0, "note": "where the bin may stand"}
+  }
+}

@@ -24,6 +24,10 @@ struct Poll {
     int snapshots = 0, partial = 0;
     std::uint64_t last = 0;
     SolveProgress final;
+    // Every solution and variant of every snapshot indexes its own runs (a
+    // partial snapshot keeps one run per variant), and the variants' hits add
+    // up to the solution's.
+    bool indices_ok = true;
 };
 
 Poll poll_until_idle(SolverService & svc) {
@@ -37,6 +41,17 @@ Poll poll_until_idle(SolverService & svc) {
             if(auto o = svc.outcome()) {
                 ++p.snapshots;
                 if(!o->complete) ++p.partial;
+                const auto runs = static_cast<int>(o->multistart.runs.size());
+                for(const Solution & sol : o->multistart.solutions) {
+                    int hits = 0;
+                    for(const Solution::Variant & v : sol.variants) {
+                        p.indices_ok &= v.run >= 0 && v.run < runs;
+                        hits += v.hits;
+                    }
+                    p.indices_ok &= !sol.variants.empty() &&
+                                    sol.variants.front().run == sol.run &&
+                                    hits == sol.hits;
+                }
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -59,6 +74,7 @@ TEST_CASE("service: a multistart job runs in the background") {
     const Poll p = poll_until_idle(svc);
     MESSAGE("snapshots seen while polling: " << p.snapshots << " (" << p.partial
                                              << " partial)");
+    CHECK(p.indices_ok);
     CHECK(p.final.phase == "done");
     CHECK_FALSE(p.final.running);
     CHECK(p.final.runs_done == 25);
@@ -138,7 +154,7 @@ TEST_CASE("service: invalid jobs are refused") {
     CHECK(err == "invalid settings: verify_samples must be >= 2");
     SolveJob bad_pareto = tv_job(m, 1, 1);
     bad_pareto.kind = JobKind::Pareto;
-    bad_pareto.pareto.criteria = {criterion(*m, "link_1")};
+    bad_pareto.pareto.criteria = {criterion(*m, "protrusion")};
     bad_pareto.pareto.bounds = {0.4};
     CHECK_FALSE(svc.start(bad_pareto, &err));
     CHECK_FALSE(svc.running());
@@ -159,7 +175,7 @@ TEST_CASE("service: Pareto and polish jobs") {
     CHECK(p.final.points_total == 2);
     const auto o = svc.outcome();
     REQUIRE(o->pareto.points.size() == 2);
-    CHECK(std::fabs(o->pareto.points[0].best.objective - 1.026778) < 1e-6);
+    CHECK(std::fabs(o->pareto.points[0].best.objective - 1.050493) < 1e-6);
     CHECK(std::fabs(o->pareto.points[1].best.objective - kOptimum) < 1e-6);
     CHECK(outcome_json(*o)["points"].size() == 2);
 

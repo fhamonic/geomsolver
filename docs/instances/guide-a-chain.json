@@ -1,0 +1,55 @@
+{
+  "format": "geomsolver-instance/1",
+  "description": "Six-bar chain driven by a full-turn crank: a first dyad places Q from the crank pin P, a second dyad places R from Q. Maximise the swing of the output rocker O3-R while both dyads keep a 30 degree transmission angle.",
+  "params": {
+    "r": "6cm",
+    "min_transmission": "30deg",
+    "link_min": "5cm"
+  },
+  "geometry": {
+    "O1": {"type": "point", "x": 0, "y": 0, "note": "crank pivot"}
+  },
+  "design": {
+    "O2": {"type": "point", "domain": "box(0.1, -0.1, 0.3, 0.1)", "value": [0.2, -0.05]},
+    "O3": {"type": "point", "domain": "box(0.3, 0.1, 0.5, 0.3)", "value": [0.4, 0.15]},
+    "Q0": {"type": "point", "domain": "box(0, 0, 0.4, 0.3)", "value": [0.15, 0.12], "note": "joint Q in the reference pose th = 0"},
+    "R0": {"type": "point", "domain": "box(0.2, 0, 0.6, 0.4)", "value": [0.32, 0.3], "note": "joint R in the reference pose th = 0"},
+    "w_hi": {"type": "scalar", "min": 0, "max": "360deg", "unit": "deg", "note": "witness: crank angle of the largest output angle"},
+    "w_lo": {"type": "scalar", "min": 0, "max": "360deg", "unit": "deg", "note": "witness: crank angle of the smallest output angle"}
+  },
+  "sweeps": {
+    "th": {"min": 0, "max": "360deg"}
+  },
+  "let": {
+    "P": "O1 + r * dir(th)",
+    "P0": "at(th = 0, P)",
+    "Q": "dyad(P, dist(P0, Q0), O2, dist(O2, Q0), branch_of(P0, O2, Q0))",
+    "R": "dyad(Q, dist(Q0, R0), O3, dist(O3, R0), branch_of(Q0, O3, R0))",
+    "out": "angle_between(R0 - O3, R - O3)"
+  },
+  "constraints": [
+    {"name": "transmission_Q", "forall": "th", "expr": "abs(sin_between(Q - P, Q - O2)) >= sin(min_transmission)"},
+    {"name": "transmission_R", "forall": "th", "expr": "abs(sin_between(R - Q, R - O3)) >= sin(min_transmission)"},
+    {"name": "rocker", "forall": "th", "expr": "dot(R - O3, R0 - O3) >= 0", "note": "the output stays within 90 degrees of its reference direction, so out never wraps"},
+    {"name": "coupler_PQ", "expr": "dist(P0, Q0) >= link_min"},
+    {"name": "rocker_O2Q", "expr": "dist(O2, Q0) >= link_min"},
+    {"name": "coupler_QR", "expr": "dist(Q0, R0) >= link_min"},
+    {"name": "rocker_O3R", "expr": "dist(O3, R0) >= link_min"}
+  ],
+  "criteria": [
+    {"name": "swing", "expr": "at(th = w_hi, out) - at(th = w_lo, out)", "role": "maximize", "unit": "deg"},
+    {"name": "out_max", "expr": "max_over(th, out)", "role": "report", "unit": "deg"},
+    {"name": "out_min", "expr": "min_over(th, out)", "role": "report", "unit": "deg"}
+  ],
+  "display": [
+    {"expr": "segment(O1, P)", "color": "#9cc1ee", "width": 3, "label": "crank"},
+    {"expr": "segment(P, Q)", "color": "#2f80ed", "width": 3},
+    {"expr": "segment(O2, Q)", "color": "#2f80ed", "width": 3},
+    {"expr": "segment(Q, R)", "color": "#eb5757", "width": 3},
+    {"expr": "segment(O3, R)", "color": "#eb5757", "width": 3, "label": "output"},
+    {"expr": "Q", "color": "#2f80ed", "trace": true, "label": "Q"},
+    {"expr": "R", "color": "#eb5757", "trace": true, "label": "R"},
+    {"expr": "O2", "color": "#2f80ed", "label": "O2"},
+    {"expr": "O3", "color": "#eb5757", "label": "O3"}
+  ]
+}
