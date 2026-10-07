@@ -1,0 +1,32 @@
+{
+  "units": "m",
+  "geometry": {
+    "corner": {"type": "point", "x": 0, "y": 0, "note": "TV corner, origin of the frame"},
+    "walls": {
+      "type": "polyline",
+      "points": [[0, 5], [0, 0], [5.6, 0]],
+      "closed": false,
+      "note": "the two walls meeting at the TV corner"
+    },
+    "pivot_zone": {
+      "type": "rect",
+      "x": 0.1962,
+      "y": 0.1527,
+      "width": 0.4273,
+      "height": 0.0736,
+      "angle": -35,
+      "note": "where the wall-side pivots may go"
+    },
+    "couch": {"type": "rect", "x": 2.84, "y": 0.85, "width": 1, "height": 1.68, "angle": 0},
+    "couch_seat": {"type": "point", "x": 2.84, "y": 0.84, "note": "eyes of a seated viewer"},
+    "fridge": {"type": "rect", "x": 0.35, "y": 3.65, "width": 0.7, "height": 3, "angle": 0},
+    "table": {"type": "rect", "x": 2.08, "y": 4.005, "width": 1.1, "height": 1.25, "angle": 0},
+    "chair1": {"type": "circle", "x": 2.7, "y": 2.1, "r": 0.4},
+    "kitchen_view": {"type": "point", "x": 1.1, "y": 4, "note": "where you stand when cooking"},
+    "meuble_TV": {
+      "type": "polyline",
+      "points": [[0, 0.95], [0.2, 0.95], [1.265, 0.2], [1.265, 0], [0.44, 0], [0, 0.31]],
+      "closed": true
+    }
+  }
+}
