@@ -23,31 +23,31 @@
     "A": {
       "type": "point",
       "domain": "pivot_zone",
-      "value": [0.07574976503369026, 0.15170083700506848],
+      "value": [0.1141263465473198, 0.1448602994760563],
       "note": "wall-side pivot of link 1"
     },
     "B": {
       "type": "point",
       "domain": "pivot_zone",
-      "value": [0.2495565728209605, 0.03000000000022485],
+      "value": [0.2779885676391728, 0.03012273703827332],
       "note": "wall-side pivot of link 2"
     },
     "c": {
       "type": "point",
       "domain": "box(-0.05, -link_gap, -0.35, -link_gap)",
-      "value": [-0.08250568220574617, -0.02],
+      "value": [-0.05976357697220752, -0.02],
       "note": "TV-side pivot of link 1, TV frame (origin = back-face centre, +y = screen normal)"
     },
     "d": {
       "type": "point",
       "domain": "box(0.05, -link_gap, 0.35, -link_gap)",
-      "value": [0.05, -0.02],
+      "value": [0.06797603355598966, -0.02],
       "note": "TV-side pivot of link 2, TV frame"
     },
     "p0": {
       "type": "point",
       "domain": "box(0, 0, 2, 2)",
-      "value": [0.25638430819642893, 0.6205055580282682],
+      "value": [0.26612668124049144, 0.6203015961559769],
       "note": "TV back-face centre in the couch pose"
     },
     "phi0": {
@@ -55,7 +55,7 @@
       "min": "-150deg",
       "max": "-40deg",
       "unit": "deg",
-      "value": -1.2874375601410781,
+      "value": -1.2864313253947623,
       "note": "TV axis angle in the couch pose"
     },
     "span": {
@@ -63,14 +63,14 @@
       "min": "8deg",
       "max": "180deg",
       "unit": "deg",
-      "value": 0.9898192842360501,
+      "value": 0.989474368552689,
       "note": "rotation from the couch pose to the kitchen pose"
     },
     "tstar": {
       "type": "scalar",
       "min": 0,
       "max": 1,
-      "value": 0.663179766815802,
+      "value": 0.6623940024690633,
       "note": "sweep position of the centred pose (a witness: see the README)"
     }
   },
@@ -201,11 +201,11 @@
   ],
   "solver": {
     "algorithm": "SLSQP",
-    "starts": 640,
+    "starts": 8192,
     "seed": 1,
     "phase1": true,
     "initial_samples": 10,
-    "verify_samples": 2001,
+    "verify_samples": 10001,
     "max_exchange_iterations": 40,
     "feas_tol": 1e-07,
     "maxeval": 3000,
