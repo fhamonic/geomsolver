@@ -1,6 +1,6 @@
 {
   "format": "geomsolver-instance/1",
-  "description": "MINIMAL TEMPLATE: one scalar, one point, one sweep, a for-all constraint, one objective, one bound. Swing arm seen from above: an arm hinged at H on the wall y = 0 turns from 20 to 160 deg; it must clear the plant at every angle and its swing must stay within depth_max of the wall; make the arm as long as possible. Solved with the default 64 starts: feasible, 22 of 65 runs at the optimum L = 98.59876 cm, H = (0.2, 0) m; plant active, depth 98.61903 cm <= 100 cm.",
+  "description": "MINIMAL TEMPLATE: one scalar, one point, one sweep, a for-all constraint, one objective, one bound. Swing arm seen from above: an arm hinged at H on the wall y = 0 turns from 20 to 160 deg; it must clear the plant at every angle and its swing must stay within depth_max of the wall; make the arm as long as possible. Solved with the default 64 starts: feasible, 47 of 65 runs at the optimum L = 98.59876 cm, H = (0.2, 0) m; plant active, depth 98.61903 cm <= 100 cm.",
   "how_to_edit": {
     "params": "Every number you may want to change, by name. A string may carry a unit (\"3cm\", \"2deg\", \"84%\"); a JSON number is SI (m, rad).",
     "params.gap": "smallest allowed distance between the arm and the plant",

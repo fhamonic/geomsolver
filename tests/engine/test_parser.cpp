@@ -48,7 +48,33 @@ TEST_CASE("parser: precedence and associativity") {
     CHECK(parsed("a < b") == "(a <= b)");
     CHECK(parsed("a > b") == "(a >= b)");
     CHECK(parsed("a == b") == "(a == b)");
+    CHECK(parsed("a <= b + 1 <= c") == "(a <= (b + 1) <= c)");
+    CHECK(parsed("a > b >= c") == "(a >= b >= c)");
     CHECK(parsed("  a\t+\nb  ") == "(a + b)");
+}
+
+TEST_CASE("parser: a chain keeps its operands, columns and written order") {
+    ParseResult r = parse_expression("10cm >= dist(A, B) >= lo");
+    REQUIRE(r.ok());
+    const Ast & rel = *r.ast;
+    CHECK(rel.kind == Ast::Kind::Relation);
+    CHECK(rel.text == ">=");
+    CHECK(rel.column == 5);
+    CHECK(rel.second_column == 19);
+    REQUIRE(rel.args.size() == 3);
+    CHECK(rel.args[0]->kind == Ast::Kind::Number);
+    const Ast & call = *rel.args[1];
+    REQUIRE(call.args.size() == 2);
+    CHECK(call.args[0]->text == "A");
+    CHECK(call.args[0]->column == 13);
+    CHECK(call.args[1]->text == "B");
+    CHECK(call.args[1]->column == 16);
+    CHECK(rel.args[2]->text == "lo");
+    CHECK(rel.args[2]->column == 22);
+
+    r = parse_expression("a <= b");
+    REQUIRE(r.ok());
+    CHECK(r.ast->second_column == -1);
 }
 
 TEST_CASE("parser: numbers and unit suffixes") {
@@ -98,9 +124,25 @@ TEST_CASE("parser: errors carry the 0-based column of the offending token") {
     CHECK(r.error_column == 3);
     CHECK(r.error.find("top level") != std::string::npos);
 
-    r = failed("a <= b <= c");
+    r = failed("a <= b <= c <= d");
+    CHECK(r.error_column == 12);
+    CHECK(r.error.find("at most two comparisons") != std::string::npos);
+
+    r = failed("a == b <= c");
+    CHECK(r.error_column == 2);
+    CHECK(r.error.find("'==' cannot be chained") != std::string::npos);
+
+    r = failed("a <= b == c");
     CHECK(r.error_column == 7);
-    CHECK(r.error.find("one comparison") != std::string::npos);
+    CHECK(r.error.find("'==' cannot be chained") != std::string::npos);
+
+    r = failed("a <= b >= c");
+    CHECK(r.error_column == 7);
+    CHECK(r.error.find("point the same way") != std::string::npos);
+
+    r = failed("a <= (b <= c)");
+    CHECK(r.error_column == 8);
+    CHECK(r.error.find("top level") != std::string::npos);
 
     r = failed("a $ b");
     CHECK(r.error_column == 2);

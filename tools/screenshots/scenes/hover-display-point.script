@@ -1,0 +1,5 @@
+# The hover tooltip of a display point, living_target.
+open tests/data/tv_corner_ref.json
+move 705 432
+wait 28
+shot

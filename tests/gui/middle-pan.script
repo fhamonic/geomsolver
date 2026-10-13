@@ -1,0 +1,5 @@
+# A middle drag pans the view.
+open tests/data/tv_corner_ref.json
+wait 16
+drag M 794 246 694 296
+wait 4

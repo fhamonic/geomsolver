@@ -25,23 +25,23 @@ design
 
 The bin ends 83 cm from the sink, just above the work zone (`work_zone` is the active row). Fifteen runs stop against the right edge of the work zone, at (2.58, 0.85), 138 cm away: to reach the better spot they would first have to move away from the sink, round the corner of the work zone, which a local solver does not do.
 
-![The kitchen in the GUI: an L-shaped counter at the bottom left, the fridge at the bottom right, a round table, the dashed bin zone and the faint circle of the door swing on the right wall. The red bin sits just above the work zone, joined to the sink by a yellow segment.](../assets/screenshots/guide-a-kitchen.png)
+![The kitchen in the GUI: an L-shaped counter at the bottom left, the fridge at the bottom right, a round table, the dashed bin zone and the faint circle of the door swing on the right wall. The red bin sits just above the work zone, joined to the sink by a yellow segment. The top right reads "feasible on 2001 samples" and "minimize walk = 83.00000 cm".](../assets/screenshots/guide-a-kitchen.png)
 
 ## Top-level keys {#keys}
 
 | Key | Content |
 | --- | --- |
-| **`format`** | Always `"geomsolver-instance/1"`. The only required key. |
-| **`description`** | Free text, shown at the top of the GUI's Inspector. |
+| **`format`** | `"geomsolver-instance/1"`, or `"geomsolver-instance/2"` in a file that uses a sweep's `samples` or `sampling`, or a criterion's `"enabled": false` (see [format versions](../reference/instance.md#format)). The only required key. |
+| **`description`** | Free text, shown and edited in the GUI's Document panel. |
 | **`include`** | A list of geometry files, relative to this file. See [includes](#includes). |
 | **`params`** | Name → number or constant expression. See [params](#params). |
 | **`geometry`** | Name → fixed shape. See [geometry entries](#geometry). |
 | **`design`** | Name → design variable. See [design variables](design-variables.md). |
-| **`sweeps`** | Name → `{"min", "max"}`. See [sweeps](sweeps.md). |
+| **`sweeps`** | Name → `{"min", "max"}`, with an optional `samples` and `sampling`. See [sweeps](sweeps.md). |
 | **`let`** | Name → expression string. See [lets](let-and-mechanisms.md#lets). |
 | **`constraints`** | A list of `{name, expr, forall?, enabled?, note?}`. See [constraints](constraints.md). |
-| **`criteria`** | A list of `{name, expr, role, bound?, unit?, note?}`. See [criteria](criteria.md). |
-| **`display`** | A list of `{expr, color?, fill?, width?, label?, ghosts?, trace?}`. See [display](display.md). |
+| **`criteria`** | A list of `{name, expr, role, bound?, unit?, enabled?, note?}`. See [criteria](criteria.md). |
+| **`display`** | A list of `{expr, color?, fill?, width?, label?, ghosts?, trace?, visible?}`. See [display](display.md). |
 | **`solver`** | Default solver settings. See [solver settings](../reference/solver-settings.md). |
 
 The order of the sections does not matter. The order *inside* `design` does: it is the order of the solver's coordinates and of the printed design. The order of `constraints` and `criteria` gives their index in paths such as `criteria[0]`.
@@ -87,7 +87,7 @@ A param is a named constant. Its value is a JSON number (SI) or a string holding
 - The order of the entries does not matter. A cycle is an error that names it: `params.gap: cycle: gap -> bin_r -> gap`.
 - The value must be finite: `"sqrt(-1)"` gives `params.gap: evaluates to a non-finite value (NaN or inf)`.
 
-Put every tolerance and dimension you may want to change in a param. You can then change it from the command line without editing the file, for example `geomsolver-cli instance.json --set params.gap=0.03`, and the Inspector shows params in their own section.
+Put every tolerance and dimension you may want to change in a param. You can then change it from the command line without editing the file, for example `geomsolver-cli instance.json --set params.gap=0.03`, and the GUI lists them in the Params panel.
 
 ## Geometry entries {#geometry}
 
@@ -168,10 +168,10 @@ The same name in two categories is an error. Constraint names must be unique amo
 
 ## Notes and descriptions {#notes}
 
-- `description` at the top of the file is shown in the Inspector, under the file name.
-- A `note` on a design variable appears as a tooltip on its name in the Inspector and, for a point, when you hover its handle on the canvas.
-- A `note` on a geometry entry appears when you hover the shape, and as a tooltip in the Inspector's constant geometry section.
-- A `note` on a constraint is shown under its expression in the Inspector.
+- `description` at the top of the file is shown and edited in the Document panel.
+- A `note` on a design variable appears as a tooltip on its name in the Variables and Elements panels, is edited in Properties and, for a point, appears when you hover its handle on the canvas.
+- A `note` on a geometry entry appears when you hover the shape, and as a tooltip on its name in the Elements panel; Properties edits it for an entry of the instance itself.
+- A `note` on a constraint is shown in the tooltip of its name and in Properties.
 - A `note` on a criterion, a sweep or a display item is kept in the file and shown nowhere.
 
 Notes have no effect on the problem. Use them for what a reader needs and the expression does not say: the frame a point is expressed in, why a tolerance has its value.

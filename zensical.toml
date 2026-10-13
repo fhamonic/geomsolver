@@ -47,6 +47,7 @@ nav = [
   ] },
   { "Contributing" = [
     { "Adding a builtin" = "contributing/adding-a-builtin.md" },
+    { "GUI architecture" = "contributing/gui-architecture.md" },
   ] },
 ]
 

@@ -47,7 +47,7 @@ Every selection (which argument of `min`, which feature of a clearance, which br
 
 Two cases get special treatment because they matter in practice:
 
-- **A top-level `abs()` is split.** `abs(e) <= b` becomes the rows `e - b <= 0` and `-e - b <= 0`, each smooth. Write absolute values on the small side of a comparison so this applies. `abs(e) >= b` cannot be split; phase 1 can stall at its kink, which is why it retries from a perturbed point.
+- **A top-level `abs()` is split.** `abs(e) <= b` becomes the rows `e - b <= 0` and `-e - b <= 0`, each smooth. Write absolute values on the small side of a comparison so this applies. `abs(e) >= b` cannot be split: it keeps `e` out of the band from `-b` to `b`, and its row keeps the kink, with a derivative of 0 at `e = 0`. When you know which side of the band the design belongs to, write `e >= b` or `e <= -b` instead.
 - **A point on a polygon's edge keeps a gradient.** The signed distance from a point to a polygon is measured to the line of the nearest edge when the point faces that edge's interior. The distance to the segment would have a zero or noisy derivative right on the boundary, which is exactly where a pivot pressed against its domain's edge sits.
 
 ## Tolerances
@@ -60,14 +60,21 @@ Two cases get special treatment because they matter in practice:
 | relative objective tolerance | 0 | | off: an epigraph objective stalls long before the design converges |
 | phase-1 target | −10⁻⁴ | solver units | phase 1 stops once every row holds with this margin |
 | near-feasible | 10⁻⁴ | solver units | a solve missing its own samples by less goes on to the grid check |
-| restart kicks | 0.05 (phase 1), 10⁻⁵ (failed phase 2) | normalised coordinates | how far a retry moves the start |
+| restart kicks | 0.05 (phase 1 of a chosen design), 10⁻⁵ (a phase-2 solve that failed, or ran out of budget without moving) | normalised coordinates | how far a retry moves the start; phase 1 of a seeded start restarts from fresh uniform points instead |
+| flat row | 10⁻¹² | solver units | an inequality row whose value and every derivative are this close to 0 reaches SLSQP as exactly 0 |
 | **`cluster_x_tol`** | 10⁻³ | normalised coordinates, largest difference | whether two runs ended at the same point |
 | **`cluster_f_tol`** | 10⁻⁶ | relative to `max(1, |f|)` | whether two objectives or criteria are equal |
 
 The natural unit of a row is the unit of its expression in SI: metres for a clearance, radians for an angle, a plain number for a share or a sine. An assembly row is solved as a squared sine but verified as the gap between the circles, in metres. One `feas_tol` therefore means 0.1 µm for a length and 5.7 × 10⁻⁶ degrees for an angle.
 
 !!! warning "Do not loosen `feas_tol` to find a solution"
-    A larger `feas_tol` does not make the solver better; it changes what counts as a solution. On the working-copy snapshot with a 12 cm setback, where no run of 1024 finds a feasible design, `--feas-tol 0.01` reports "feasible yes" at 109.0733 cm, less than the true optimum with a 10 cm setback, by accepting a link angle 0.0088 rad (0.5°) under its bound. Relax the requirement you care least about instead; the [example](../examples/tv-corner.md#when-the-setback-went-up) shows how.
+    A larger `feas_tol` does not make the solver better; it changes what counts as a solution. On the working-copy snapshot with a 12 cm setback, no run of 1024 finds a feasible design. With `--feas-tol 0.01`, the same 1024 starts report "feasible yes" at 109.317 cm, less than the true optimum with a 10 cm setback (109.6583 cm), by accepting a link angle 0.0087 rad (0.5°) under its bound and a setback of 11.40 cm:
+
+    ```bash
+    build/geomsolver-cli docs/instances/example-tv-evolved.json --set params.edge_margin=0.12 --starts 1024 --feas-tol 0.01
+    ```
+
+    Relax the requirement you care least about instead; the [example](../examples/tv-corner.md#when-the-setback-went-up) shows how.
 
 ## Sampling limits
 
@@ -94,14 +101,32 @@ The exchange adds samples only from the grid, so the grid also bounds where the 
 
 | Algorithm | Gradients | TV instance, 65 runs on 16 threads |
 | --- | --- | --- |
-| **SLSQP** (default) | exact, from the dual numbers | 0.08 s, 51 runs at 104.3729 cm |
-| **COBYLA** | none | 1.58 s, 21 runs at 104.3729 cm |
+| **SLSQP** (default) | exact, from the dual numbers | 0.09 s, 65 runs at 104.3729 cm |
+| **COBYLA** | none | 1.39 s, 21 runs at 104.3729 cm |
 
 ```bash
 build/geomsolver-cli tests/data/tv_corner_ref.json --algorithm COBYLA
 ```
 
-COBYLA comes with a guard. Between two evaluations, NLopt's COBYLA solves a linear subproblem with no iteration limit of its own; `maxeval`, `maxtime` and the Stop button act only at evaluations. That subproblem can cycle forever when several constraint rows are equal up to rounding, each pass lowering its objective by rounding noise, which defeats COBYLA's own anti-cycling test. A for-all row whose value does not change along the sweep (a joint measured against the body that carries it) produces exactly such copies, one per sample. Bitwise-equal copies do not cycle, so before COBYLA sees the rows, every chain of sorted values whose neighbours are within 10⁻¹² × `max(1, |v|)` is given one value, the largest of the chain. No row reads as less violated than it is. SLSQP is unaffected and gets the rows unchanged.
+COBYLA comes with a guard. Between two evaluations, NLopt's COBYLA solves a linear subproblem with no iteration limit of its own; `maxeval`, `maxtime` and the Stop button act only at evaluations. That subproblem can cycle forever when several constraint rows are equal up to rounding, each pass lowering its objective by rounding noise, which defeats COBYLA's own anti-cycling test. A for-all row whose value does not change along the sweep (a joint measured against the body that carries it) produces exactly such copies, one per sample. Bitwise-equal copies do not cycle, so before COBYLA sees the rows, every chain of sorted values whose neighbours are within 10⁻¹² × `max(1, |v|)` is given one value, the largest of the chain. No row reads as less violated than it is. SLSQP does not get this merge.
+
+SLSQP has a guard of its own. It linearises every row with no tolerance, so a row that is identically on its bound reaches it as rounding noise: a value near ±10⁻¹⁷ and a gradient near 10⁻¹⁶ in a random direction. A link whose TV-side joint is held at exactly `link_gap` behind the TV gives such rows, one per sample, wherever the joint is the link's nearest feature to the TV. SLSQP then puts a multiplier near 10²⁰ on them (read from an instrumented copy of NLopt's SLSQP), which takes over its merit function and its quasi-Newton update: the solve stops roundoff limited where it started, or diverges. The test `solve: SLSQP converges with rows on their bound to rounding` builds such an instance from the frozen reference: without the guard below, the run from the hand design ends infeasible on its samples at 115.745 cm; with it, it converges to 109.38545 cm. So at every evaluation with derivatives, an inequality row whose value and every derivative are within 10⁻¹² of 0 is passed to SLSQP as exactly 0 with a zero gradient. A row with an epigraph or phase-1 variable is never affected, since its derivative in that variable is −1.
+
+Equality rows get no such guard: an equality row that is 0 with a zero gradient makes SLSQP's system of equality constraints singular, zeroed or not. An equality that does not depend on any design variable gives such a row when it holds, and the compiler warns about it. Replacing the reference's `bracket_spacing`, which is inactive at the optimum, with the constant equality `sep_min == 0.1` shows why:
+
+```bash
+build/geomsolver-cli tests/data/tv_corner_ref.json --set 'constraints[5].expr=sep_min == 0.1'
+```
+
+```text title="Output (excerpt)"
+warning: constraints[5].expr: does not depend on any design variable: it is always satisfied or always violated, and as an equality it stops every SLSQP solve; disable it
+instance tests/data/tv_corner_ref.json  (n = 13, 23 row groups, SLSQP)
+65 of 65 runs finished, 2 feasible, 65 distinct solutions, 0.05 s on 16 threads
+  #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
+  1    114.2322 cm        yes       5.28e-09     1     1         29 (uniform 28)    stalled (4, 5)
+```
+
+In the results file (`--out`), each phase-2 solve of the best run stops "roundoff limited" after 2 evaluations, and 63 runs end infeasible on their samples. As the inequality `sep_min <= 0.1`, the same row gets the shorter warning, and all 65 runs reach 104.3729 cm.
 
 MMA and CCSAQ were offered once and are not any more: they solve a dual problem at every iteration, which is slow when a sampled sweep multiplies the rows. An instance or a command line that asks for one runs SLSQP with a warning:
 
@@ -117,7 +142,7 @@ A row can evaluate to NaN or infinity, for example the square root of a negative
 
 The same instance, seed and binary give the same results:
 
-- start `k` of a multistart is drawn from a hash of the seed and `k`, and NLopt's own random generator is reseeded before every solve;
+- start `k` of a multistart is drawn from a hash of the seed and `k`, and so are the points its phase 1 restarts from; NLopt's own random generator is reseeded before every solve;
 - results are stored by start index and clustered after all runs finish, so the thread count changes the wall time and nothing else. The default solve gives identical output with `--threads 1` and `--threads 16`, apart from the timing line;
 - a Pareto point's starts are seeded from the seed and the point's index.
 

@@ -1,0 +1,7 @@
+# A closed polyline of the instance's own geometry in Properties: its
+# vertices as drags, with Add vertex and Remove vertex.
+open docs/instances/guide-a-domains.json
+panel elements
+select geometry nook
+wait 16
+shot

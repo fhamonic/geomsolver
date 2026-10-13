@@ -1,0 +1,3 @@
+# Opens the TV instance and leaves it as it is.
+open tests/data/tv_corner_ref.json
+wait 16

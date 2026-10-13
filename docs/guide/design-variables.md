@@ -17,7 +17,7 @@ A scalar is a number between two constants. The swing-arm lamp of the [sweeps pa
 | **`value`** | no | The starting value, a plain number in SI units. Default: the middle of [`min`, `max`]. |
 | **`unit`** | no | The display unit: `deg`, `rad`, `m`, `cm`, `mm` or `%`. Default: none (SI). |
 | **`fixed`** | no | `true` freezes the variable at `value`. Default: `false`. See [fixed variables](#fixed). |
-| **`note`** | no | Free text, shown as a tooltip in the Inspector. |
+| **`note`** | no | Free text, shown as a tooltip on its name in the GUI's lists, and edited in Properties. |
 
 `min` and `max` are hard limits: they are the bounds of the solver's coordinate, not a row that could be violated. `unit` only changes how the value is printed and typed in the GUI; the file keeps SI. In the lamp, `L` has the value 0.9 and is shown as 90 cm; `w` has the value 1.2 and is shown as 68.75494 deg.
 
@@ -35,7 +35,7 @@ A point is a position in the plane that must stay inside its domain, a constant 
 | **`value`** | no | The starting position `[x, y]` in metres. Default: the centroid of the domain. |
 | **`unit`** | no | The display unit of both coordinates. Default: m. |
 | **`fixed`** | no | `true` freezes the point at `value`. |
-| **`note`** | no | Free text, shown in the Inspector and when you hover the handle. |
+| **`note`** | no | Free text, shown as a tooltip on its name in the GUI's lists, edited in Properties, and shown when you hover the handle. |
 
 The instance below declares one point for each kind of domain, plus two scalars. Open it in the GUI and drag the orange handles: each one stays inside its dashed domain.
 
@@ -43,7 +43,7 @@ The instance below declares one point for each kind of domain, plus two scalars.
 --8<-- "docs/instances/guide-a-domains.json"
 ```
 
-![The domains instance in the GUI. Inside a rectangular plan outline: a dashed box, a dashed rotated rectangle and a dashed parallelogram along the bottom; a dashed triangle and a filled rotated rectangle named zone on the right; a filled L-shaped polygon named nook in the middle; a line segment named rail on the left; and a circle at the top left. Each holds an orange handle. The Inspector on the right lists every design variable with its domain, and the two scalars with their min, max and unit.](../assets/screenshots/guide-a-domains.png)
+![The domains instance in the GUI, with P_nook selected. On the canvas, inside a rectangular plan outline: a dashed box, a dashed rotated rectangle and a dashed parallelogram along the bottom; a dashed triangle and a filled rotated rectangle named zone on the right; a filled L-shaped polygon named nook in the middle; a line segment named rail on the left; and a circle at the top left. Each holds an orange handle, and P_nook's is outlined in blue. On the right, the Variables tab lists every design variable with its Released checkbox, its value and its domain, such as "(1.650, 1.350) m in nook", and the two scalars with their range: width at 40.00 cm between 20.00 and 60.00 cm, and angle at 0 deg between -30.00 and 30.00 deg. Under the canvas, Properties shows design point P_nook: Released, Type point, its coordinates 1.65 m and 1.35 m, Domain nook, and the Status "inside its domain" in green.](../assets/screenshots/guide-a-domains.png)
 
 The domain decides how many coordinates the point gives the solver and whether it needs an extra row:
 
@@ -53,8 +53,10 @@ The domain decides how many coordinates the point gives the solver and whether i
 | **Segment** | `segment(p, q)`, a 2-point open `polyline` entry | segment | 1 | none |
 | **Other polygon** | any other `polygon(...)` or closed `polyline` entry: a triangle, a trapezoid, a non-convex outline | bounding box | 2 | `<name> in domain` |
 | **Circle** | `circle(c, r)`, a `circle` entry | bounding box | 2 | `<name> in domain` |
+| **Flat** | a box, rect or 4-vertex parallelogram with one side of zero length, such as `box(1, 2.4, 2, 2.4)`; a polygon flat along x or y | segment | 1 | none |
+| **Single point** | a box, polygon, segment or circle that reduces to one point, such as `box(1, 1, 1, 1)`, `segment(p, p)` or `circle(c, 0)` | none: the point is [fixed](#fixed) there, whatever its `value` | 0 | none |
 
-An open polyline with more than two points, or a point, is not a domain. The evaluation of the demo instance shows the count: 17 coordinates (seven 2-coordinate points, one segment point, two scalars), and the three membership rows of `P_tri`, `P_nook` and `P_disc`:
+An open polyline with more than two points, or a point given as a vector (`vec(...)`), is not a domain. The evaluation of the demo instance shows the count: 17 coordinates (seven 2-coordinate points, one segment point, two scalars), and the three membership rows of `P_tri`, `P_nook` and `P_disc`:
 
 ```text title="geomsolver-cli docs/instances/guide-a-domains.json --eval"
 instance docs/instances/guide-a-domains.json  (n = 17, 3 row groups, SLSQP)
@@ -80,6 +82,25 @@ summary: feasible yes (tol 1e-07)  max violation -0.15 (P_nook in domain)  objec
 ```
 
 The margin of a membership row is how deep the point is inside its domain, in metres: `P_tri` sits 0.2 m above the triangle's base. For a non-convex domain it is a lower bound of that depth.
+
+**Domains with no area.** A flat domain is a segment, and a single-point domain fixes the point: two coordinates there would include one that moves nothing, and every run would end at its own value of it, reported as a variant of its own. A side counts as zero when it is shorter than 10⁻¹² times the domain's largest coordinate (10⁻¹² m below 1 m), so a height computed from params that cancel is still recognised. A polygon whose vertices lie on a slanted line is not recognised: it keeps a bounding box and a membership row that holds only on the line, so write it as `segment(p, q)`. Added to the demo, a flat box gives one coordinate and a circle of radius 0 none:
+
+```text title="the demo with two more points (excerpt)"
+instance docs/instances/guide-a-domains.json  (n = 18, 3 row groups, SLSQP)
+...
+  P_flat     (1.5, 2.4) m
+  P_dot      (3, 2.4) m  [fixed]
+```
+
+??? example "The command"
+
+    ```bash
+    geomsolver-cli docs/instances/guide-a-domains.json --eval \
+        --set 'design.P_flat={"type": "point", "domain": "box(1, 2.4, 2, 2.4)"}' \
+        --set 'design.P_dot={"type": "point", "domain": "circle(vec(3, 2.4), 0)"}'
+    ```
+
+    `--set` warns that the two keys are new. In results files the coordinate of `P_flat` is named `P_flat`, like a segment point's.
 
 ## Using design variables in expressions {#using}
 
@@ -128,7 +149,7 @@ The solver works on a vector x of coordinates, each in [0, 1]. A **chart** maps 
 | **Parallelogram** with vertices v0, v1, v2, v3 | v0 + u · (v1 − v0) + v · (v3 − v0) |
 | **Bounding box** of the domain, x0..x1 by y0..y1 | (x0 + u · (x1 − x0), y0 + v · (y1 − y0)), plus the row `clearance(P, domain) <= 0` |
 
-For `box(x0, y0, x1, y1)` the vertices start at (x0, y0) and turn counter-clockwise, so u runs along x and v along y. For `rect(c, w, h, a)`, u runs along the width and v along the height, both turned by a. In results files the coordinates are named after the variable: `P_box.u`, `P_box.v`, `P_rail`, `width`.
+For `box(x0, y0, x1, y1)` the vertices start at (x0, y0) and turn counter-clockwise, so u runs along x and v along y. For `rect(c, w, h, a)`, u runs along the width and v along the height, both turned by a. A [flat domain](#points) gets the segment chart along its side of nonzero length, and a single-point domain no chart. In results files the coordinates are named after the variable: `P_box.u`, `P_box.v`, `P_rail`, `width`.
 
 Three consequences follow.
 
@@ -200,7 +221,7 @@ The CLI fixes variables for one run without editing the file, at their instance 
 geomsolver-cli docs/instances/guide-a-domains.json --eval --fix P_box,width
 ```
 
-The instance then has 14 coordinates instead of 17, and the CLI marks the two variables `[fixed]`. In the GUI, the **fixed** checkbox of the Inspector does the same and writes the key.
+The instance then has 14 coordinates instead of 17, and the CLI marks the two variables `[fixed]`. In the GUI, unchecking **Released**, in the Variables panel or in Properties, does the same and writes the key.
 
 !!! note
     A fixed point keeps the value written in the file, even outside its domain. The warning about the projected point still appears, but the point is not moved: `P_rail` fixed at (0.7, 1.7) evaluates to (0.7, 1.7).

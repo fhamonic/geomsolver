@@ -1,0 +1,6 @@
+# A Pareto study: its table and plot, in a window tall enough for both.
+size 1600 1500
+open tests/data/tv_corner_ref.json
+pareto view_couch,view_kitchen 0,4
+wait 29
+shot

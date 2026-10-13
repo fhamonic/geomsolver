@@ -1,0 +1,10 @@
+# tv's Fill, in its sheet, unchecked: the TV and its ghosts are drawn as
+# outlines.
+open tests/data/tv_corner_ref.json
+panel quantities
+select let tv
+wait 16
+click L 679 934
+move 800 10
+wait 4
+shot

@@ -219,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         runs_body.append(f"  best objective: {obj_name} = {gc.objective_text(brun)} ({obj_role})"
                          + ("" if brun.get("feasible") else "  [infeasible design]"))
     else:
-        runs_body.append("  no objective (no minimize/maximize criterion): a pure feasibility problem")
+        runs_body.append("  no objective (no enabled minimize/maximize criterion): a pure feasibility problem")
     worst, mv = brun.get("worst"), brun.get("max_violation")
     if worst:
         where = f" on {worst}" + (f" at {brun['worst_at']}" if brun.get("worst_at") else "")
@@ -266,8 +266,11 @@ def main(argv: list[str] | None = None) -> int:
         value = c.get("display", c.get("value"))
         bound = margin = None
         status = "-"
-        if c.get("role") in ("max", "min") and c.get("bound") is not None:
-            bound = c["bound"] * s
+        if c.get("enabled") is False:
+            status = "disabled"
+        elif c.get("role") in ("max", "min", "range") and c.get("bound") is not None:
+            b = c["bound"]
+            bound = [x * s for x in b] if isinstance(b, list) else b * s
             viol = c.get("violation")
             margin = None if viol is None else -viol * s
             if viol is None or viol > tol:
@@ -279,8 +282,9 @@ def main(argv: list[str] | None = None) -> int:
         rel = {"max": "<= ", "min": ">= "}.get(c.get("role"), "")
         expr = gc.criterion_expr(instance, name)
         at = gc.sweep_label(brun, c, instance, expr) if c.get("sweep_value") is not None else ""
-        rows.append([name, c.get("role", ""), gc.g(value), unit or "-",
-                     f"{rel}{gc.g(bound)}" if bound is not None else "-",
+        shown = ("-" if bound is None else f"{gc.g(bound[0])} .. {gc.g(bound[1])}" if isinstance(bound, list)
+                 else f"{rel}{gc.g(bound)}")
+        rows.append([name, c.get("role", ""), gc.g(value), unit or "-", shown,
                      gc.g(margin, 4) if margin is not None else "-", status, at])
         report["criteria"].append({"name": name, "role": c.get("role"), "value": value, "unit": unit,
                                    "bound": bound, "margin": margin, "status": status, "at": at})

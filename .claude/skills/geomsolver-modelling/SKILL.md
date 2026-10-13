@@ -37,7 +37,7 @@ These come from real mistakes on this project; each one silently produced a wron
 2. **Numbers in JSON are SI**: metres and radians, whatever `unit` says (`unit` only changes how values
    are displayed). Write anything else as a string with a unit: `"3cm"`, `"35deg"`, `"84%"`.
    `"max": 90` on an angle means 90 radians.
-3. **One objective.** Exactly one criterion has role `minimize` or `maximize`. Every other wish is a
+3. **One objective.** Exactly one enabled criterion has role `minimize` or `maximize`. Every other wish is a
    bound (role `max` or `min` with a `bound`). Trade-offs are explored with `--pareto`, never with weights.
 4. **Never loosen `solver.feas_tol`** to make a problem "feasible": it only accepts a design that
    breaks the user's requirements.
@@ -101,6 +101,10 @@ Jobs chain: A ends in B when the solve is infeasible; C ends in B when the chang
    - A violated `assembly` row: the linkage cannot close at some position.
    - `SCALE: LARGE`: probably a modelling mistake (a unit, a sign, the wrong side); re-read the text
      before relaxing anything.
+   - Every run stuck on the same violation of the same row: a flat region of that row (a screen
+     fully hidden, a linkage that does not assemble). Seeded starts already restart phase 1 from up
+     to 10 fresh points; `--polish` only retries near the written design. Narrow the domains or
+     give a feasible start (`references/diagnosis.md` section 1).
 4. **Confirm every option you propose** with `check.py FILE.json --solve` plus the exact flag from the
    RELAXATIONS table (`--bound NAME=VALUE` in the criterion's display unit, or `--set params.X=VALUE`).
    Quote its objective and its number of feasible runs. Options with few feasible runs are fragile:
@@ -120,10 +124,11 @@ Jobs chain: A ends in B when the solve is infeasible; C ends in B when the chang
    | add a design variable | new entry in `design`: scalar with string `min`/`max` (`"10cm"`), or point with a `domain` |
    | keep a variable where it is | `"fixed": true` on it (or `--fix NAME` for one run) |
    | narrow or move a domain | edit `min`/`max` or `domain`; keep the start `value` inside it |
+   | keep a point on a line | a `segment(p, q)` domain, or a `box` of zero height or width: 1 coordinate, no row |
    | add a hard requirement | new entry in `constraints`; add `"forall": "SWEEP"` if it must hold during the motion |
    | add a limit you want to see in a unit | a criterion with role `max`/`min`, a `bound` param and a `unit` |
    | change a limit | change the `params` value the bound or constraint uses |
-   | try without a requirement | `"enabled": false` on the constraint (do not delete while testing) |
+   | try without a requirement | `"enabled": false` on the constraint or criterion (do not delete while testing) |
    | change the objective | move `minimize`/`maximize` to the new criterion; give the old one a bound or `report` |
 
 4. **Symmetric pairs**: when the instance has interchangeable parts (two links `A`-`C` and `B`-`D`,
@@ -162,6 +167,8 @@ Next step: <one suggestion>
 | a requirement seems ignored, no error | misspelt key or section (`"constraint"`) | `check.py` LINT lists them |
 | infeasible, tiny violations everywhere | requirements conflict | job B; never `feas_tol` |
 | solve result changes between runs | fragile: few feasible runs | more `--starts`, `--polish` |
+| warning "as an equality it stops every SLSQP solve" | an `==` constraint that uses no free variable | `"enabled": false` on it, or unfix a variable |
+| an active `<=`/`>=` row with margin about `-1e-16` in every feasible design | a part held exactly at its limit by construction | nothing: SLSQP gets it as exactly 0 |
 
 ## Where things are
 

@@ -44,7 +44,7 @@ The report has five parts:
 | **constraints** | one line per row group: the margin (negative when violated), the status and where it is worst. A criterion's bound appears as `<name>:bound`, in the criterion's unit; the other rows are in their natural SI unit |
 | **summary** | feasible or not, the largest violation and its row, and the objective |
 
-The for-all rows are checked on 2001 values of each sweep, and a row is violated when it misses by more than the feasibility tolerance, 1e-7 in its natural unit. Some instances have implicit rows too: a `dyad()` linkage must stay assembled, and a point whose domain is neither a parallelogram nor a segment must stay inside it. On the corner TV example they read `assembly of p`, `assembly of p at tau=0`, and so on.
+The for-all rows are checked on 2001 values of each sweep, and a row is violated when it misses by more than the feasibility tolerance, 1e-7 in its natural unit. Some instances have implicit rows too: a `dyad()` linkage must stay assembled, and a point whose domain is neither a parallelogram nor a segment must stay inside it (a box or rectangle of zero width or height counts as a segment). On the corner TV example they read `assembly of p`, `assembly of p at tau=0`, and so on.
 
 !!! warning
     `--eval` exits 0 even when the design is infeasible. Read the `summary` line, or solve, to get an exit status that reflects feasibility.
@@ -86,13 +86,11 @@ When several runs end at different designs with the same objective and the same 
 ```
 
 ```text title="Output (excerpt)"
-65 of 65 runs finished, 51 feasible, 15 distinct solutions, 0.08 s on 16 threads
+65 of 65 runs finished, 65 feasible, 1 distinct solutions, 0.09 s on 16 threads
   #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
-  1    104.3729 cm        yes       8.61e-15     51    2         25 (uniform 24)    converged (4, 9)
-  2    153.0314 cm        no        0.262        1     1         12 (uniform 11)    infeasible on its samples (1, 5)
-...
+  1    104.3729 cm        yes       8.61e-15     65    2         25 (uniform 24)    converged (4, 9)
 variants: runs that ended at different points with the same objective and the same values of the bounds active in either (a mirror image, a variable the optimum leaves free, or another design); the design values that differ from the solution's best run:
-  #1 run 52 (uniform 51), 22 hits: A (0.3501042, 1.059914e-05) m, B (0.04124141, 0.3038836) m, c (0.1121174, -0.08347213) m, d (-0.1616944, 0) m
+  #1 run 52 (uniform 51), 31 hits: A (0.3501042, 1.059914e-05) m, B (0.04124141, 0.3038836) m, c (0.1121174, -0.08347213) m, d (-0.1616944, 0) m
 ```
 
 ## Polish the design in the file
@@ -126,7 +124,7 @@ Three options change the problem for one run. The file on disk stays as it is.
 summary: feasible yes (tol 1e-07)  max violation 1.2838e-10 (shelf at tau=0.296)  objective 107.4175 cm
 ```
 
-Only criteria with role `max` or `min` have a bound. On another criterion the CLI stops with `geomsolver-cli: criterion 'width' has no bound (role max or min)` and exit status 2.
+Only criteria with role `max` or `min` have a bound to replace. On another criterion the CLI stops with `geomsolver-cli: criterion 'width' has no bound (role max or min)` and exit status 2; a `range` criterion, which has two bounds, stops it with `criterion '...' has two bounds (role range)`.
 
 ### Edit any key
 
@@ -181,7 +179,7 @@ instance docs/instances/start-tutorial-5.json  (n = 2, 4 row groups, SLSQP)
   wall_y                         -0.004935986       VIOLATED   tau=0
   shelf                          0.06868259         ok         tau=0.2215
   protrusion:bound               -0.4935986 cm      VIOLATED   tau=0
-summary: feasible NO (tol 1e-07)  max violation 0.00493599 (protrusion:bound at tau=0)  objective 100 cm
+summary: feasible NO (tol 1e-07)  max violation 0.00493599 (wall_x at tau=1)  objective 100 cm
 ```
 
 No run is feasible, and the exit status is 1. Three rows miss by the same 4.94 mm: the solver split an impossible requirement evenly between them. That is the signature of an over-constrained problem, not of a solver that failed to find the answer; the [troubleshooting page](../guide/troubleshooting.md) explains how to read it. A 100 cm TV needs a looser bound:
@@ -224,12 +222,12 @@ Several criteria with the same unit can share each bound. The corner TV example 
 
 ```text title="Output (first lines)"
 instance tests/data/tv_corner_ref.json  (n = 13, 23 row groups, SLSQP)
-pareto study: bound of view_couch, view_kitchen (4 points, 0.07 s)
+pareto study: bound of view_couch, view_kitchen (4 points, 0.08 s)
   bound          objective          feasible  hits / runs
-  0 deg          105.7293 cm        yes       6 / 9
-  1 deg          105.0493 cm        yes       8 / 10
-  2 deg          104.3729 cm        yes       8 / 10
-  4 deg          103.1087 cm        yes       9 / 10
+  0 deg          105.7293 cm        yes       9 / 9
+  1 deg          105.0493 cm        yes       10 / 10
+  2 deg          104.3729 cm        yes       10 / 10
+  4 deg          103.1087 cm        yes       10 / 10
 ```
 
 `--bound` still applies during a study, to the criteria the study does not sweep. The [criteria guide](../guide/criteria.md) explains why the tool bounds criteria instead of weighting them.
@@ -321,7 +319,7 @@ The instance's `solver` object holds the default settings; these options overrid
 | **`--maxeval N`** | `maxeval` |
 | **`--feas-tol F`** | `feas_tol` |
 
-COBYLA needs no derivatives and is slower to converge. On the tutorial instance, 17 of the 65 runs reach the optimum instead of 65:
+COBYLA needs no derivatives and is slower to converge. On the tutorial instance, 28 of the 65 runs reach the optimum instead of 65:
 
 ```bash
 ./build/geomsolver-cli docs/instances/start-tutorial-5.json --quiet --algorithm COBYLA
@@ -329,9 +327,9 @@ COBYLA needs no derivatives and is slower to converge. On the tutorial instance,
 
 ```text title="Output (first lines)"
 instance docs/instances/start-tutorial-5.json  (n = 3, 4 row groups, COBYLA)
-65 of 65 runs finished, 65 feasible, 18 distinct solutions, 0.04 s on 16 threads
+65 of 65 runs finished, 65 feasible, 6 distinct solutions, 0.06 s on 16 threads
   #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
-  1    98.81456 cm        yes       5.25e-09     17    1         56 (uniform 55)    converged (1, 5)
+  1    98.81456 cm        yes       5.25e-09     28    1         56 (uniform 55)    converged (1, 5)
 ```
 
 An invalid value stops the CLI with exit status 2, for example `settings: verify_samples must be >= 2` for `--verify-samples 1`.

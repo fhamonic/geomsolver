@@ -408,4 +408,57 @@ TEST_CASE("charts: affine maps and inverse charts (projection + clamp)") {
     CHECK(has_error(compile_errors(d), "design.z", "max must be >= min"));
 }
 
+TEST_CASE("charts: a box or rect of zero width or height is a segment") {
+    Json d = base_doc();
+    d["design"] = Json::parse(R"J({
+        "c": {"type": "point", "domain": "box(-0.05, -0.02, -0.35, -0.02)",
+              "value": [-0.2, 0.5]},
+        "w": {"type": "point", "domain": "rect(vec(1, 1), 0, 2, 30deg)"}
+    })J");
+    auto m = compile_ok(*instance_from(d));
+    const auto & dv = m->design();
+    CHECK(dv[0].chart.kind == ChartKind::Segment);
+    CHECK(dv[1].chart.kind == ChartKind::Segment);
+    CHECK(dv[0].membership_group < 0);
+    CHECK(dv[1].membership_group < 0);
+    CHECK(m->coordinate_names() == std::vector<std::string>{"c", "w"});
+    // The start is projected onto the segment, and the end points map back.
+    const std::vector<double> x = m->initial_x();
+    const std::vector<double> vals = m->values_from_x(x);
+    CHECK(vals[0] == doctest::Approx(-0.2));
+    CHECK(vals[1] == doctest::Approx(-0.02));
+    for(const double u : {0.0, 1.0}) {
+        const std::vector<double> e = m->values_from_x({u, 0.5});
+        CHECK(e[1] == doctest::Approx(-0.02));
+        CHECK(e[0] == doctest::Approx(u == 0.0 ? -0.05 : -0.35));
+    }
+
+    // A width from params that cancel is rounding noise, not 0; a polygon
+    // flat along one axis is a segment too; a point domain fixes the point.
+    d["params"] = Json{{"w", 0.3}, {"a", 0.1}, {"b", 0.2}};
+    d["design"] = Json::parse(R"J({
+        "r": {"type": "point", "domain": "rect(vec(0, 0.5), w - a - b, 1, 0)"},
+        "t": {"type": "point", "domain": "polygon(vec(0,0), vec(1,0), vec(2,0))"},
+        "p": {"type": "point", "domain": "box(1, 1, 1, 1)", "value": [3, 4]},
+        "o": {"type": "point", "domain": "circle(vec(2, 3), 0)"},
+        "z": {"type": "point", "domain": "segment(vec(4, 5), vec(4, 5))"}
+    })J");
+    m = compile_ok(*instance_from(d));
+    const auto & dv2 = m->design();
+    CHECK(dv2[0].chart.kind == ChartKind::Segment);
+    CHECK(dv2[1].chart.kind == ChartKind::Segment);
+    CHECK(dv2[1].membership_group < 0);
+    CHECK(dv2[2].chart.kind == ChartKind::Fixed);
+    CHECK(dv2[3].chart.kind == ChartKind::Fixed);
+    CHECK(dv2[4].chart.kind == ChartKind::Fixed);
+    CHECK(m->n() == 2);
+    const std::vector<double> v2 = m->values_from_x(m->initial_x());
+    CHECK(v2[4] == 1.0);  // the domain's point, not the written value
+    CHECK(v2[5] == 1.0);
+    CHECK(v2[6] == 2.0);
+    CHECK(v2[7] == 3.0);
+    CHECK(v2[8] == 4.0);
+    CHECK(v2[9] == 5.0);
+}
+
 }  // namespace gs::test

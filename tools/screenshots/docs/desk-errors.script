@@ -1,0 +1,12 @@
+# The desk with the mistakes of the troubleshooting page: the status bar,
+# Messages, the constraints excluded, and the sheet of lamp with its warning
+# and its error, in a taller bottom row.
+open docs/instances/guide-b-desk-errors-broken.json
+select constraint lamp
+panel messages
+# The border between the canvas and the panels under it, dragged up; the
+# pointer then leaves it, which would stay highlighted.
+drag L 300 691 300 400
+move 1590 10
+wait 29
+shot errors.ppm

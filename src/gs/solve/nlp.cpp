@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <limits>
 #include <stdexcept>
 
@@ -12,11 +13,22 @@ using uz = std::size_t;
 constexpr double kInf = std::numeric_limits<double>::infinity();
 }  // namespace
 
+std::string range_override_message(std::string_view criterion) {
+    return std::format(
+        "criterion '{}' has two bounds (role range): a bound override or a "
+        "Pareto study takes a criterion with role max or min",
+        criterion);
+}
+
 double bound_shift(const Model & m, int criterion, double bound) {
     if(criterion < 0 || criterion >= static_cast<int>(m.criteria().size()))
         throw std::invalid_argument("bound override of an unknown criterion");
     const CriterionInfo & c = m.criteria()[uz(criterion)];
     if(c.group < 0) return 0.0;
+    // One shift for every row of the group would move both sides of a range
+    // the same way.
+    if(c.role == CriterionRole::Range)
+        throw std::invalid_argument(range_override_message(c.name));
     // Max rows are value - bound, Min rows bound - value.
     return c.role == CriterionRole::Max ? c.bound - bound : bound - c.bound;
 }
@@ -200,9 +212,11 @@ std::vector<double> NlpProblem::epigraph_values(std::span<const double> x) {
     return z;
 }
 
-bool rows_finite(Evaluator & ev, std::span<const double> x, int samples) {
+bool rows_finite(Evaluator & ev, std::span<const double> x,
+                 const SolverSettings & s) {
     const Model & m = ev.model();
-    const SampleSets S = SampleSets::uniform(m, samples);
+    const SampleSets S =
+        SampleSets::verdict(m, s.verify_samples, s.initial_samples);
     const NlpLayout L = m.nlp_layout(S);
     std::vector<double> g(uz(L.m())), obj(L.objective.size());
     NlpBuffers b;
@@ -216,12 +230,12 @@ bool rows_finite(Evaluator & ev, std::span<const double> x, int samples) {
     return true;
 }
 
-Check check(Evaluator & ev, std::span<const double> x, int samples,
+Check check(Evaluator & ev, std::span<const double> x, const SolverSettings & s,
             std::span<const BoundOverride> bounds, bool curves,
             bool scan_rows) {
     const Model & m = ev.model();
     Check c;
-    c.v = ev.verify(x, samples, true);
+    c.v = ev.verdict(x, s.verify_samples, s.initial_samples, true);
     Verification & V = c.v;
     for(const BoundOverride & b : bounds) {
         const CriterionInfo & ci = m.criteria().at(uz(b.criterion));
@@ -229,10 +243,11 @@ Check check(Evaluator & ev, std::span<const double> x, int samples,
         if(ci.role == CriterionRole::Max) cc.violation = cc.value - b.bound;
         if(ci.role == CriterionRole::Min) cc.violation = b.bound - cc.value;
         if(ci.group < 0) continue;
-        const double s = bound_shift(m, b.criterion, b.bound);
+        const double shift = bound_shift(m, b.criterion, b.bound);
         GroupCheck & g = V.groups[uz(ci.group)];
-        g.violation += s;
-        for(double & v : g.curve) v += s;
+        g.violation += shift;
+        for(double & v : g.curve) v += shift;
+        if(g.between) g.between->value += shift;
     }
     // A curve sample of -inf means every row of the group was NaN there:
     // the engine's std::max skips NaN.
@@ -241,13 +256,13 @@ Check check(Evaluator & ev, std::span<const double> x, int samples,
         for(const double v : g.curve)
             if(!std::isfinite(v)) c.finite = false;
     }
-    // A report criterion is shown only: its NaN must not make the design
-    // infeasible (it would discard every run reaching that design).
+    // A report or disabled criterion is shown only: its NaN must not make the
+    // design infeasible (it would discard every run reaching that design).
     for(uz i = 0; i < V.criteria.size(); ++i)
         if(m.criteria()[i].role != CriterionRole::Report &&
-           !std::isfinite(V.criteria[i].value))
+           m.criteria()[i].enabled && !std::isfinite(V.criteria[i].value))
             c.finite = false;
-    if(scan_rows && c.finite) c.finite = rows_finite(ev, x, samples);
+    if(scan_rows && c.finite) c.finite = rows_finite(ev, x, s);
     V.max_violation = -kInf;
     V.worst_group = -1;
     for(uz g = 0; g < V.groups.size(); ++g)
@@ -255,6 +270,7 @@ Check check(Evaluator & ev, std::span<const double> x, int samples,
             V.max_violation = V.groups[g].violation;
             V.worst_group = static_cast<int>(g);
         }
+    V.find_worst_between();
     if(!c.finite) V.max_violation = std::numeric_limits<double>::quiet_NaN();
     if(!curves)
         for(GroupCheck & g : V.groups) g.curve.clear();

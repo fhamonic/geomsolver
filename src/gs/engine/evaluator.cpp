@@ -1,5 +1,6 @@
 #include "gs/engine/evaluator.hpp"
 
+#include <algorithm>
 #include <format>
 #include <stdexcept>
 
@@ -257,6 +258,119 @@ std::unique_ptr<DualEngineBase> make_dual_engine(const Program & P) {
     return std::make_unique<DualEngine<32>>(P);
 }
 
+double bound_violation(const CriterionInfo & c, double value) {
+    if(!c.enabled) return std::numeric_limits<double>::quiet_NaN();
+    switch(c.role) {
+        case CriterionRole::Max:
+            return value - c.bound;
+        case CriterionRole::Min:
+            return c.bound - value;
+        case CriterionRole::Range:
+            return std::max(c.lower - value, value - c.bound);
+        case CriterionRole::Minimize:
+        case CriterionRole::Maximize:
+        case CriterionRole::Report:
+            break;
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+bool fixed_sweep(const Program & P, int sweep) {
+    return sweep >= 0 && P.sweeps[uz(sweep)].sampling == Sampling::Fixed;
+}
+
+// An aggregate row has no sweep of its own (G.sweep < 0) but depends on the
+// sweeps of its max_over / min_over terms.
+bool depends_on_fixed(const Program & P, const GroupImpl & G) {
+    if(fixed_sweep(P, G.sweep)) return true;
+    for(const RowTemplate & r : G.rows)
+        if(r.kind == RowTemplate::Kind::Aggregate)
+            for(const Term * t : {&r.lhs, &r.rhs})
+                if(t->agg != AggKind::None && fixed_sweep(P, t->sweep))
+                    return true;
+    return false;
+}
+
+Verification verify_on(const Model & model, Engine<double> & E,
+                       std::span<const double> x, const SampleSets & S,
+                       bool curves) {
+    const Program & P = model.program();
+    check_samples(P, S, P.verify_aggs, x.size());
+    Verification V;
+    V.t = S.t;
+    const std::vector<RowGroup> & groups = model.groups();
+    V.groups.assign(groups.size(), GroupCheck{});
+    for(GroupCheck & g : V.groups)
+        g.violation = -std::numeric_limits<double>::infinity();
+    E.load(x, 0);
+    auto natural = [&](const GroupImpl & G, const RowTemplate & r) {
+        if(r.kind == RowTemplate::Kind::NegDyadS2)
+            return E.at_offset(r.node, 3);
+        const double v = row_value(E, r, E.agg_val);
+        return G.equality ? std::fabs(v) : v;
+    };
+    sweep_pass(E, P.verify_plan, P.verify_aggs, S, E.agg_val, E.agg_sample,
+               [&](int k, int i) {
+                   for(std::size_t g = 0; g < P.groups.size(); ++g) {
+                       const GroupImpl & G = P.groups[g];
+                       if(G.sweep != k) continue;
+                       double v = -std::numeric_limits<double>::infinity();
+                       for(const RowTemplate & r : G.rows)
+                           v = std::max(v, natural(G, r));
+                       GroupCheck & c = V.groups[g];
+                       if(curves) c.curve.push_back(v);
+                       if(v > c.violation) {
+                           c.violation = v;
+                           c.sample = i;
+                       }
+                   }
+               });
+    for(std::size_t g = 0; g < P.groups.size(); ++g) {
+        const GroupImpl & G = P.groups[g];
+        GroupCheck & c = V.groups[g];
+        if(G.sweep >= 0) {
+            if(c.sample >= 0) {
+                c.t = S.t[uz(G.sweep)][uz(c.sample)];
+                c.sweep_value = P.sweeps[uz(G.sweep)].value(c.t);
+            }
+            continue;
+        }
+        for(const RowTemplate & r : G.rows)
+            c.violation = std::max(c.violation, natural(G, r));
+        for(const RowTemplate & r : G.rows) {
+            if(r.kind != RowTemplate::Kind::Aggregate) continue;
+            const Term & t = r.lhs.agg != AggKind::None ? r.lhs : r.rhs;
+            if(t.agg == AggKind::None) continue;
+            c.sample = E.agg_sample[uz(t.agg_index)];
+            if(c.sample >= 0) {
+                c.t = S.t[uz(t.sweep)][uz(c.sample)];
+                c.sweep_value = P.sweeps[uz(t.sweep)].value(c.t);
+            }
+        }
+    }
+    V.criteria.assign(P.criteria.size(), CriterionCheck{});
+    for(std::size_t ci = 0; ci < P.criteria.size(); ++ci) {
+        const Term & t = P.criteria[ci];
+        CriterionCheck & r = V.criteria[ci];
+        r.value = term_value(E, t, E.agg_val);
+        if(t.agg != AggKind::None) {
+            r.sample = E.agg_sample[uz(t.agg_index)];
+            if(r.sample >= 0) {
+                r.t = S.t[uz(t.sweep)][uz(r.sample)];
+                r.sweep_value = P.sweeps[uz(t.sweep)].value(r.t);
+            }
+        }
+        r.violation = bound_violation(model.criteria()[ci], r.value);
+        if(static_cast<int>(ci) == model.objective()) V.objective = r.value;
+    }
+    for(std::size_t g = 0; g < V.groups.size(); ++g)
+        if(V.groups[g].violation > V.max_violation) {
+            V.max_violation = V.groups[g].violation;
+            V.worst_group = static_cast<int>(g);
+        }
+    return V;
+}
+
 GeoValue to_geo(const Program & P, int node, const double * slot) {
     const Node & n = P.nodes[uz(node)];
     GeoValue g;
@@ -346,96 +460,67 @@ std::vector<CriterionCheck> Evaluator::criteria(std::span<const double> x,
                 r.sweep_value = P.sweeps[uz(t.sweep)].value(r.t);
             }
         }
-        const CriterionInfo & ci = model_->criteria()[c];
-        if(ci.role == CriterionRole::Max) r.violation = r.value - ci.bound;
-        if(ci.role == CriterionRole::Min) r.violation = ci.bound - r.value;
+        r.violation = bound_violation(model_->criteria()[c], r.value);
     }
     return out;
 }
 
 Verification Evaluator::verify(std::span<const double> x, int samples,
                                bool curves) {
+    Verification V = detail::verify_on(
+        *model_, impl_->dbl, x, SampleSets::uniform(*model_, samples), curves);
+    V.samples = samples;
+    return V;
+}
+
+Verification Evaluator::verdict(std::span<const double> x, int samples,
+                                int initial_samples, bool curves) {
     using namespace detail;
     const Program & P = model_->program();
-    const SampleSets S = SampleSets::uniform(*model_, samples);
-    check_samples(P, S, P.verify_aggs, x.size());
-    Verification V;
+    bool any_fixed = false;
+    for(std::size_t k = 0; k < P.sweeps.size(); ++k)
+        any_fixed |= fixed_sweep(P, static_cast<int>(k));
+    if(!any_fixed) return verify(x, samples, curves);
+    Verification V = verify_on(
+        *model_, impl_->dbl, x,
+        SampleSets::verdict(*model_, samples, initial_samples), curves);
     V.samples = samples;
-    V.t = S.t.empty() ? std::vector<double>{} : S.t[0];
-    const std::vector<RowGroup> & groups = model_->groups();
-    V.groups.assign(groups.size(), GroupCheck{});
-    for(GroupCheck & g : V.groups)
-        g.violation = -std::numeric_limits<double>::infinity();
-    Engine<double> & E = impl_->dbl;
-    E.load(x, 0);
-    auto natural = [&](const GroupImpl & G, const RowTemplate & r) {
-        if(r.kind == RowTemplate::Kind::NegDyadS2)
-            return E.at_offset(r.node, 3);
-        const double v = row_value(E, r, E.agg_val);
-        return G.equality ? std::fabs(v) : v;
-    };
-    sweep_pass(E, P.verify_plan, P.verify_aggs, S, E.agg_val, E.agg_sample,
-               [&](int k, int i) {
-                   for(std::size_t g = 0; g < P.groups.size(); ++g) {
-                       const GroupImpl & G = P.groups[g];
-                       if(G.sweep != k) continue;
-                       double v = -std::numeric_limits<double>::infinity();
-                       for(const RowTemplate & r : G.rows)
-                           v = std::max(v, natural(G, r));
-                       GroupCheck & c = V.groups[g];
-                       if(curves) c.curve.push_back(v);
-                       if(v > c.violation) {
-                           c.violation = v;
-                           c.sample = i;
-                       }
-                   }
-               });
-    for(std::size_t g = 0; g < P.groups.size(); ++g) {
-        const GroupImpl & G = P.groups[g];
-        GroupCheck & c = V.groups[g];
-        if(G.sweep >= 0) {
-            if(c.sample >= 0) {
-                c.t = S.t[uz(G.sweep)][uz(c.sample)];
-                c.sweep_value = P.sweeps[uz(G.sweep)].value(c.t);
-            }
+    // Curves: verify_on's max skips NaN rows, and a sample where every row
+    // is NaN shows only as -inf in its curve.
+    const Verification F = verify_on(
+        *model_, impl_->dbl, x, SampleSets::uniform(*model_, samples), true);
+    for(std::size_t g = 0; g < P.groups.size(); ++g)
+        if(depends_on_fixed(P, P.groups[g])) {
+            const GroupCheck & f = F.groups[g];
+            bool finite = std::isfinite(f.violation);
+            for(const double v : f.curve) finite &= std::isfinite(v);
+            V.groups[g].between = {
+                finite ? f.violation : std::numeric_limits<double>::quiet_NaN(),
+                f.t, f.sweep_value};
+        }
+    for(std::size_t c = 0; c < P.criteria.size(); ++c) {
+        const Term & t = P.criteria[c];
+        if(t.node < 0 || t.agg == AggKind::None || !fixed_sweep(P, t.sweep))
             continue;
-        }
-        for(const RowTemplate & r : G.rows)
-            c.violation = std::max(c.violation, natural(G, r));
-        for(const RowTemplate & r : G.rows) {
-            if(r.kind != RowTemplate::Kind::Aggregate) continue;
-            const Term & t = r.lhs.agg != AggKind::None ? r.lhs : r.rhs;
-            if(t.agg == AggKind::None) continue;
-            c.sample = E.agg_sample[uz(t.agg_index)];
-            if(c.sample >= 0) {
-                c.t = S.t[uz(t.sweep)][uz(c.sample)];
-                c.sweep_value = P.sweeps[uz(t.sweep)].value(c.t);
-            }
-        }
+        const CriterionCheck & f = F.criteria[c];
+        V.criteria[c].between = {f.value, f.t, f.sweep_value};
     }
-    V.criteria.assign(P.criteria.size(), CriterionCheck{});
-    for(std::size_t ci = 0; ci < P.criteria.size(); ++ci) {
-        const Term & t = P.criteria[ci];
-        CriterionCheck & r = V.criteria[ci];
-        r.value = term_value(E, t, E.agg_val);
-        if(t.agg != AggKind::None) {
-            r.sample = E.agg_sample[uz(t.agg_index)];
-            if(r.sample >= 0) {
-                r.t = S.t[uz(t.sweep)][uz(r.sample)];
-                r.sweep_value = P.sweeps[uz(t.sweep)].value(r.t);
-            }
-        }
-        const CriterionInfo & info = model_->criteria()[ci];
-        if(info.role == CriterionRole::Max) r.violation = r.value - info.bound;
-        if(info.role == CriterionRole::Min) r.violation = info.bound - r.value;
-        if(static_cast<int>(ci) == model_->objective()) V.objective = r.value;
-    }
-    for(std::size_t g = 0; g < V.groups.size(); ++g)
-        if(V.groups[g].violation > V.max_violation) {
-            V.max_violation = V.groups[g].violation;
-            V.worst_group = static_cast<int>(g);
-        }
+    V.find_worst_between();
     return V;
+}
+
+void Verification::find_worst_between() {
+    max_between = std::numeric_limits<double>::quiet_NaN();
+    worst_between_group = -1;
+    for(std::size_t g = 0; g < groups.size(); ++g) {
+        if(!groups[g].between) continue;
+        const double v = groups[g].between->value;
+        if(worst_between_group >= 0 && std::isnan(max_between)) break;
+        if(worst_between_group < 0 || std::isnan(v) || v > max_between) {
+            max_between = v;
+            worst_between_group = static_cast<int>(g);
+        }
+    }
 }
 
 std::vector<GeoValue> Evaluator::values(std::span<const double> x,
@@ -491,6 +576,26 @@ std::vector<std::vector<GeoValue>> Evaluator::values_over(
         out.push_back(collect());
     }
     return out;
+}
+
+SampleSets SampleSets::initial(const Model & model, int n) {
+    SampleSets s;
+    for(const SweepInfo & sw : model.sweeps()) {
+        const int k = sw.initial_samples(n);
+        std::vector<double> t(static_cast<std::size_t>(std::max(k, 1)), 0.0);
+        for(int i = 0; i < k && k > 1; ++i)
+            t[static_cast<std::size_t>(i)] = static_cast<double>(i) / (k - 1);
+        s.t.push_back(std::move(t));
+    }
+    return s;
+}
+
+SampleSets SampleSets::verdict(const Model & model, int n, int n_initial) {
+    SampleSets s = uniform(model, n);
+    const SampleSets own = initial(model, n_initial);
+    for(std::size_t k = 0; k < model.sweeps().size(); ++k)
+        if(model.sweeps()[k].sampling == Sampling::Fixed) s.t[k] = own.t[k];
+    return s;
 }
 
 SampleSets SampleSets::uniform(const Model & model, int n) {

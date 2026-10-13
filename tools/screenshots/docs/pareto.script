@@ -1,0 +1,15 @@
+# Pareto studies in a window tall enough for the table and the plot: the
+# view angles of the corner TV at two lists of bounds, then the protrusion of
+# the tutorial's last step.
+size 1600 1500
+open tests/data/tv_corner_ref.json
+pareto view_couch,view_kitchen 0,1,2,4
+wait 29
+shot views-4.ppm
+pareto view_couch,view_kitchen 0,0.5,1,1.5,2,3,4
+wait 29
+shot views-7.ppm
+open docs/instances/start-tutorial-5.json
+pareto protrusion 90,100,110,120,130,140
+wait 29
+shot tutorial.ppm

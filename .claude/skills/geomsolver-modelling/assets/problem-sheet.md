@@ -160,4 +160,4 @@ witness `w` shared by the two conditions of the watching pose, range = the sweep
 interchangeable pair (yes); no containment row (yes); all numbers are params, values SI (yes).
 
 This sheet becomes the instance of `references/patterns.md` section 6, which compiles with no
-warning and solves to depth = 121.0053 cm (35 of 65 runs).
+warning and solves to depth = 121.0053 cm (64 of 65 runs).

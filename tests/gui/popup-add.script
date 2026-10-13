@@ -1,0 +1,11 @@
+# The TV and the couch selected, Add constraint pre-fills the clearance
+# for all tau; typing clr completes it, and Enter adds it.
+open tests/data/tv_corner_ref.json
+select let tv geometry couch
+wait 16
+action formula.add_constraint
+wait 4
+text "clr"
+wait 2
+key Enter
+wait 4

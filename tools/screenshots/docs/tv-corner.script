@@ -1,0 +1,37 @@
+# Close-ups of the solved corner TV in a large window: the couch pose with
+# its ghosts, then without them at tau = 0, tstar and 1; then the evolved
+# snapshot at tau = 0.
+size 3200 2000
+open tests/data/tv_corner_ref.json
+solve
+wait 29
+shot ghosts.ppm
+action view.ghosts
+wait 4
+shot couch.ppm
+# The tau slider, Ctrl-clicked to type its value; the pointer then leaves
+# it, which would stay highlighted.
+click L 1200 1578 ctrl
+wait 2
+text "0.5615695"
+key Enter
+move 3190 10
+wait 4
+shot centred.ppm
+click L 1200 1578 ctrl
+wait 2
+text "1"
+key Enter
+move 3190 10
+wait 4
+shot kitchen.ppm
+# The slider keeps its value through Open: back to 0.
+open docs/instances/example-tv-evolved.json
+solve
+click L 1200 1578 ctrl
+wait 2
+text "0"
+key Enter
+move 3190 10
+wait 29
+shot evolved.ppm

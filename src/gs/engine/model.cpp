@@ -271,7 +271,7 @@ std::string Model::row_name(const NlpRow & row,
                             const SampleSets & samples) const {
     const RowGroup & G = groups_.at(uz(row.group));
     std::string s = G.name;
-    if(G.split > 1) s += row.split == 0 ? "(+)" : "(-)";
+    if(!G.labels.empty()) s += G.labels.at(uz(row.split));
     if(G.sweep >= 0 && row.sample >= 0) {
         const SweepInfo & sw = sweeps_[uz(G.sweep)];
         s +=

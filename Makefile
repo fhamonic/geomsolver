@@ -10,7 +10,7 @@ CONAN_PROFILE = gcc15_c++26
 all: build
 
 build:
-	conan build . -of=${BUILD_DIR} -b=missing -pr=${CONAN_PROFILE} -c 'libpq/*:tools.build:cflags=["-std=gnu17"]' -s mesa-glu/*:compiler.cppstd=23
+	conan build . -of=${BUILD_DIR} -b=missing -pr=${CONAN_PROFILE} -c 'libpq/*:tools.build:cflags=["-std=gnu17"]' -c 'implot/*:tools.info.package_id:confs=["user.geomsolver:imgui"]' -c 'implot/*:user.geomsolver:imgui=docking' -s mesa-glu/*:compiler.cppstd=23
 
 test: build
 	cd ${BUILD_DIR} && ctest --output-on-failure

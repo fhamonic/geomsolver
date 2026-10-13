@@ -97,6 +97,61 @@ expect("--write-instance keeps --set edits" 0 "summary: feasible yes"
 expect("the written instance holds the edit" 0 ">= 5 cm"
        "${WORK}/set.json" --eval)
 
+# A key of format /2 written into a /1 instance raises its format, so that
+# it compiles; the saved file says /2, so a binary that only reads /1 refuses
+# it rather than ignore the key.
+expect("--set a /2 key raises the format" 0
+       "note: --set sweeps.tau.samples: \"format\" raised to \"geomsolver-instance/2\""
+       "${TV}" --eval --set sweeps.tau.samples=9)
+reject("--set a /2 key does not warn" 0 "warning"
+       "${TV}" --eval --set sweeps.tau.samples=9)
+expect("--write-instance saves the raised format" 0 "summary: feasible yes"
+       "${TV}" --quiet --starts 8 --set sweeps.tau.samples=9
+       --write-instance "${WORK}/v2.json")
+file(READ "${WORK}/v2.json" v2)
+string(JSON v2_format GET "${v2}" format)
+if(NOT v2_format STREQUAL "geomsolver-instance/2")
+  message(FATAL_ERROR "v2.json: want format geomsolver-instance/2, got ${v2_format}")
+endif()
+message(STATUS "ok: the written instance is geomsolver-instance/2")
+expect("a /2 key in a /1 file is an error" 2
+       "sweeps.tau.samples: \"samples\" requires \"format\": \"geomsolver-instance/2\""
+       "${WORK}/v2.json" --eval --set format=geomsolver-instance/1)
+
+# A criterion's "enabled": false is a key of format /2 as well; true is not.
+# The criterion is still evaluated and reported, and bounds nothing: an
+# impossible bound on it leaves the solve feasible.
+expect("--set enabled=false raises the format" 0
+       "note: --set criteria[1].enabled: \"format\" raised to \"geomsolver-instance/2\""
+       "${TV}" --eval --set "criteria[1].enabled=false")
+expect("a disabled criterion is reported as disabled" 0
+       "view_couch       max       9.524704 deg       disabled"
+       "${TV}" --eval --set "criteria[1].enabled=false")
+reject("--set enabled=false does not warn" 0 "warning"
+       "${TV}" --eval --set "criteria[1].enabled=false")
+reject("--set enabled=true keeps format /1" 0 "note:"
+       "${TV}" --eval --set "criteria[1].enabled=true")
+expect("an impossible bound fails the solve" 1 "summary: feasible NO"
+       "${TV}" --quiet --starts 8 --set "criteria[7].bound=0.01")
+expect("an impossible bound on a disabled criterion does not" 0
+       "summary: feasible yes"
+       "${TV}" --quiet --starts 8 --set "criteria[7].bound=0.01"
+       --set "criteria[7].enabled=false")
+expect("--bound refuses a disabled criterion" 2
+       "geomsolver-cli: criterion 'view_couch' is disabled"
+       "${TV}" --eval --set "criteria[1].enabled=false" --bound view_couch=1)
+
+# A fixed sweep: feasibility on its samples, the miss between them reported.
+expect("a fixed sweep is listed with its count" 0 "sweeps: tau fixed, 17 samples"
+       "${TV}" --quiet --starts 8 --set sweeps.tau.samples=17
+       --set sweeps.tau.sampling=fixed)
+expect("the miss between fixed samples is reported" 0
+       "between samples: max violation 3.49"
+       "${TV}" --quiet --starts 8 --set sweeps.tau.samples=17
+       --set sweeps.tau.sampling=fixed)
+reject("adaptive sweeps print no sweeps line" 0 "sweeps:"
+       "${TV}" --eval --initial-samples 9)
+
 # Removed algorithms run as SLSQP with a warning.
 expect("--algorithm MMA" 0 "warning: --algorithm: MMA is no longer offered"
        "${TV}" --quiet --starts 8 --algorithm MMA)
@@ -118,6 +173,38 @@ expect("weight is an error with a migration hint" 2
        "${TV}" --eval --set "criteria[0].weight=-1")
 expect("a sampled existential is an error" 2 "see \"Witness poses\" in the README"
        "${TV}" --eval --set "constraints[4].expr=max_over(tau, clearance(tv, couch)) >= clr")
+
+# A range criterion replaces a max and a min criterion on the same value:
+# link_1 and link_2 as ranges, their _min twins as reports, give the same
+# optimum, with the bounds printed as lo <= value <= hi.
+set(RANGES --set "criteria[7].role=range"
+           --set "criteria[7].bound=[\"link_min\", \"link_max\"]"
+           --set "criteria[8].role=range"
+           --set "criteria[8].bound=[\"link_min\", \"link_max\"]"
+           --set "criteria[9].role=report" --set "criteria[9].bound=null"
+           --set "criteria[10].role=report" --set "criteria[10].bound=null")
+expect("range criteria give the same optimum" 0
+       "1    104.3729 cm        yes"
+       "${TV}" --quiet ${RANGES})
+expect("a range criterion prints lo <= value <= hi" 0
+       "link_1           range     54.01567 cm        10 cm <= value <= 100 cm  ok"
+       "${TV}" --quiet ${RANGES})
+expect("--bound refuses a range criterion" 2
+       "geomsolver-cli: criterion 'link_1' has two bounds (role range)"
+       "${TV}" --eval ${RANGES} --bound link_1=50)
+expect("--pareto refuses a range criterion" 2
+       "geomsolver-cli: criterion 'link_2' has two bounds (role range)"
+       "${TV}" ${RANGES} --pareto link_2 --bounds 20,30)
+# A two-sided constraint is one row group, whose margin is its worst side's:
+# dist(A, B) is 0.2191461 in the hand design.
+expect("a two-sided constraint is one row group" 0 "(n = 13, 23 row groups"
+       "${TV}" --eval --set "constraints[4].expr=0.2 <= dist(A, B) <= 0.5")
+expect("a two-sided constraint shows its lower side's margin" 0
+       "pivot_spacing                  -0.03085393        VIOLATED"
+       "${TV}" --eval --set "constraints[4].expr=0.25 <= dist(A, B) <= 0.5")
+expect("a two-sided constraint shows its upper side's margin" 0
+       "pivot_spacing                  -0.01914607        VIOLATED"
+       "${TV}" --eval --set "constraints[4].expr=0.2 >= dist(A, B) >= 0.1")
 
 expect("integer options are range checked" 2 "not an integer in [0, 2147483647]"
        "${TV}" --starts 3000000000)

@@ -61,15 +61,15 @@ instance docs/instances/guide-a-lamp.json  (n = 3, 3 row groups, SLSQP)
 ```
 
 - **Coordinates.** `n = 3`: one coordinate for `H` (its position along the segment), one for `L`, one for `w`. Each runs over [0, 1] and maps affinely onto the variable's domain, so the solver cannot leave a box, a parallelogram or a segment. The best run of a solve ends at x = (0.5696068, 0.5993335, 0.3149296), which is H = (1.111371, 0) m, L = 83.94002 cm and w = 64.09014°. The [design variables page](design-variables.md#charts) explains the mapping.
-- **Rows.** `3 row groups`: the for-all constraint `plant`, the constraint `over_book` and the bound of the criterion `rest_depth`. A for-all group contributes one row per sample of the sweep; the others one row each. A `dyad()` used by a constraint, a bound or the objective adds an *assembly* row, and a point whose domain is neither a parallelogram nor a segment adds a *membership* row; the CLI lists them with the others.
+- **Rows.** `3 row groups`: the for-all constraint `plant`, the constraint `over_book` and the bound of the criterion `rest_depth`. A for-all group contributes one row per sample of the sweep; the others one row each. A `dyad()` used by a constraint, a bound or the objective adds an *assembly* row, and a point whose domain is not a parallelogram, a segment or [flat](design-variables.md#points) adds a *membership* row; the CLI lists them with the others.
 - **Objective.** `minimize max_over(a, max_y(arm))` becomes an extra variable z with one row per sample, max_y(arm) ≤ z, and the solver minimises z.
 
 A solve then proceeds in the same way for every start:
 
 1. **Start.** The instance's own design values, plus `starts` seeded random points (64 by default), uniform in [0, 1]ⁿ.
-2. **Phase 1.** A start that violates a row first minimises its largest violation.
+2. **Phase 1.** A start that violates a row first minimises its largest violation. When that ends infeasible, a seeded start tries again from up to 10 fresh random points, and a design someone chose (the current design, `--polish`, a Pareto point's previous best) twice from points moved by up to 0.05 around its best attempt so far; the least violated attempt is kept.
 3. **Local solve.** SLSQP minimises the objective with exact derivatives, on a few samples of each sweep (5 by default).
-4. **Verification and exchange.** The design is checked on a fine grid of 2001 samples per sweep. The worst sample of each violated row is added and the solve restarts from where it stopped, until the fine grid finds nothing.
+4. **Verification and exchange.** The design is checked on a fine grid of 2001 samples per sweep. The worst sample of each violated row is added and the solve restarts from where it stopped, until the fine grid finds nothing. A [fixed sweep](sweeps.md#fixed) keeps its samples instead, and is judged on them.
 5. **Clustering.** Runs that end at the same point form one solution; solutions with the same objective and bounds are merged as *variants*.
 
 The [formulation page](../design-rationale/index.md) gives the details and the reasons behind each step.
@@ -94,7 +94,7 @@ The rest of the documentation uses these words with one meaning each.
 
 **Files and values**
 
-- **Instance**: the JSON file that describes one problem, with `"format": "geomsolver-instance/1"`.
+- **Instance**: the JSON file that describes one problem, with `"format": "geomsolver-instance/1"` (or `/2`, see [format versions](../reference/instance.md#format)).
 - **Geometry file**: a file listed in an instance's `include`; it contributes only its `geometry` entries.
 - **SI value**: every length and angle the file states as a number, and every value the solver handles, is in metres and radians. The one exception is the `angle` of a `rect` geometry entry, in degrees. A ratio is a plain number (0.85).
 - **Display unit**: the unit a design variable or a criterion is shown in (`deg`, `rad`, `m`, `cm`, `mm`, `%`). It changes the display only, never the value in the file.
@@ -105,7 +105,7 @@ The rest of the documentation uses these words with one meaning each.
 - **Design variable**: an unknown of the problem, scalar or point.
 - **Domain**: the shape a design point must stay in; for a scalar, the interval [`min`, `max`].
 - **Chart**: the affine map from the solver's coordinates in [0, 1] to a variable's value.
-- **Coordinate**: one of the solver's unknowns. A scalar or a segment point has one, any other point two, a fixed variable none.
+- **Coordinate**: one of the solver's unknowns. A scalar or a segment point has one, any other point two, a fixed variable none. A point whose domain is flat is a segment point, and one whose domain is a single point is fixed ([design variables](design-variables.md#points)).
 - **Fixed variable**: a design variable frozen at its value; it becomes a constant.
 - **Witness**: a design scalar used as a sweep position, `at(s = w, ...)`, so that the solver chooses *where* along the motion a condition holds.
 
@@ -122,7 +122,7 @@ The rest of the documentation uses these words with one meaning each.
 - **Constraint**: a relation (`<=`, `>=`, `==`) that must hold, possibly for all values of a sweep.
 - **Criterion**: a named scalar with a role: `minimize` or `maximize` (the objective, at most one), `max` or `min` (a bound), `report`.
 - **Row**: one scalar inequality or equality of the nonlinear program. A constraint, a bound or an implicit requirement gives a *row group*: one row, two for a split `abs()`, or one per sample for a for-all group.
-- **Implicit row**: a row you did not write. An *assembly* row keeps the two circles of a `dyad()` intersecting; a *membership* row keeps a point inside a domain that is not a parallelogram or a segment.
+- **Implicit row**: a row you did not write. An *assembly* row keeps the two circles of a `dyad()` intersecting; a *membership* row keeps a point inside a domain that is not a parallelogram or a segment, such as a triangle or a circle.
 - **Margin**: how far a row is from being violated, in the row's natural unit (m, rad or plain number); negative when violated. The CLI prints it, the GUI plots it against the sweep.
 - **Active**: a row whose margin is zero (below 1e-6) at the result; the GUI marks it "active".
 - **Feasible**: every row's violation on the fine grid is at most `feas_tol` (1e-7) in its natural unit.

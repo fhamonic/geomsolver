@@ -43,7 +43,7 @@ TEST_CASE("acceptance: multistart from the hand design + 64 seeded starts") {
     CHECK(best->feasible);
     CHECK(std::fabs(best->objective - kOptimum) < 1e-6);
     CHECK(2 * hit > static_cast<int>(r.runs.size()));
-    CHECK(hit >= 51);
+    CHECK(hit == 65);
     // The A/B mirror images are one solution with two variants.
     CHECK(r.solutions.front().hits == hit);
     CHECK(r.solutions.front().variants.size() >= 2);

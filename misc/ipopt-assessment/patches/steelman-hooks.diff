@@ -1,0 +1,591 @@
+diff -ru src.orig_exp/gs/solve/ipopt_backend.cpp src/gs/solve/ipopt_backend.cpp
+--- src.orig_exp/gs/solve/ipopt_backend.cpp	2026-10-12 04:45:12.665725925 +0200
++++ src/gs/solve/ipopt_backend.cpp	2026-10-12 05:44:00.972172922 +0200
+@@ -6,6 +6,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <limits>
+ #include <string>
+ #include <string_view>
+ 
+@@ -67,6 +68,9 @@
+         , me(uz(p.m_eq()))
+         , m(mi + me)
+         , fd(o.algorithm == Algorithm::IPOPT_FDH)
++        , bfgs(!fd && std::getenv("GS_IPOPT_HESS") &&
++               std::string_view(std::getenv("GS_IPOPT_HESS")) == "bfgs")
++        , p1rows(o.role == 1 && std::getenv("GS_P1STOP_ROWS"))
+         , cx(n)
+         , df(n)
+         , g(mi)
+@@ -86,7 +90,13 @@
+     const LocalOptions & opt;
+     uz n, mi, me, m;
+     bool fd;
++    bool bfgs;    // dense damped BFGS Hessian given to Ipopt as "exact"
++    bool p1rows;  // phase-1 stop on max model row (f + max g) <= stopval
+     IpoptProblem ip = nullptr;
++    // Dense BFGS state: B (n x n), previous point and its gradients.
++    std::vector<double> B, bx, bdf, bdg, bdh;
++    bool have_b = false, b_scaled = false;
++    long bfgs_updates = 0, bfgs_damped = 0, bfgs_skipped = 0;
+ 
+     // Evaluation cache at cx (always with derivatives, like every SLSQP
+     // evaluation, so evaluation counts compare one to one).
+@@ -239,6 +249,85 @@
+                 values[k++] = 0.5 * (H[r * n + j] + H[j * n + r]);
+         return true;
+     }
++
++    // Powell-damped BFGS on the Lagrangian sigma f + lambda' g, updated
++    // when Ipopt asks for the Hessian at a new x: s = x - x_prev,
++    // y = grad L(x) - grad L(x_prev), both with this call's sigma, lambda.
++    bool bfgs_hessian(const double * x, double obj_factor,
++                      const double * lambda, double * values) {
++        if(halted()) return false;
++        ++hessians;
++        if(!ensure(x) || bad_grad) return false;
++        if(B.empty()) {
++            B.assign(n * n, 0.0);
++            for(uz j = 0; j < n; ++j) B[j * n + j] = 1.0;
++        }
++        const bool moved = have_b && !std::equal(x, x + n, bx.begin());
++        if(moved) {
++            std::vector<double> sv(n), y(n, 0.0), Bs(n, 0.0);
++            for(uz j = 0; j < n; ++j) sv[j] = x[j] - bx[j];
++            for(uz j = 0; j < n; ++j) y[j] = obj_factor * (df[j] - bdf[j]);
++            for(uz i = 0; i < mi; ++i)
++                if(lambda[i] != 0.0)
++                    for(uz j = 0; j < n; ++j)
++                        y[j] += lambda[i] * (dg[i * n + j] - bdg[i * n + j]);
++            for(uz i = 0; i < me; ++i)
++                if(lambda[mi + i] != 0.0)
++                    for(uz j = 0; j < n; ++j)
++                        y[j] += lambda[mi + i] * (dh[i * n + j] - bdh[i * n + j]);
++            double ss = 0, sy = 0, yy = 0;
++            for(uz j = 0; j < n; ++j) {
++                ss += sv[j] * sv[j];
++                sy += sv[j] * y[j];
++                yy += y[j] * y[j];
++            }
++            if(ss > 1e-24) {
++                if(!b_scaled && sy > 0.0) {
++                    const double gamma = yy / sy;
++                    for(uz j = 0; j < n; ++j) B[j * n + j] = gamma;
++                    b_scaled = true;
++                }
++                double sBs = 0;
++                for(uz r = 0; r < n; ++r) {
++                    double v = 0;
++                    for(uz j = 0; j < n; ++j) v += B[r * n + j] * sv[j];
++                    Bs[r] = v;
++                    sBs += sv[r] * v;
++                }
++                double theta = 1.0;
++                if(sy < 0.2 * sBs) {
++                    theta = 0.8 * sBs / (sBs - sy);
++                    ++bfgs_damped;
++                }
++                std::vector<double> rv(n);
++                double sr = 0;
++                for(uz j = 0; j < n; ++j) {
++                    rv[j] = theta * y[j] + (1.0 - theta) * Bs[j];
++                    sr += sv[j] * rv[j];
++                }
++                if(sBs > 0.0 && sr > 0.0) {
++                    for(uz r = 0; r < n; ++r)
++                        for(uz j = 0; j < n; ++j)
++                            B[r * n + j] += -Bs[r] * Bs[j] / sBs +
++                                            rv[r] * rv[j] / sr;
++                    ++bfgs_updates;
++                } else {
++                    ++bfgs_skipped;
++                }
++            }
++        }
++        if(!have_b || moved) {
++            bx.assign(x, x + n);
++            bdf = df;
++            bdg = dg;
++            bdh = dh;
++            have_b = true;
++        }
++        uz k = 0;
++        for(uz r = 0; r < n; ++r)
++            for(uz j = 0; j <= r; ++j) values[k++] = B[r * n + j];
++        return true;
++    }
+ };
+ 
+ bool eval_f(ipindex, ipnumber * x, bool, ipnumber * obj, UserDataPtr u) {
+@@ -305,8 +394,9 @@
+             }
+         return true;
+     }
+-    if(!c.fd) return false;
+     c.where = "eval_h";
++    if(c.bfgs) return c.bfgs_hessian(x, obj_factor, lambda, values);
++    if(!c.fd) return false;
+     return c.hessian(x, obj_factor, lambda, values);
+ }
+ 
+@@ -340,7 +430,13 @@
+         bool inside = true;
+         for(uz j = 0; j < c.n; ++j)
+             inside &= c.ix[j] >= c.opt.lb[j] && c.ix[j] <= c.opt.ub[j];
+-        if(inside && c.f <= c.opt.stopval && viol <= c.opt.constraint_tol) {
++        // Phase 1 rows are row - v with f = v: the largest model row is
++        // f + max g, whether or not v is tight.
++        double maxg = -std::numeric_limits<double>::infinity();
++        for(uz i = 0; i < c.mi; ++i) maxg = std::max(maxg, c.g[i]);
++        const bool rows_ok = c.p1rows && c.me == 0 && c.f + maxg <= c.opt.stopval;
++        if(inside && (rows_ok || (c.f <= c.opt.stopval &&
++                                  viol <= c.opt.constraint_tol))) {
+             c.stop_x = c.ix;
+             c.reason = StopReason::Stopval;
+             return false;
+@@ -360,8 +456,8 @@
+ }
+ 
+ // GS_IPOPT_OPTS="key=value;key=value": integer, then number, then string.
+-void env_options(IpoptProblem ip) {
+-    const char * env = std::getenv("GS_IPOPT_OPTS");
++void env_options(IpoptProblem ip, const char * name) {
++    const char * env = std::getenv(name);
+     if(!env) return;
+     std::string all(env);
+     std::size_t pos = 0;
+@@ -449,7 +545,8 @@
+     str_option(ip, "linear_solver", "mumps");
+     num_option(ip, "bound_relax_factor", 0.0);
+     str_option(ip, "honor_original_bounds", "yes");
+-    str_option(ip, "hessian_approximation", c.fd ? "exact" : "limited-memory");
++    str_option(ip, "hessian_approximation",
++               (c.fd || c.bfgs) ? "exact" : "limited-memory");
+     if(o.maxtime > 0.0) num_option(ip, "max_wall_time", o.maxtime);
+     if(const char * out = std::getenv("GS_IPOPT_OUTPUT")) {
+         const char * lvl = std::getenv("GS_IPOPT_PRINT");
+@@ -457,13 +554,29 @@
+                            std::to_string(g_output_counter.fetch_add(1));
+         OpenIpoptOutputFile(ip, file.data(), lvl ? std::atoi(lvl) : 5);
+     }
+-    env_options(ip);
++    env_options(ip, "GS_IPOPT_OPTS");
++    if(o.role == 1) env_options(ip, "GS_IPOPT_OPTS_P1");
++    if(o.role == 2) env_options(ip, "GS_IPOPT_OPTS_P2");
++    if(o.role == 3) env_options(ip, "GS_IPOPT_OPTS_RS");
+     SetIntermediateCallback(ip, &intermediate);
+ 
+     std::vector<double> xs = x;
+     double obj = 0.0;
+-    const int status =
+-        IpoptSolve(ip, xs.data(), nullptr, &obj, nullptr, nullptr, nullptr, &c);
++    std::vector<double> mg(m, 0.0), mzl(n, 0.0), mzu(n, 0.0);
++    const bool warm = o.warm_zl.size() == n && o.warm_zu.size() == n &&
++                      o.warm_lambda.size() == m;
++    if(warm) {
++        mg = o.warm_lambda;
++        mzl = o.warm_zl;
++        mzu = o.warm_zu;
++        str_option(ip, "warm_start_init_point", "yes");
++        env_options(ip, "GS_IPOPT_OPTS_WARM");
++    }
++    const int status = IpoptSolve(ip, xs.data(), nullptr, &obj, mg.data(),
++                                  mzl.data(), mzu.data(), &c);
++    r.mult_g = std::move(mg);
++    r.mult_zl = std::move(mzl);
++    r.mult_zu = std::move(mzu);
+     FreeIpoptProblem(ip);
+     error = c.error;
+ 
+diff -ru src.orig_exp/gs/solve/local.cpp src/gs/solve/local.cpp
+--- src.orig_exp/gs/solve/local.cpp	2026-10-12 04:42:11.554239344 +0200
++++ src/gs/solve/local.cpp	2026-10-12 06:07:19.431345094 +0200
+@@ -4,6 +4,8 @@
+ #include <cmath>
+ #include <exception>
+ #include <stdexcept>
++#include <cstdlib>
++#include <limits>
+ 
+ #include <nlopt.hpp>
+ 
+@@ -45,6 +47,10 @@
+             return nlopt::LD_SLSQP;
+         case Algorithm::COBYLA:
+             return nlopt::LN_COBYLA;
++        case Algorithm::X_CCSAQ:
++            return nlopt::LD_CCSAQ;
++        case Algorithm::X_MMA:
++            return nlopt::LD_MMA;
+         case Algorithm::IPOPT:
+         case Algorithm::IPOPT_FDH:
+             break;
+@@ -186,7 +192,22 @@
+         std::copy(x, x + n, cx.begin());
+         have = true;
+         have_grad = grad;
++        // Steelman experiment (GS_P1STOP_ROWS): phase 1 ends once the
++        // largest model row f + max g meets stopval, v tight or not.
++        if(p1rows && me == 0 && !bad) {
++            double maxg = -std::numeric_limits<double>::infinity();
++            for(std::size_t i = 0; i < mi; ++i) maxg = std::max(maxg, g[i]);
++            bool inside = true;
++            for(std::size_t j = 0; j < n; ++j)
++                inside &= x[j] >= opt.lb[j] && x[j] <= opt.ub[j];
++            if(inside && f + maxg <= opt.stopval) {
++                rows_stop.assign(x, x + n);
++                throw nlopt::forced_stop();
++            }
++        }
+     }
++    bool p1rows = false;
++    std::vector<double> rows_stop;
+ 
+     static double objective(unsigned, const double * x, double * grad,
+                             void * data) {
+@@ -210,6 +231,15 @@
+         if(grad) std::copy(d->dh.begin(), d->dh.end(), grad);
+     }
+ 
++    static void neg_equalities(unsigned, double * result, unsigned,
++                               const double * x, double * grad, void * data) {
++        auto * d = static_cast<Driver *>(data);
++        d->ensure(x, grad != nullptr);
++        for(std::size_t i = 0; i < d->me; ++i) result[i] = -d->h[i];
++        if(grad)
++            for(std::size_t k = 0; k < d->dh.size(); ++k) grad[k] = -d->dh[k];
++    }
++
+     LocalProblem & problem;
+     const LocalOptions & opt;
+     std::size_t n, mi, me;
+@@ -259,6 +289,7 @@
+     }
+ 
+     Driver d(problem, options);
++    d.p1rows = options.role == 1 && std::getenv("GS_P1STOP_ROWS");
+     nlopt::opt opt(nlopt_algorithm(options.algorithm),
+                    static_cast<unsigned>(n));
+     // Codes are read from the return value; exceptions from optimize() would
+@@ -271,10 +302,22 @@
+         opt.add_inequality_mconstraint(
+             &Driver::inequalities, &d,
+             std::vector<double>(uz(problem.m_ineq()), options.constraint_tol));
+-    if(problem.m_eq() > 0)
++    const bool ineq_only = options.algorithm == Algorithm::X_CCSAQ ||
++                           options.algorithm == Algorithm::X_MMA;
++    if(problem.m_eq() > 0 && !ineq_only)
+         opt.add_equality_mconstraint(
+             &Driver::equalities, &d,
+             std::vector<double>(uz(problem.m_eq()), options.constraint_tol));
++    // Experiment: MMA / CCSAQ take no equality constraint; h = 0 becomes
++    // h <= 0 and -h <= 0.
++    if(problem.m_eq() > 0 && ineq_only) {
++        opt.add_inequality_mconstraint(
++            &Driver::equalities, &d,
++            std::vector<double>(uz(problem.m_eq()), options.constraint_tol));
++        opt.add_inequality_mconstraint(
++            &Driver::neg_equalities, &d,
++            std::vector<double>(uz(problem.m_eq()), options.constraint_tol));
++    }
+     opt.set_xtol_rel(options.xtol_rel);
+     opt.set_ftol_rel(options.ftol_rel);
+     opt.set_maxeval(options.maxeval);
+@@ -297,6 +340,10 @@
+     r.status = status_of(r.nlopt_code);
+     if(r.status == LocalStatus::Stopped && !d.stopped)
+         r.status = LocalStatus::Failure;
++    if(!d.rows_stop.empty()) {
++        x0 = d.rows_stop;
++        r.status = LocalStatus::StopvalReached;
++    }
+     if(const char * msg = opt.get_errmsg()) r.message = msg;
+ 
+     // nlopt's reported value may belong to another iterate, and a mapped
+diff -ru src.orig_exp/gs/solve/nlp.cpp src/gs/solve/nlp.cpp
+--- src.orig_exp/gs/solve/nlp.cpp	2026-10-12 02:14:35.000000000 +0200
++++ src/gs/solve/nlp.cpp	2026-10-12 06:03:05.709194030 +0200
+@@ -2,6 +2,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdlib>
+ #include <limits>
+ #include <stdexcept>
+ 
+@@ -10,6 +11,7 @@
+ namespace {
+ using uz = std::size_t;
+ constexpr double kInf = std::numeric_limits<double>::infinity();
++constexpr double kP1L1Floor = -1e-4;  // GS_PHASE1_L1 slack lower bound
+ }  // namespace
+ 
+ double bound_shift(const Model & m, int criterion, double bound) {
+@@ -41,11 +43,14 @@
+     }
+ 
+     if(mode_ == NlpMode::Phase1) {
+-        n_ = model_n_ + 1;
++        p1_l1_ = std::getenv("GS_PHASE1_L1") != nullptr;
++        n_ = model_n_ + (p1_l1_ ? static_cast<int>(m.groups().size()) : 1);
+         for(int r = 0; r < rows; ++r) {
+-            const bool eq = m.groups()[uz(layout_.rows[uz(r)].group)].equality;
+-            ineq_.push_back({r, 1.0, model_n_});
+-            if(eq) ineq_.push_back({r, -1.0, model_n_});
++            const int grp = layout_.rows[uz(r)].group;
++            const bool eq = m.groups()[uz(grp)].equality;
++            const int aux = p1_l1_ ? model_n_ + grp : model_n_;
++            ineq_.push_back({r, 1.0, aux});
++            if(eq) ineq_.push_back({r, -1.0, aux});
+         }
+         ineq_model_ = static_cast<int>(ineq_.size());
+         piece_aux_.assign(layout_.objective.size(), -1);
+@@ -103,10 +108,11 @@
+     const uz n = uz(n_), nm = uz(model_n_);
+ 
+     if(mode_ == NlpMode::Phase1) {
+-        *out.f = x[nm];
++        *out.f = 0.0;
++        for(uz k = nm; k < n; ++k) *out.f += x[k];
+         if(grad) {
+             std::fill(out.df, out.df + n, 0.0);
+-            out.df[nm] = 1.0;
++            for(uz k = nm; k < n; ++k) out.df[k] = 1.0;
+         }
+     } else {
+         double f = 0.0;
+@@ -150,7 +156,17 @@
+     std::vector<double> xa(uz(n_), 0.0);
+     std::copy(x.begin(), x.begin() + static_cast<std::ptrdiff_t>(nm),
+               xa.begin());
+-    if(mode_ == NlpMode::Phase1) {
++    if(mode_ == NlpMode::Phase1 && p1_l1_) {
++        eval_model(x.data(), false);
++        const Model & m = ev_->model();
++        for(uz k = nm; k < uz(n_); ++k) xa[k] = kP1L1Floor;
++        for(uz r = 0; r < g_.size(); ++r) {
++            const int grp = layout_.rows[r].group;
++            double v = g_[r];
++            if(m.groups()[uz(grp)].equality) v = std::fabs(v);
++            if(std::isfinite(v)) xa[nm + uz(grp)] = std::max(xa[nm + uz(grp)], v);
++        }
++    } else if(mode_ == NlpMode::Phase1) {
+         xa[nm] = max_row(x);
+         if(!std::isfinite(xa[nm])) xa[nm] = 0.0;
+     } else {
+@@ -163,6 +179,13 @@
+ 
+ std::vector<double> NlpProblem::lower_bounds() const {
+     std::vector<double> lb(uz(n_), -kInf);
++    // Steelman experiment: GS_AUX_LB gives Phase2 epigraph columns a finite
++    // lower bound (a formulation change).
++    if(mode_ == NlpMode::Phase1 && p1_l1_)
++        std::fill(lb.begin() + model_n_, lb.end(), kP1L1Floor);
++    if(mode_ == NlpMode::Phase2)
++        if(const char * e = std::getenv("GS_AUX_LB"))
++            std::fill(lb.begin() + model_n_, lb.end(), std::atof(e));
+     std::fill(lb.begin(), lb.begin() + model_n_, 0.0);
+     return lb;
+ }
+diff -ru src.orig_exp/gs/solve/run.cpp src/gs/solve/run.cpp
+--- src.orig_exp/gs/solve/run.cpp	2026-10-12 05:04:48.227391853 +0200
++++ src/gs/solve/run.cpp	2026-10-12 06:03:05.709194030 +0200
+@@ -10,6 +10,8 @@
+ #include <stdexcept>
+ #include <thread>
+ #include <cstdlib>
++#include <map>
++#include <tuple>
+ 
+ namespace gs {
+ 
+@@ -133,6 +135,34 @@
+     return s == LocalStatus::RoundoffLimited || s == LocalStatus::Failure;
+ }
+ 
++// Steelman experiment: identity of each Phase2 solver row ([ineq; eq] order
++// of NlpProblem), so Ipopt multipliers survive sample insertion.
++using RowKey = std::tuple<int, int, int, double>;
++std::vector<RowKey> p2_keys(const Model & m, const NlpProblem & P) {
++    const NlpLayout & L = P.layout();
++    const SampleSets & S = P.samples();
++    auto tval = [&](int sweep, int sample) {
++        return (sweep >= 0 && sample >= 0) ? S.t[uz(sweep)][uz(sample)] : -1e300;
++    };
++    std::vector<RowKey> ineq, eq;
++    for(const NlpRow & r : L.rows) {
++        const RowGroup & g = m.groups()[uz(r.group)];
++        (g.equality ? eq : ineq)
++            .emplace_back(0, r.group, r.split, tval(g.sweep, r.sample));
++    }
++    for(const NlpObjPiece & pc : L.objective)
++        if(pc.epigraph)
++            ineq.emplace_back(1, pc.criterion, 0,
++                              tval(m.criteria()[uz(pc.criterion)].sweep, pc.sample));
++    ineq.insert(ineq.end(), eq.begin(), eq.end());
++    return ineq;
++}
++
++double env_double(const char * name, double def) {
++    const char * e = std::getenv(name);
++    return e ? std::atof(e) : def;
++}
++
+ LocalSummary summary(const LocalResult & lr, NlpMode mode,
+                      const SampleSets & S) {
+     LocalSummary ls;
+@@ -244,6 +274,12 @@
+                     const std::vector<double> xa = P1.start(x1);
+                     LocalOptions o = local_options(s, P1, xa, seed, stop);
+                     o.stopval = kPhase1Target;
++                    // GS_PHASE1_L1: every group slack is >= -1e-4, so this
++                    // sum puts every slack below -0.5e-4.
++                    if(std::getenv("GS_PHASE1_L1"))
++                        o.stopval = kPhase1Target *
++                                    (static_cast<double>(P1.n() - m.n()) - 0.5);
++                    o.role = 1;
+                     // Experiment: GS_PHASE1_ALG=IPOPT runs phase 1 with Ipopt
+                     // whatever the algorithm of phase 2.
+                     if(const char * p1 = std::getenv("GS_PHASE1_ALG"))
+@@ -302,12 +338,41 @@
+             int resolves = 0;
+             std::uint64_t resolve_kick = hash2(seed, 0x5e501feULL);
+             long stuck_evals = 0;  // phase-2 evaluations on these samples
++            // Steelman experiment hooks.
++            const int max_resolves = static_cast<int>(
++                env_double("GS_MAX_RESOLVES", kMaxResolves));
++            const double resolve_kick_size =
++                env_double("GS_RESOLVE_KICK", kResolveKick);
++            const bool warm_mult = std::getenv("GS_IPOPT_WARM_MULT") != nullptr;
++            std::map<RowKey, double> prev_lam;
++            std::vector<double> prev_zl, prev_zu;
+             for(int it = 1; it <= s.max_exchange_iterations && !r.stopped;
+                 ++it) {
+                 NlpProblem P2(ev, S, NlpMode::Phase2, bounds);
+                 const std::vector<double> xa = P2.start(x);
+-                const LocalResult lr =
+-                    minimize(P2, xa, local_options(s, P2, xa, seed, stop));
++                LocalOptions o2 = local_options(s, P2, xa, seed, stop);
++                o2.role = it == 1 ? 2 : 3;
++                if(const char * p2 = std::getenv("GS_PHASE2_ALG"))
++                    if(const auto a = parse_algorithm(p2)) o2.algorithm = *a;
++                std::vector<RowKey> keys;
++                if(warm_mult) keys = p2_keys(m, P2);
++                if(warm_mult && it > 1 && prev_zl.size() == xa.size() &&
++                   keys.size() == uz(P2.m_ineq() + P2.m_eq())) {
++                    o2.warm_zl = prev_zl;
++                    o2.warm_zu = prev_zu;
++                    o2.warm_lambda.resize(keys.size(), 0.0);
++                    for(uz i = 0; i < keys.size(); ++i)
++                        if(auto f = prev_lam.find(keys[i]); f != prev_lam.end())
++                            o2.warm_lambda[i] = f->second;
++                }
++                const LocalResult lr = minimize(P2, xa, o2);
++                if(warm_mult && lr.mult_g.size() == keys.size()) {
++                    prev_lam.clear();
++                    for(uz i = 0; i < keys.size(); ++i)
++                        prev_lam[keys[i]] = lr.mult_g[i];
++                    prev_zl = lr.mult_zl;
++                    prev_zu = lr.mult_zu;
++                }
+                 stuck_evals += lr.evaluations;
+                 std::copy(lr.x.begin(),
+                           lr.x.begin() + static_cast<std::ptrdiff_t>(nm),
+@@ -341,7 +406,7 @@
+                         add.emplace_back(m.criteria()[uz(ci)].sweep, cc.t);
+                 }
+                 const bool may_resolve =
+-                    resolves < kMaxResolves &&
++                    resolves < max_resolves &&
+                     stuck_evals < kResolveBudget * s.maxeval;
+                 if(feasible && add.empty()) {
+                     if(!solve_failed(lr.status)) {
+@@ -357,8 +422,8 @@
+                         const double u = static_cast<double>(
+                                              splitmix64(resolve_kick) >> 11) *
+                                          0x1.0p-53;
+-                        v = std::clamp(v + kResolveKick * (2.0 * u - 1.0), 0.0,
+-                                       1.0);
++                        v = std::clamp(v + resolve_kick_size * (2.0 * u - 1.0),
++                                       0.0, 1.0);
+                     }
+                     continue;
+                 }
+diff -ru src.orig_exp/gs/solve/settings.cpp src/gs/solve/settings.cpp
+--- src.orig_exp/gs/solve/settings.cpp	2026-10-12 04:38:59.680527908 +0200
++++ src/gs/solve/settings.cpp	2026-10-12 06:07:19.431345094 +0200
+@@ -20,6 +20,10 @@
+             return "IPOPT";
+         case Algorithm::IPOPT_FDH:
+             return "IPOPT_FDH";
++        case Algorithm::X_CCSAQ:
++            return "X_CCSAQ";
++        case Algorithm::X_MMA:
++            return "X_MMA";
+     }
+     return "?";
+ }
+@@ -30,10 +34,11 @@
+         return static_cast<char>(std::toupper(c));
+     });
+     for(const Algorithm a : {Algorithm::SLSQP, Algorithm::COBYLA,
+-                             Algorithm::IPOPT, Algorithm::IPOPT_FDH}) {
++                             Algorithm::IPOPT, Algorithm::IPOPT_FDH,
++                             Algorithm::X_CCSAQ, Algorithm::X_MMA}) {
+         const std::string_view n = algorithm_name(a);
+         if(up == n) return a;
+-        if(a == Algorithm::IPOPT || a == Algorithm::IPOPT_FDH) continue;
++        if(a != Algorithm::SLSQP && a != Algorithm::COBYLA) continue;
+         const std::string_view prefix = a == Algorithm::COBYLA ? "LN_" : "LD_";
+         if(up.size() == prefix.size() + n.size() && up.starts_with(prefix) &&
+            up.ends_with(n))
+diff -ru include.orig_exp/gs/solve/local.hpp include/gs/solve/local.hpp
+--- include.orig_exp/gs/solve/local.hpp	2026-10-12 04:45:12.665725925 +0200
++++ include/gs/solve/local.hpp	2026-10-12 05:43:30.873606112 +0200
+@@ -69,6 +69,11 @@
+     // evaluation. nlopt's own
+     // force_stop() must not be called from another thread.
+     const std::atomic<bool> * stop = nullptr;
++    // Steelman experiment: which solve this is (0 unknown, 1 phase 1,
++    // 2 first phase-2 solve, 3 phase-2 re-solve from a previous phase-2 x),
++    // and optional Ipopt warm-start multipliers (empty = none).
++    int role = 0;
++    std::vector<double> warm_zl, warm_zu, warm_lambda;
+ };
+ 
+ struct LocalResult {
+@@ -90,6 +95,8 @@
+     long out_of_bounds = 0;        // evaluations requested outside lb/ub
+     double out_of_bounds_max = 0.0;  // largest distance outside lb/ub
+     int iterations = 0;            // last Ipopt iteration count seen
++    // Ipopt's final multipliers (empty for nlopt).
++    std::vector<double> mult_zl, mult_zu, mult_g;
+ };
+ 
+ inline constexpr double kNonFiniteValue = 1e10;
+diff -ru include.orig_exp/gs/solve/nlp.hpp include/gs/solve/nlp.hpp
+--- include.orig_exp/gs/solve/nlp.hpp	2026-10-12 02:14:35.000000000 +0200
++++ include/gs/solve/nlp.hpp	2026-10-12 06:03:05.709194030 +0200
+@@ -78,6 +78,8 @@
+     std::vector<RowRef> ineq_;   // model rows first, then epigraph pieces
+     std::vector<RowRef> eq_;
+     int ineq_model_ = 0;          // model rows at the front of ineq_
++    // Steelman experiment GS_PHASE1_L1: one slack per row group, sum minimised.
++    bool p1_l1_ = false;
+     std::vector<int> piece_aux_;  // per objective piece: z index or -1
+     std::vector<int> epi_crit_;
+     std::vector<double> g_, g_jac_, obj_, obj_jac_;
+diff -ru include.orig_exp/gs/solve/settings.hpp include/gs/solve/settings.hpp
+--- include.orig_exp/gs/solve/settings.hpp	2026-10-12 04:38:59.680527908 +0200
++++ include/gs/solve/settings.hpp	2026-10-12 06:07:19.431345094 +0200
+@@ -14,7 +14,7 @@
+ 
+ // IPOPT: Ipopt (C interface) with a limited-memory Hessian; IPOPT_FDH: Ipopt
+ // with the Lagrangian Hessian from central differences of exact gradients.
+-enum class Algorithm : std::uint8_t { SLSQP, COBYLA, IPOPT, IPOPT_FDH };
++enum class Algorithm : std::uint8_t { SLSQP, COBYLA, IPOPT, IPOPT_FDH, X_CCSAQ, X_MMA };
+ 
+ // "SLSQP", "COBYLA", "IPOPT", "IPOPT_FDH".
+ std::string_view algorithm_name(Algorithm a);

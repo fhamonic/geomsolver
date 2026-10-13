@@ -1,0 +1,24 @@
+# The solved fold-up desk at a = 0.9489 rad, where the board passes closest
+# to the lamp, in a tall window: the canvas and the Margins plot, Properties
+# closed so that the plot takes the canvas's width; then the Constraints
+# panel in a wider right column, where the formulas fit.
+size 1600 1500
+open docs/instances/guide-b-desk.json
+solve
+panel constraints
+action view.panel.properties
+wait 16
+# The a slider, Ctrl-clicked to type its value; the pointer then leaves it,
+# which would stay highlighted.
+click L 400 1078 ctrl
+wait 2
+text "0.9489"
+key Enter
+move 1590 10
+wait 16
+shot desk.ppm
+# The border between the left column and the right one, dragged left.
+drag L 1023 400 700 400
+move 1590 10
+wait 16
+shot constraints.ppm

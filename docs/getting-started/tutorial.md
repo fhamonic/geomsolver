@@ -80,7 +80,7 @@ constraints (margin = -violation, natural units; VIOLATED when the violation exc
 summary: feasible yes (tol 1e-07)  max violation -inf (none)  objective 0
 ```
 
-`n = 3`: two coordinates for `P` and one for `W`. In the GUI, the pole is an orange handle and its domain a dashed square. Drag the handle: it stays inside the square. The `W` slider in the Inspector changes the width.
+`n = 3`: two coordinates for `P` and one for `W`. In the GUI, the pole is an orange handle and its domain a dashed square. Drag the handle: it stays inside the square. Select `W` in the Variables panel: the slider in Properties changes the width.
 
 ![The canvas for step 2: the room, the dashed square domain of the pole in the corner, the orange pole handle labelled "pole" at (0.6, 0.6), the TV as a blue bar just in front of it facing the couch, and a thin green line from the pole to the couch.](../assets/screenshots/start-tutorial-design.png)
 
@@ -138,9 +138,9 @@ summary: feasible NO (tol 1e-07)  max violation 0.000713718 (shelf at tau=0.428)
 
 The check evaluates every for-all constraint on 2001 values of `tau`. The margin is how much room is left before the relation breaks, in the constraint's natural unit, metres here. The starting design comes 0.71 mm closer to the shelf than the 2 cm it must keep, at `tau = 0.428`. Its margins to the walls are 10.5 and 9.2 cm.
 
-In the GUI, drag the `tau` slider to about 0.43. The canvas gets a red frame and a "Violated here" box, the Inspector marks the `shelf` constraint `[here]`, and the Margins tab plots each margin against `tau`.
+In the GUI, drag the `tau` slider to about 0.43, or <kbd>Ctrl</kbd>-click it and type `0.428`. The canvas gets a red frame and a "Violated here" box, the Constraints panel shows the `shelf` constraint violated, its status starts with `[here]`, and hovering it, or selecting the row for Properties, shows it in full, and the Margins tab plots each margin against `tau`.
 
-![The GUI with step 4 loaded and the tau slider at 0.4344. The canvas has a red frame and a "Violated here (natural units)" box listing "shelf: 0.000233"; the end of the TV passes next to the lower right corner of the shelf. The Inspector shows wall_x and wall_y with green margins and shelf in red as "violated 0.000714 at tau=0.4280 [here]". The Margins plot at the bottom shows the shelf curve dipping to zero near tau = 0.43, at the white vertical line.](../assets/screenshots/start-tutorial-violated.png)
+![The GUI with step 4 loaded, the tau slider at 0.4280 and the shelf constraint selected. The canvas has a red frame, a "Violated here (natural units)" box listing "shelf: 0.000714", and "max violation 0.000714 (shelf) on 2001 samples" at its top right; the TV, with its ghosts, passes next to the lower right corner of the shelf. The Constraints panel lists wall_x and wall_y with green margins and the highlighted shelf row as "[here] violated 0.0007", in red, cut by the panel's edge. Properties shows constraint shelf: Enabled, For all tau, the formula clearance(tv, shelf) >= clr, Value now 0.019286 and the Status "[here] violated 0.000714 at tau=0.4280", in red. The Margins plot shows the shelf curve touching zero near tau = 0.43, at the white vertical line.](../assets/screenshots/start-tutorial-violated.png)
 
 !!! warning
     A constraint that depends on a sweep must say which sweep it holds for. Without `"forall": "tau"`, the `shelf` constraint is a compile error:
@@ -240,7 +240,7 @@ Open the final file:
 
 In the Solver tab, press Solve. The Solutions table lists the distinct solutions, feasible first and best first. Click a row to load its design into the editor. The document is then marked modified, and File > Save (<kbd>Ctrl+S</kbd>) writes the design values into the `value` keys of the file.
 
-![The GUI after Solve on step 5, with row 1 loaded. The canvas reads "feasible on 2001 samples" and "maximize width = 98.81456 cm"; the TV ghosts fan out between the two walls with the pole near (0.48, 0.50). The Solver tab shows 65/65 runs and a Solutions table with one row: objective 98.814559 cm, feasible yes, 65 hits, width 98.81456 cm, protrusion 110.0000 cm. The Margins plot shows the wall_x, wall_y and protrusion:bound curves touching zero.](../assets/screenshots/start-tutorial-solved.png)
+![The GUI after Solve on step 5, with row 1 loaded and "unsaved changes" in the menu bar. The canvas reads "feasible on 2001 samples" and "maximize width = 98.81456 cm"; the TV ghosts fan out between the two walls with the pole near (0.48, 0.50). Elements lists P at (0.4834, 0.4970) m, released. The Solver tab shows 65/65 runs, "loaded a solution (2 variables)" and a Solutions table with one row: objective 98.814559 cm, feasible yes, worst protrusion:bound, 65 hits, width 98.81456 cm, protrusion 110.0000 cm. The Margins plot shows the wall_y and protrusion:bound curves at zero at tau = 0 and the wall_x curve at zero at tau = 1.](../assets/screenshots/start-tutorial-solved.png)
 
 ## 8. Explore the trade-off
 
@@ -266,7 +266,7 @@ The bounds are in the criterion's display unit, centimetres. Up to 120 cm, each 
 
 In the GUI, open the Pareto study section of the Solver tab, choose `protrusion`, type the bounds and press Run Pareto study. Click a point of the plot to load its design.
 
-![The Solver tab after a Pareto study of protrusion with the bounds 90,100,110,120,130,140: a table with one row per bound and its objective, from 79.920194 cm at 90 cm to 115.88786 cm at 140 cm, all feasible, and a plot of the objective against the protrusion bound whose slope drops after 120 cm.](../assets/screenshots/start-tutorial-pareto.png)
+![The Solver tab after a Pareto study of protrusion with the bounds 90,100,110,120,130,140: 59/59 runs, "6/6 points", a table with one row per bound and its objective, from 79.920194 cm at 90 cm to 115.88786 cm at 140 cm, all feasible, worst on protrusion:bound up to 110 cm and on shelf from 120 cm; under the Pareto study section, a plot of the objective against the protrusion bound whose slope drops after 120 cm.](../assets/screenshots/start-tutorial-pareto.png)
 
 To keep one point, save it as an instance: `--write-instance` writes the file with that point's design values and its bound.
 

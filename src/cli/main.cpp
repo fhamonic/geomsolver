@@ -51,7 +51,8 @@ const char * kUsage =
   --bound C=VALUE           replace criterion C's bound (its display unit)
   --no-current              do not use the instance's design as a start
   --no-phase1               skip the phase-1 feasibility solve
-  --initial-samples N       initial samples per sweep
+  --initial-samples N       initial samples per sweep (a sweep's own
+                            "samples" wins)
   --verify-samples N        verification grid per sweep
   --maxeval N               evaluations per nlopt solve
   --feas-tol F              feasibility tolerance (natural units)
@@ -236,9 +237,14 @@ Json bound_json(const ShownBound & b) {
 int criterion_or_throw(const gs::Model & m, const std::string & name) {
     const int c = m.find_criterion(name);
     if(c < 0) throw std::invalid_argument("no criterion named '" + name + "'");
+    if(!m.criteria()[static_cast<std::size_t>(c)].enabled)
+        throw std::invalid_argument("criterion '" + name + "' is disabled");
     if(m.criteria()[static_cast<std::size_t>(c)].group < 0)
         throw std::invalid_argument("criterion '" + name +
                                     "' has no bound (role max or min)");
+    if(m.criteria()[static_cast<std::size_t>(c)].role ==
+       gs::CriterionRole::Range)
+        throw std::invalid_argument(gs::range_override_message(name));
     return c;
 }
 
@@ -275,15 +281,17 @@ int run(const Args & a) {
     for(const auto & [path, text] : a.edits) {
         Json value = Json::parse(text, nullptr, false);
         if(value.is_discarded()) value = text;
-        std::string err;
+        std::string err, note;
         const bool existed = inst->get(path) != nullptr;
         const bool remove = value.is_null();
         const bool ok = remove ? inst->erase(path, &err)
-                               : inst->set(path, std::move(value), &err);
+                               : inst->set(path, std::move(value), &err, &note);
         if(!ok) {
             std::cerr << "--set " << path << ": " << err << "\n";
             return 2;
         }
+        if(!note.empty())
+            std::cerr << "note: --set " << path << ": " << note << "\n";
         // Instance::set creates missing keys, so a misspelt name path would
         // otherwise leave the intended value unchanged in silence. A new key
         // the schema lists ("design.A.fixed") is a normal edit.
@@ -358,13 +366,13 @@ int run(const Args & a) {
 
     std::cout << std::format("instance {}  (n = {}, {} row groups, {})\n",
                              a.instance, m.n(), m.groups().size(),
-                             gs::algorithm_name(s.algorithm));
+                             gs::algorithm_name(s.algorithm))
+              << gs::format_sweeps(m, s);
     gs::Evaluator ev(m);
     const std::vector<double> x0 = m.initial_x();
 
     if(a.eval) {
-        const gs::Check c =
-            gs::check(ev, x0, s.verify_samples, overrides, false, true);
+        const gs::Check c = gs::check(ev, x0, s, overrides, false, true);
         std::string probes_text;
         const Json probes = probe_json(m, ev, x0, probes_text);
         std::cout << gs::format_design(m, x0)
@@ -380,6 +388,8 @@ int run(const Args & a) {
             r.objective = c.v.objective;
             r.max_violation = c.v.max_violation;
             r.worst_group = c.v.worst_group;
+            r.between_violation = c.v.max_between;
+            r.between_group = c.v.worst_between_group;
             r.criteria = c.v.criteria;
             r.groups = c.v.groups;
             r.exchange = gs::ExchangeStatus::NoVariables;
@@ -388,6 +398,7 @@ int run(const Args & a) {
             j["kind"] = "evaluation";
             j["instance"] = m.instance_path().string();
             j["settings"] = gs::to_json(s);
+            j["sweeps"] = gs::sweeps_json(m, s);
             j["evaluation"] = gs::run_json(m, r);
             j["probes"] = probes;
             std::string err;
@@ -502,8 +513,7 @@ int run(const Args & a) {
     if(best && best->x.size() == static_cast<std::size_t>(m.n())) {
         std::cout << std::format("\nbest solution (run {}, {}{})\n",
                                  best->index, best->origin, best_label);
-        const gs::Check c =
-            gs::check(ev, best->x, s.verify_samples, best_bounds, false, true);
+        const gs::Check c = gs::check(ev, best->x, s, best_bounds, false, true);
         std::string probes_text;
         probes = probe_json(m, ev, best->x, probes_text);
         std::cout << gs::format_design(m, best->x)

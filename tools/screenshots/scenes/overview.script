@@ -1,0 +1,6 @@
+# The TV corner as it loads: every drawing path of the canvas (fills, a
+# concave fill, polylines, circles, ghosts, traces, fixed handles) and the
+# default layout.
+open tests/data/tv_corner_ref.json
+wait 29
+shot

@@ -79,6 +79,25 @@ std::string unstorable(const Json & v) {
     return {};
 }
 
+// The diagnostics spelling of parsed steps. parse_path also accepts
+// ".sweeps.tau", which a text comparison with format2_keys() would miss.
+std::string path_text(const std::vector<Step> & steps) {
+    std::string out;
+    for(const Step & s : steps) {
+        if(const std::string * key = std::get_if<std::string>(&s))
+            out += (out.empty() ? "" : ".") + *key;
+        else
+            out += std::format("[{}]", std::get<std::size_t>(s));
+    }
+    return out;
+}
+
+bool path_is_under(std::string_view p, std::string_view root) {
+    if(p == root) return true;
+    return p.size() > root.size() && p.starts_with(root) &&
+           (p[root.size()] == '.' || p[root.size()] == '[');
+}
+
 std::string read_file(const std::filesystem::path & p, bool & ok) {
     std::ifstream f(p, std::ios::binary);
     ok = static_cast<bool>(f);
@@ -172,6 +191,10 @@ bool schema_lists_key(std::string_view json_path) {
         }
     }
     return detail::schema_lists_key(parent, *key);
+}
+
+std::vector<std::string> format2_keys(const Json & doc) {
+    return detail::format2_keys(doc);
 }
 
 std::string dump_pretty(const Json & j, int width) {
@@ -276,8 +299,9 @@ const Json * Instance::get(std::string_view json_path) const {
     return cur;
 }
 
-bool Instance::set(std::string_view json_path, Json value,
-                   std::string * error) {
+bool Instance::set(std::string_view json_path, Json value, std::string * error,
+                   std::string * note) {
+    if(note) note->clear();
     std::vector<Step> steps;
     if(!parse_path(json_path, steps, error)) return false;
     if(const std::string why = unstorable(value); !why.empty()) {
@@ -324,6 +348,19 @@ bool Instance::set(std::string_view json_path, Json value,
     }
     *cur = std::move(value);
     dirty_ = true;
+    if(doc_.contains("format") && doc_["format"] == detail::kFormat1) {
+        const std::string written = path_text(steps);
+        for(const std::string & key : detail::format2_keys(doc_)) {
+            if(!path_is_under(key, written)) continue;
+            doc_["format"] = detail::kFormat2;
+            if(note)
+                *note = std::format(
+                    "\"format\" raised to \"{}\", which {} "
+                    "requires",
+                    detail::kFormat2, key);
+            break;
+        }
+    }
     if(const std::string * first = std::get_if<std::string>(&steps[0]);
        first && *first == "include")
         reload_includes();
@@ -372,6 +409,20 @@ bool Instance::erase(std::string_view json_path, std::string * error) {
     dirty_ = true;
     if(touches_include) reload_includes();
     return true;
+}
+
+void Instance::restore(Json doc, bool dirty) {
+    auto include_of = [](const Json & d) -> const Json * {
+        if(!d.is_object()) return nullptr;
+        const auto it = d.find("include");
+        return it == d.end() ? nullptr : &*it;
+    };
+    const Json * before = include_of(doc_);
+    const Json * after = include_of(doc);
+    const bool same = before && after ? *before == *after : before == after;
+    doc_ = std::move(doc);
+    dirty_ = dirty;
+    if(!same) reload_includes();
 }
 
 bool Instance::set_design_value(std::string_view var,

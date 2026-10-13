@@ -1,0 +1,9 @@
+# F2 with Variables focused and A selected: the name editor opens in A's
+# row.
+open tests/data/tv_corner_ref.json
+panel variables
+select design A
+wait 16
+key F2
+wait 4
+shot

@@ -30,7 +30,7 @@ It consists of:
 
 Under the hood, NLopt's SLSQP works with exact derivatives, the for-all constraints are sampled adaptively, and a seeded multistart runs on every core. Nothing is specific to one mechanism: the [corner TV example](examples/tv-corner.md) writes its four-bar linkage in the instance file.
 
-![The geomsolver window on the corner TV example after a solve: the room and the four-bar linkage with ghosts of the TV's swing on the canvas, the tau slider and the Margins plot below it, and the Inspector with the design variables and constraints on the right.](assets/screenshots/start-overview.png)
+![The geomsolver window on the corner TV example after a solve: on the left, the room and the four-bar linkage with ghosts of the TV's swing on the canvas, and the tau slider under it; on the right, the Elements list with the design points and the room's geometry, over the Constraints list with their green margins; under the canvas, the Margins plot and Properties showing the selected design point A.](assets/screenshots/start-overview.png)
 
 ## What a problem looks like
 

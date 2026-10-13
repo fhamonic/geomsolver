@@ -3,17 +3,34 @@
 #include <cstdint>
 #include <format>
 #include <map>
-#include <numbers>
 #include <set>
+#include <span>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 
 #include "builder.hpp"
+#include "gs/engine/builtins.hpp"
 #include "gs/engine/expression.hpp"
 #include "gs/engine/instance.hpp"
 #include "gs/engine/model.hpp"
+#include "schema.hpp"
 
 namespace gs {
+
+// Cutting at the bracket keeps "constraints[30]" from counting as
+// "constraints[3]".
+std::string_view isolated_item(std::string_view path) {
+    if(path.starts_with("let."))
+        return path.substr(0, path.find_first_of(".[", 4));
+    for(const std::string_view list : {"constraints[", "criteria[", "display["})
+        if(path.starts_with(list)) {
+            const std::size_t end = path.find(']');
+            return end == std::string_view::npos ? std::string_view()
+                                                 : path.substr(0, end + 1);
+        }
+    return {};
+}
 
 namespace detail {
 namespace {
@@ -91,17 +108,6 @@ int first_column(const Ast & a) {
     return p->column;
 }
 
-bool is_identifier(std::string_view s) {
-    if(s.empty()) return false;
-    auto alpha = [](char c) {
-        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
-    };
-    if(!alpha(s[0])) return false;
-    for(const char c : s)
-        if(!alpha(c) && !(c >= '0' && c <= '9')) return false;
-    return true;
-}
-
 bool all_finite(const std::vector<double> & v) {
     for(const double d : v)
         if(!std::isfinite(d)) return false;
@@ -111,6 +117,15 @@ bool all_finite(const std::vector<double> & v) {
 // Compiler::expr recursion through let bindings; the parser bounds each
 // expression on its own (kMaxExpressionDepth), not a chain of lets.
 constexpr int kMaxCompileDepth = 2 * kMaxExpressionDepth;
+
+// Keeps v[i] where to[i] >= 0; to[] counts up over the kept entries.
+template <class T>
+void keep_mapped(std::vector<T> & v, const std::vector<int> & to) {
+    std::vector<T> kept;
+    for(std::size_t i = 0; i < v.size(); ++i)
+        if(to[i] >= 0) kept.push_back(std::move(v[i]));
+    v = std::move(kept);
+}
 
 }  // namespace
 
@@ -136,6 +151,7 @@ public:
     int objective = -1;  // criterion index of the objective, -1 for none
     int n_coords = 0;
     int values_size = 0;
+    std::vector<ExcludedItem> excluded;
 
     bool run();
 
@@ -181,6 +197,10 @@ private:
     void build_display();
     void build_implicit();
     void finalize();
+    // isolate_items: drops the items with errors and their users from the
+    // outputs, before build_implicit() and finalize() read them. False, with
+    // nothing changed, when an error is fatal.
+    bool exclude_items();
 
     int resolve_let(int i, int col, const Ctx & c);
     int resolve_param(int i, int col, const Ctx & c);
@@ -213,6 +233,11 @@ private:
 
     int term_index(Term t);
     void fill_expr_info(ExprInfo & e, int node);
+    // Rows of `lhs <= rhs` appended to G, a top-level abs() on the left split
+    // into two smooth rows unless G is an equality. `pair` ("lo", "hi", or ""
+    // outside a two-sided relation) goes into the row labels.
+    void le_rows(GroupImpl & G, std::vector<std::string> & labels, int lhs,
+                 int rhs, std::string_view pair, int col, const Ctx & c);
     // Error text for an aggregate compared with a bound in the direction
     // that only asks for one sample ("max_over(s, f) >= b").
     std::string existential_message(const Side & agg, std::string_view rel,
@@ -231,6 +256,10 @@ private:
     Builder B;
     std::map<std::string, NameEntry> names_;
     std::vector<Lazy> lets_, params_;
+    // Lets each expression names, by the expression's path ("let.b",
+    // "constraints[3].expr"); filled with isolate_items only. A failed let
+    // makes its users fail silently, so this is how they are found.
+    std::map<std::string, std::set<int>> let_uses_;
     std::vector<std::pair<bool, int>> stack_;
     std::vector<int> geometry_node_;
     std::vector<int> sweep_node_;
@@ -434,13 +463,14 @@ int Compiler::expr(const Ast & a, const Ctx & c) {
                 case NameKind::Design:
                     return design_node_[uz(e.index)];
                 case NameKind::Let:
+                    if(opt_.isolate_items) let_uses_[c.path].insert(e.index);
                     return resolve_let(e.index, a.column, c);
                 case NameKind::Param:
                     return resolve_param(e.index, a.column, c);
                 case NameKind::Geometry:
                     return geometry_node_[uz(e.index)];
                 case NameKind::Builtin:
-                    return B.scalar(std::numbers::pi);
+                    return B.scalar(builtin_functions()[uz(e.index)].value);
             }
             return -1;
         }
@@ -579,52 +609,22 @@ int Compiler::call(const Ast & a, const Ctx & c) {
             return -1;
         }
 
-    struct Sig {
-        int min_args, max_args;  // max_args < 0: unbounded
-    };
-    static const std::map<std::string, Sig, std::less<>> sigs = {
-        {"sqrt", {1, 1}},        {"sin", {1, 1}},
-        {"cos", {1, 1}},         {"tan", {1, 1}},
-        {"asin", {1, 1}},        {"acos", {1, 1}},
-        {"atan", {1, 1}},        {"atan2", {2, 2}},
-        {"abs", {1, 1}},         {"exp", {1, 1}},
-        {"log", {1, 1}},         {"sq", {1, 1}},
-        {"min", {1, -1}},        {"max", {1, -1}},
-        {"clamp", {3, 3}},       {"vec", {2, 2}},
-        {"dir", {1, 1}},         {"rotate", {2, 2}},
-        {"perp", {1, 1}},        {"dot", {2, 2}},
-        {"cross", {2, 2}},       {"norm", {1, 1}},
-        {"normalize", {1, 1}},   {"dist", {2, 2}},
-        {"angle", {1, 1}},       {"angle_between", {2, 2}},
-        {"sin_between", {2, 2}}, {"mean", {1, -1}},
-        {"box", {4, 4}},         {"rect", {4, 4}},
-        {"polygon", {3, -1}},    {"polyline", {2, -1}},
-        {"segment", {2, 2}},     {"circle", {2, 2}},
-        {"place", {3, 3}},       {"translate", {2, 2}},
-        {"vertex", {2, 2}},      {"center", {1, 1}},
-        {"clearance", {2, 2}},   {"min_x", {1, -1}},
-        {"max_x", {1, -1}},      {"min_y", {1, -1}},
-        {"max_y", {1, -1}},      {"max_proj", {2, 2}},
-        {"min_proj", {2, 2}},    {"dyad", {5, 5}},
-        {"branch_of", {3, 3}},   {"visible_fraction", {3, -1}},
-    };
-    auto sit = sigs.find(f);
-    if(sit == sigs.end()) {
+    const Builtin * sig = find_builtin(f);
+    if(!sig || sig->kind != Builtin::Kind::Function) {
         error(c.path, col, std::format("unknown function '{}'", f));
         return -1;
     }
-    const Sig sig = sit->second;
-    if(static_cast<int>(na) < sig.min_args ||
-       (sig.max_args >= 0 && static_cast<int>(na) > sig.max_args)) {
+    if(static_cast<int>(na) < sig->min_args ||
+       (sig->max_args >= 0 && static_cast<int>(na) > sig->max_args)) {
         std::string want =
-            sig.max_args == sig.min_args ? std::to_string(sig.min_args)
-            : sig.max_args < 0
-                ? std::format("at least {}", sig.min_args)
-                : std::format("{} to {}", sig.min_args, sig.max_args);
-        error(
-            c.path, col,
-            std::format("{}() takes {} argument{}, got {}", f, want,
-                        sig.min_args == 1 && sig.max_args <= 1 ? "" : "s", na));
+            sig->max_args == sig->min_args ? std::to_string(sig->min_args)
+            : sig->max_args < 0
+                ? std::format("at least {}", sig->min_args)
+                : std::format("{} to {}", sig->min_args, sig->max_args);
+        error(c.path, col,
+              std::format("{}() takes {} argument{}, got {}", f, want,
+                          sig->min_args == 1 && sig->max_args <= 1 ? "" : "s",
+                          na));
         return -1;
     }
     std::vector<int> x(na);
@@ -981,7 +981,7 @@ void Compiler::check_keys(const Json & j, const std::string & path,
     static const std::set<std::string, std::less<>> constraint_keys = {
         "name", "expr", "forall", "enabled", "note"};
     static const std::set<std::string, std::less<>> criterion_keys = {
-        "name", "expr", "role", "bound", "unit", "note"};
+        "name", "expr", "role", "bound", "unit", "enabled", "note"};
     const auto & known = criterion ? criterion_keys : constraint_keys;
     for(const auto & [key, v] : j.items()) {
         const std::string at = path + "." + key;
@@ -993,9 +993,10 @@ void Compiler::check_keys(const Json & j, const std::string & path,
                   "one (role \"max\" / \"min\") and run a Pareto study, or "
                   "write the weighted sum in one expression");
         } else if(criterion && key == "bound" && role != "max" &&
-                  role != "min") {
+                  role != "min" && role != "range") {
             warning(at, std::format("ignored for role \"{}\": only roles "
-                                    "\"max\" and \"min\" have a bound",
+                                    "\"max\", \"min\" and \"range\" have a "
+                                    "bound",
                                     role));
         } else if(!criterion && key == "unit") {
             warning(at,
@@ -1083,6 +1084,9 @@ void Compiler::build_sweeps() {
         if(hi >= 0) si.max = B.values(hi)[0];
         if(lo >= 0 && hi >= 0 && !(si.max >= si.min))
             error(path, -1, "sweep max must be >= min");
+        if(s.contains("samples")) si.samples = s["samples"].get<int>();
+        if(s.contains("sampling") && s["sampling"] == "fixed")
+            si.sampling = Sampling::Fixed;
         sweeps[uz(k)] = si;
         ++k;
     }
@@ -1138,6 +1142,7 @@ void Compiler::build_design() {
             const int dom = constant_expr(d.at("domain"), v.path + ".domain",
                                           ValueType::Shape);
             ok = dom >= 0;
+            bool point_domain = false;
             if(ok) {
                 v.domain = B.geo(dom);
                 const int nv = v.domain.vertex_count();
@@ -1156,21 +1161,41 @@ void Compiler::build_design() {
                     const Vec2d e1{p1.x - p0.x, p1.y - p0.y},
                         e2{p3.x - p0.x, p3.y - p0.y};
                     const double area = e1.x * e2.y - e1.y * e2.x;
+                    // A side computed from params that cancel can come out as
+                    // rounding noise instead of 0.
+                    const bool zero1 = std::hypot(e1.x, e1.y) <= 1e-12 * scale,
+                               zero2 = std::hypot(e2.x, e2.y) <= 1e-12 * scale;
                     if(std::fabs(ex) <= 1e-9 * scale &&
-                       std::fabs(ey) <= 1e-9 * scale && area != 0.0) {
-                        ch.kind = ChartKind::Parallelogram;
-                        ch.origin = p0;
-                        ch.e1 = e1;
-                        ch.e2 = e2;
+                       std::fabs(ey) <= 1e-9 * scale) {
+                        if(zero1 != zero2) {
+                            // A box or rect of zero width or height is a
+                            // segment. A 2-coordinate chart would have one
+                            // that moves nothing, so every run would end at
+                            // another value of it (one variant per run).
+                            ch.kind = ChartKind::Segment;
+                            ch.origin = p0;
+                            ch.e1 = zero1 ? e2 : e1;
+                        } else if(area != 0.0 && !zero1) {
+                            ch.kind = ChartKind::Parallelogram;
+                            ch.origin = p0;
+                            ch.e1 = e1;
+                            ch.e2 = e2;
+                        }
                     }
                 }
                 if(ch.kind == ChartKind::Fixed) {
                     if(v.domain.kind == ShapeKind::Polyline && nv == 2) {
                         const Vec2d p0 = v.domain.vertex(0),
                                     p1 = v.domain.vertex(1);
-                        ch.kind = ChartKind::Segment;
                         ch.origin = p0;
                         ch.e1 = {p1.x - p0.x, p1.y - p0.y};
+                        if(std::hypot(ch.e1.x, ch.e1.y) <=
+                           1e-12 * std::max({1.0, std::fabs(p0.x),
+                                             std::fabs(p0.y), std::fabs(p1.x),
+                                             std::fabs(p1.y)}))
+                            point_domain = true;
+                        else
+                            ch.kind = ChartKind::Segment;
                     } else if(v.domain.kind == ShapeKind::Polyline) {
                         error(v.path + ".domain", -1,
                               "a point domain must be a polygon, a circle or a "
@@ -1196,10 +1221,28 @@ void Compiler::build_design() {
                                 y1 = std::max(y1, q.y);
                             }
                         }
-                        ch.kind = ChartKind::BoundingBox;
                         ch.origin = {x0, y0};
-                        ch.e1 = {x1 - x0, 0.0};
-                        ch.e2 = {0.0, y1 - y0};
+                        const double tol =
+                            1e-12 * std::max({1.0, std::fabs(x0), std::fabs(x1),
+                                              std::fabs(y0), std::fabs(y1)});
+                        const bool flat_x = !(x1 - x0 > tol),
+                                   flat_y = !(y1 - y0 > tol);
+                        if(flat_x && flat_y) {
+                            // A single point: nothing to choose.
+                            point_domain = true;
+                        } else if(flat_x || flat_y) {
+                            // A polygon flat along one axis covers the whole
+                            // segment of its bounding box: the segment chart
+                            // is exact, with no dead coordinate and no
+                            // membership row that is 0 everywhere.
+                            ch.kind = ChartKind::Segment;
+                            ch.e1 = {flat_x ? 0.0 : x1 - x0,
+                                     flat_y ? 0.0 : y1 - y0};
+                        } else {
+                            ch.kind = ChartKind::BoundingBox;
+                            ch.e1 = {x1 - x0, 0.0};
+                            ch.e2 = {0.0, y1 - y0};
+                        }
                     }
                 }
                 if(ok &&
@@ -1217,7 +1260,13 @@ void Compiler::build_design() {
                     const int cen = B.make(Op::Center, {dom});
                     v.value = B.values(cen);
                 }
-                if(ok) {
+                if(ok && point_domain) {
+                    // Two coordinates that move nothing would make every run
+                    // a variant of its own; the point is fixed instead, and a
+                    // fixed value is used as written, so it is the domain's.
+                    v.fixed = true;
+                    v.value = {ch.origin.x, ch.origin.y};
+                } else if(ok) {
                     const int pt = B.vec(v.value[0], v.value[1]);
                     const double gap =
                         B.values(B.make(Op::Clearance, {pt, dom}))[0];
@@ -1305,13 +1354,28 @@ void Compiler::build_constraints() {
             continue;
         }
         const Ctx c{epath, false, {}};
-        const Side L = side(*ast->args[0], c);
-        const Side R = side(*ast->args[1], c);
-        if(L.node < 0 || R.node < 0) continue;
+        // A `>=` chain is read from its right end, so that the rows of every
+        // chain are (lo) then (hi). cols[k] is the column of the comparison
+        // between asts[k] and asts[k + 1].
+        std::vector<const Ast *> asts;
+        for(const auto & arg : ast->args) asts.push_back(arg.get());
+        std::vector<int> cols = {ast->column, ast->second_column};
+        std::string rel = ast->text;
+        const bool chain = asts.size() == 3;
+        if(chain && rel == ">=") {
+            std::ranges::reverse(asts);
+            std::ranges::reverse(cols);
+            rel = "<=";
+        }
+        std::vector<Side> sides;
+        for(const Ast * a : asts) sides.push_back(side(*a, c));
+        if(std::ranges::any_of(sides,
+                               [](const Side & s) { return s.node < 0; }))
+            continue;
         bool bad = false;
-        for(const auto & [sd, ast_side] :
-            {std::pair<const Side &, const Ast &>{L, *ast->args[0]},
-             std::pair<const Side &, const Ast &>{R, *ast->args[1]}}) {
+        for(std::size_t k = 0; k < sides.size(); ++k) {
+            const Side & sd = sides[k];
+            const Ast & ast_side = *asts[k];
             if(ty(sd.node) != ValueType::Scalar) {
                 error(epath, first_column(ast_side),
                       std::format("constraint sides must be Scalar, got {}",
@@ -1347,8 +1411,10 @@ void Compiler::build_constraints() {
             }
         }
         if(bad) continue;
-        const std::string & rel = ast->text;
-        if(L.agg != AggKind::None || R.agg != AggKind::None) {
+        for(std::size_t k = 0; k + 1 < sides.size(); ++k) {
+            const Side & L = sides[k];
+            const Side & R = sides[k + 1];
+            if(L.agg == AggKind::None && R.agg == AggKind::None) continue;
             const bool left = L.agg != AggKind::None;
             const Side & A = left ? L : R;
             const Side & O = left ? R : L;
@@ -1362,94 +1428,145 @@ void Compiler::build_constraints() {
                 B.node(A.node).dep == DepKind::Sweep &&
                 (seen == '=' || (A.agg == AggKind::Max) == (seen == '>'));
             if(existential) {
-                error(epath, first_column(left ? *ast->args[0] : *ast->args[1]),
+                error(epath, first_column(*asts[left ? k : k + 1]),
                       existential_message(A, seen == '='   ? "=="
                                              : seen == '<' ? "<="
                                                            : ">="));
-                continue;
+                bad = true;
             }
         }
-        if(!ci.enabled) continue;
+        if(bad) continue;
+
+        int value = sides[chain ? 1 : 0].node;
+        if(!chain) {
+            auto constant = [&](const Side & sd) {
+                return B.node(sd.node).dep == DepKind::Const;
+            };
+            const Side & L = sides[0];
+            const Side & R = sides[1];
+            if(constant(L) && !constant(R))
+                value = R.node;
+            else if(constant(L) == constant(R))
+                // Two aggregates over different sweeps have no difference
+                // node: kTwoSweeps leaves the value unset.
+                value = B.make(Op::Sub, {L.node, R.node});
+        }
+        constraints[uz(index)].value.path = epath;
+        constraints[uz(index)].value.text = ci.text;
+        fill_expr_info(constraints[uz(index)].value, value);
 
         GroupImpl G;
         G.equality = rel == "==";
-        auto node_rows = [&](int lhs, int rhs) {
-            // rows for lhs <= rhs, splitting a top-level abs on the left
-            const int col = ast->column;
-            const int e = abs_arg(lhs);
-            if(e >= 0 && !G.equality) {
-                G.rows.push_back({RowTemplate::Kind::Node,
-                                  mk(Op::Sub, {e, rhs}, col, c),
-                                  {},
-                                  {},
-                                  1.0});
-                G.rows.push_back(
-                    {RowTemplate::Kind::Node,
-                     mk(Op::Sub, {mk(Op::Neg, {e}, col, c), rhs}, col, c),
-                     {},
-                     {},
-                     1.0});
+        std::vector<std::string> labels;
+        for(std::size_t k = 0; k + 1 < sides.size(); ++k) {
+            const Side & L = sides[k];
+            const Side & R = sides[k + 1];
+            const std::string_view pair = !chain ? "" : k == 0 ? "lo" : "hi";
+            const int col = cols[k];
+            auto plain = [&](const Side & sd) {
+                return B.node(sd.node).dep != DepKind::Sweep;
+            };
+            if(L.agg == AggKind::None && R.agg == AggKind::None) {
+                if(rel == ">=")
+                    le_rows(G, labels, R.node, L.node, pair, col, c);
+                else
+                    le_rows(G, labels, L.node, R.node, pair, col, c);
+            } else if(rel == "<=" && L.agg == AggKind::Max &&
+                      R.agg == AggKind::None && plain(R)) {
+                le_rows(G, labels, L.node, R.node, pair, col, c);
+            } else if(rel == "<=" && R.agg == AggKind::Min &&
+                      L.agg == AggKind::None && plain(L)) {
+                le_rows(G, labels, L.node, R.node, pair, col, c);
+            } else if(rel == ">=" && L.agg == AggKind::Min &&
+                      R.agg == AggKind::None && plain(R)) {
+                le_rows(G, labels, R.node, L.node, pair, col, c);
+            } else if(rel == ">=" && R.agg == AggKind::Max &&
+                      L.agg == AggKind::None && plain(L)) {
+                le_rows(G, labels, R.node, L.node, pair, col, c);
             } else {
-                G.rows.push_back({RowTemplate::Kind::Node,
-                                  mk(Op::Sub, {lhs, rhs}, col, c),
-                                  {},
-                                  {},
-                                  1.0});
+                RowTemplate t;
+                t.kind = RowTemplate::Kind::Aggregate;
+                Term tl{L.node, L.agg, L.sweep, -1},
+                    tr{R.node, R.agg, R.sweep, -1};
+                // Registered for a disabled constraint, the aggregates would
+                // still run in verify() and criteria(): they would read
+                // bodies that finalize() left without a slot (nothing else
+                // reaches them when the sides run over two sweeps) and
+                // demand samples of their sweeps.
+                if(ci.enabled) {
+                    tl.agg_index = term_index(tl);
+                    tr.agg_index = term_index(tr);
+                }
+                if(rel == ">=") std::swap(tl, tr);
+                t.lhs = tl;
+                t.rhs = tr;
+                G.rows.push_back(t);
+                labels.push_back(pair.empty() ? "" : std::format("({})", pair));
             }
-        };
-        if(L.agg == AggKind::None && R.agg == AggKind::None) {
-            if(rel == ">=")
-                node_rows(R.node, L.node);
-            else
-                node_rows(L.node, R.node);
-        } else if(rel == "<=" && L.agg == AggKind::Max &&
-                  R.agg == AggKind::None &&
-                  B.node(R.node).dep != DepKind::Sweep) {
-            node_rows(L.node, R.node);
-        } else if(rel == "<=" && R.agg == AggKind::Min &&
-                  L.agg == AggKind::None &&
-                  B.node(L.node).dep != DepKind::Sweep) {
-            node_rows(L.node, R.node);
-        } else if(rel == ">=" && L.agg == AggKind::Min &&
-                  R.agg == AggKind::None &&
-                  B.node(R.node).dep != DepKind::Sweep) {
-            node_rows(R.node, L.node);
-        } else if(rel == ">=" && R.agg == AggKind::Max &&
-                  L.agg == AggKind::None &&
-                  B.node(L.node).dep != DepKind::Sweep) {
-            node_rows(R.node, L.node);
-        } else {
-            RowTemplate t;
-            t.kind = RowTemplate::Kind::Aggregate;
-            Term tl{L.node, L.agg, L.sweep, -1}, tr{R.node, R.agg, R.sweep, -1};
-            tl.agg_index = term_index(tl);
-            tr.agg_index = term_index(tr);
-            if(rel == ">=") std::swap(tl, tr);
-            t.lhs = tl;
-            t.rhs = tr;
-            G.rows.push_back(t);
         }
         bool rows_ok = true;
-        int sweep = -1;
+        bool aggregate_row = false;
+        int sweep = -1, other_sweep = -1;
         for(const RowTemplate & t : G.rows) {
-            if(t.kind == RowTemplate::Kind::Node) {
-                if(t.node < 0)
-                    rows_ok = false;
-                else if(B.node(t.node).dep == DepKind::Sweep)
-                    sweep = B.node(t.node).sweep;
+            if(t.kind == RowTemplate::Kind::Aggregate) {
+                aggregate_row = true;
+            } else if(t.node < 0) {
+                rows_ok = false;
+            } else if(B.node(t.node).dep == DepKind::Sweep) {
+                const int s = B.node(t.node).sweep;
+                if(sweep >= 0 && s != sweep) other_sweep = sweep;
+                sweep = s;
             }
         }
         if(!rows_ok) continue;
+        // Every row of a group repeats for each sample of the group's sweep,
+        // and an aggregate row is only known once all samples are in: the
+        // two comparisons of a chain cannot share a group otherwise.
+        if(other_sweep >= 0) {
+            error(epath, ast->second_column,
+                  std::format("the two comparisons of this chain run over "
+                              "different sweeps ('{}' and '{}'): write them "
+                              "as two constraints",
+                              sweeps[uz(other_sweep)].name,
+                              sweeps[uz(sweep)].name));
+            continue;
+        }
+        if(aggregate_row && sweep >= 0) {
+            error(epath, ast->second_column,
+                  std::format("one comparison of this chain is between two "
+                              "max_over/min_over sides and the other is "
+                              "checked at every sample of '{}': write them "
+                              "as two constraints",
+                              sweeps[uz(sweep)].name));
+            continue;
+        }
+        if(!ci.enabled) continue;
         bool constant = true;
         for(const RowTemplate & t : G.rows) {
             for(const int nd : {t.node, t.lhs.node, t.rhs.node})
                 if(nd >= 0 && B.node(nd).dep != DepKind::Const)
                     constant = false;
         }
+        // Such an equality reaches SLSQP as a row with no gradient, which
+        // makes its equality system singular: every solve stops at its start
+        // ("roundoff limited"). An inequality row of that kind is harmless.
         if(constant)
             warning(epath,
-                    "does not depend on any design variable: it is always "
-                    "satisfied or always violated");
+                    G.equality
+                        ? "does not depend on any design variable: it is "
+                          "always satisfied or always violated, and as an "
+                          "equality it stops every SLSQP solve; disable it"
+                        : "does not depend on any design variable: it is "
+                          "always satisfied or always violated");
+        else if(chain)
+            for(std::size_t k = 0; k < 2; ++k)
+                if(B.node(sides[k].node).dep == DepKind::Const &&
+                   B.node(sides[k + 1].node).dep == DepKind::Const)
+                    warning(epath,
+                            "this comparison does not depend on any design "
+                            "variable: it is always satisfied or always "
+                            "violated",
+                            cols[k]);
         if(forall >= 0 && sweep != forall)
             warning(ci.path + ".forall",
                     std::format("the constraint does not depend on sweep "
@@ -1462,12 +1579,31 @@ void Compiler::build_constraints() {
         rg.name = ci.name;
         rg.sweep = sweep;
         rg.split = static_cast<int>(G.rows.size());
+        if(rg.split > 1) rg.labels = std::move(labels);
         rg.equality = G.equality;
         rg.natural = "expression units (SI)";
         constraints[uz(index)].groups.push_back(
             static_cast<int>(groups.size()));
         groups.push_back(rg);
         P.groups.push_back(std::move(G));
+    }
+}
+
+void Compiler::le_rows(GroupImpl & G, std::vector<std::string> & labels,
+                       int lhs, int rhs, std::string_view pair, int col,
+                       const Ctx & c) {
+    auto row = [&](int node, std::string label) {
+        G.rows.push_back({RowTemplate::Kind::Node, node, {}, {}, 1.0});
+        labels.push_back(std::move(label));
+    };
+    const int e = abs_arg(lhs);
+    if(e >= 0 && !G.equality) {
+        row(mk(Op::Sub, {e, rhs}, col, c), std::format("({}+)", pair));
+        row(mk(Op::Sub, {mk(Op::Neg, {e}, col, c), rhs}, col, c),
+            std::format("({}-)", pair));
+    } else {
+        row(mk(Op::Sub, {lhs, rhs}, col, c),
+            pair.empty() ? "" : std::format("({})", pair));
     }
 }
 
@@ -1486,11 +1622,14 @@ void Compiler::build_criteria() {
                   : role == "maximize" ? CriterionRole::Maximize
                   : role == "max"      ? CriterionRole::Max
                   : role == "min"      ? CriterionRole::Min
+                  : role == "range"    ? CriterionRole::Range
                                        : CriterionRole::Report;
+        ci.enabled = !cj.contains("enabled") || cj["enabled"].get<bool>();
         check_keys(cj, ci.path, true, role);
         const int index = static_cast<int>(criteria.size());
-        const bool is_objective = ci.role == CriterionRole::Minimize ||
-                                  ci.role == CriterionRole::Maximize;
+        const bool objective_role = ci.role == CriterionRole::Minimize ||
+                                    ci.role == CriterionRole::Maximize;
+        const bool is_objective = objective_role && ci.enabled;
         if(is_objective && objective >= 0)
             error(ci.path + ".role", -1,
                   std::format(
@@ -1513,19 +1652,46 @@ void Compiler::build_criteria() {
         criterion_nodes_.push_back(-1);
         const std::string epath = ci.path + ".expr";
 
-        int bound = -1;
+        const bool is_range = ci.role == CriterionRole::Range;
+        int bound = -1, lower = -1;
         if(cj.contains("bound")) {
-            criteria[uz(index)].bound_text = number_text(cj["bound"]);
-            bound = constant_expr(cj["bound"], ci.path + ".bound",
-                                  ValueType::Scalar);
+            const Json & bj = cj["bound"];
+            const std::string bpath = ci.path + ".bound";
+            criteria[uz(index)].bound_text = number_text(bj);
+            if(is_range && !bj.is_array()) {
+                error(bpath, -1,
+                      "role \"range\" takes two bounds: \"bound\": [lo, hi]");
+            } else if(is_range) {
+                lower = constant_expr(bj[0], bpath + "[0]", ValueType::Scalar);
+                bound = constant_expr(bj[1], bpath + "[1]", ValueType::Scalar);
+            } else if(!bj.is_array()) {
+                bound = constant_expr(bj, bpath, ValueType::Scalar);
+            } else if(ci.role == CriterionRole::Max ||
+                      ci.role == CriterionRole::Min) {
+                error(bpath, -1,
+                      std::format("role \"{}\" takes one bound; a pair "
+                                  "[lo, hi] is for role \"range\"",
+                                  role));
+            }
             if(bound >= 0) criteria[uz(index)].bound = B.values(bound)[0];
+            if(lower >= 0) criteria[uz(index)].lower = B.values(lower)[0];
+            if(lower >= 0 && bound >= 0 &&
+               !(criteria[uz(index)].lower <= criteria[uz(index)].bound))
+                error(bpath, -1,
+                      std::format("the lower bound {:.6g} exceeds the upper "
+                                  "bound {:.6g}",
+                                  criteria[uz(index)].lower,
+                                  criteria[uz(index)].bound));
         }
         auto ast = parse(ci.text, epath);
         if(!ast) continue;
         if(ast->kind == Ast::Kind::Relation) {
             error(epath, ast->column,
-                  "a criterion is an expression, not a comparison (use "
-                  "\"role\" and \"bound\")");
+                  ast->args.size() == 3
+                      ? "a criterion is an expression, not a comparison (use "
+                        "role \"range\" and \"bound\": [lo, hi])"
+                      : "a criterion is an expression, not a comparison (use "
+                        "\"role\" and \"bound\")");
             continue;
         }
         const Ctx c{epath, false, {}};
@@ -1546,6 +1712,8 @@ void Compiler::build_criteria() {
                               s, s, s));
             continue;
         }
+        // Unlike a disabled constraint's, a disabled criterion's aggregate is
+        // registered: its value is still verified and reported.
         Term term{S.node, S.agg, S.sweep, -1};
         term.agg_index = term_index(term);
         P.criteria[uz(index)] = term;
@@ -1571,57 +1739,42 @@ void Compiler::build_criteria() {
             P.objective.push_back(o);
             continue;
         }
-        if(ci.role == CriterionRole::Report) continue;
-        if(bound < 0) continue;
+        if(objective_role || ci.role == CriterionRole::Report) continue;
+        if(bound < 0 || (is_range && lower < 0)) continue;
         GroupImpl G;
+        std::vector<std::string> labels;
         const int col = ast->column;
-        auto split_rows = [&](int lhs, int rhs) {
-            const int e = abs_arg(lhs);
-            if(e >= 0) {
-                G.rows.push_back({RowTemplate::Kind::Node,
-                                  mk(Op::Sub, {e, rhs}, col, c),
-                                  {},
-                                  {},
-                                  1.0});
-                G.rows.push_back(
-                    {RowTemplate::Kind::Node,
-                     mk(Op::Sub, {mk(Op::Neg, {e}, col, c), rhs}, col, c),
-                     {},
-                     {},
-                     1.0});
-            } else {
-                G.rows.push_back({RowTemplate::Kind::Node,
-                                  mk(Op::Sub, {lhs, rhs}, col, c),
-                                  {},
-                                  {},
-                                  1.0});
+        // Rows of value <= b (upper) or value >= b; false after an error.
+        auto bound_rows = [&](bool upper, int b, std::string_view pair) {
+            const AggKind universal = upper ? AggKind::Max : AggKind::Min;
+            if(S.agg == AggKind::None || S.agg == universal) {
+                if(upper)
+                    le_rows(G, labels, S.node, b, pair, col, c);
+                else
+                    le_rows(G, labels, b, S.node, pair, col, c);
+                return true;
             }
-        };
-        const bool is_max = ci.role == CriterionRole::Max;
-        if(S.agg == AggKind::None || (is_max && S.agg == AggKind::Max) ||
-           (!is_max && S.agg == AggKind::Min)) {
-            if(is_max)
-                split_rows(S.node, bound);
-            else
-                G.rows.push_back({RowTemplate::Kind::Node,
-                                  mk(Op::Sub, {bound, S.node}, col, c),
-                                  {},
-                                  {},
-                                  1.0});
-        } else if(B.node(S.node).dep == DepKind::Sweep) {
-            error(epath, ast->column,
-                  std::format(
-                      "with role \"{}\", {}", role,
-                      existential_message(S, is_max ? "<=" : ">=", true)));
-            continue;
-        } else {
+            if(B.node(S.node).dep == DepKind::Sweep) {
+                error(epath, ast->column,
+                      std::format(
+                          "with role \"{}\", {}", role,
+                          existential_message(S, upper ? "<=" : ">=", true)));
+                return false;
+            }
             RowTemplate t;
             t.kind = RowTemplate::Kind::Aggregate;
-            const Term tb{bound, AggKind::None, -1, -1};
-            t.lhs = is_max ? term : tb;
-            t.rhs = is_max ? tb : term;
+            const Term tb{b, AggKind::None, -1, -1};
+            t.lhs = upper ? term : tb;
+            t.rhs = upper ? tb : term;
             G.rows.push_back(t);
-        }
+            labels.push_back(pair.empty() ? "" : std::format("({})", pair));
+            return true;
+        };
+        const bool rows_built =
+            is_range ? bound_rows(false, lower, "lo") &&
+                           bound_rows(true, bound, "hi")
+                     : bound_rows(ci.role == CriterionRole::Max, bound, "");
+        if(!rows_built) continue;
         int sweep = -1;
         bool ok = true;
         for(const RowTemplate & t : G.rows)
@@ -1631,7 +1784,10 @@ void Compiler::build_criteria() {
                 else if(B.node(t.node).dep == DepKind::Sweep)
                     sweep = B.node(t.node).sweep;
             }
-        if(!ok) continue;
+        // Checked only here, so that a disabled criterion still reports the
+        // errors of its bound rows, as a disabled constraint does: enabling
+        // it must not reveal new ones.
+        if(!ok || !ci.enabled) continue;
         G.sweep = sweep;
         RowGroup rg;
         rg.kind = GroupKind::CriterionBound;
@@ -1639,6 +1795,7 @@ void Compiler::build_criteria() {
         rg.name = ci.name + ":bound";
         rg.sweep = sweep;
         rg.split = static_cast<int>(G.rows.size());
+        if(rg.split > 1) rg.labels = std::move(labels);
         rg.natural = "expression units (SI)";
         criteria[uz(index)].group = static_cast<int>(groups.size());
         groups.push_back(rg);
@@ -1669,6 +1826,7 @@ void Compiler::build_display() {
                                   dj["ghosts"].get<std::int64_t>(), 0, 1000))
                             : 0;
             di.trace = dj.contains("trace") && dj["trace"].get<bool>();
+            di.visible = !dj.contains("visible") || dj["visible"].get<bool>();
             if(auto ast = parse(di.text, di.path))
                 fill_expr_info(di, expr(*ast, Ctx{di.path, false, {}}));
             display.push_back(std::move(di));
@@ -1786,6 +1944,8 @@ void Compiler::finalize() {
     for(const Term & t : P.criteria) add_term(t);
     const std::vector<int> verify_roots = roots;
     for(const LetInfo & l : lets_info) roots.push_back(l.ref.node);
+    for(const ConstraintInfo & ci : constraints)
+        roots.push_back(ci.value.ref.node);
     for(const DisplayInfo & d : display) roots.push_back(d.ref.node);
     for(const ExprInfo & p : probes) roots.push_back(p.ref.node);
     for(const int v : design_node_) roots.push_back(v);
@@ -1870,10 +2030,20 @@ void Compiler::finalize() {
 }
 
 bool Compiler::run() {
+    // Errors before this index belong to items exclude_items() left out; an
+    // error after it still fails the compile.
+    std::size_t isolated = 0;
     diags = inst_.validate();
     // Load-time include problems (missing file, bad JSON, schema) would
     // otherwise compile silently without that geometry.
     for(const Diagnostic & d : inst_.include_diagnostics()) diags.push_back(d);
+    if(doc().is_object() && doc().contains("format") &&
+       doc()["format"] == detail::kFormat1)
+        for(const std::string & key : detail::format2_keys(doc()))
+            error(key, -1,
+                  std::format("\"{}\" requires \"format\": \"{}\"",
+                              key.substr(key.find_last_of('.') + 1),
+                              detail::kFormat2));
     if(has_errors(diags)) return false;
     for(const Instance::Include & inc : inst_.includes()) {
         if(inc.doc.contains("units") && inc.doc["units"] != "m")
@@ -1894,7 +2064,11 @@ bool Compiler::run() {
         // definition a duplicate error points at.
         const Json & d = doc();
         // First, so that a user entry named "pi" gets the duplicate error.
-        add_name("pi", NameKind::Builtin, 0, "builtin");
+        const std::span<const Builtin> builtins = builtin_functions();
+        for(std::size_t i = 0; i < builtins.size(); ++i)
+            if(builtins[i].kind == Builtin::Kind::Constant)
+                add_name(std::string(builtins[i].name), NameKind::Builtin,
+                         static_cast<int>(i), "builtin");
         if(d.contains("sweeps")) {
             int k = 0;
             for(const auto & [name, s] : d["sweeps"].items()) {
@@ -1972,14 +2146,114 @@ bool Compiler::run() {
         build_constraints();
         build_criteria();
         build_display();
-        if(has_errors(diags)) return false;
+        if(has_errors(diags) && !(opt_.isolate_items && exclude_items()))
+            return false;
+        isolated = diags.size();
         build_implicit();
         finalize();
     } catch(const nlohmann::json::exception & e) {
         error("", -1, std::string("malformed instance: ") + e.what());
         return false;
     }
-    return !has_errors(diags);
+    return std::none_of(diags.begin() + static_cast<long>(isolated),
+                        diags.end(), [](const Diagnostic & d) {
+                            return d.severity == Diagnostic::Severity::Error;
+                        });
+}
+
+bool Compiler::exclude_items() {
+    // Item path -> why it is left out.
+    std::map<std::string, std::string, std::less<>> why;
+    for(const Diagnostic & d : diags) {
+        if(d.severity != Diagnostic::Severity::Error) continue;
+        const std::string_view item = isolated_item(d.path);
+        if(item.empty()) return false;
+        why.try_emplace(std::string(item), d.to_string());
+    }
+    // Until stable: a pass can meet a user before the let it uses is
+    // found excluded.
+    for(bool grew = true; grew;) {
+        grew = false;
+        for(const auto & [user, used] : let_uses_) {
+            const auto bad = std::ranges::find_if(
+                used, [&](int i) { return why.contains(lets_[uz(i)].path); });
+            if(bad == used.end()) continue;
+            const std::string_view item = isolated_item(user);
+            if(item.empty()) return false;  // a probe
+            grew |= why.try_emplace(std::string(item),
+                                    std::format("uses {}, which is excluded",
+                                                lets_[uz(*bad)].path))
+                        .second;
+        }
+    }
+
+    auto index_map = [&](const auto & items) {
+        std::vector<int> to(items.size(), -1);
+        int k = 0;
+        for(std::size_t i = 0; i < items.size(); ++i) {
+            const auto it = why.find(isolated_item(items[i].path));
+            if(it == why.end())
+                to[i] = k++;
+            else
+                excluded.push_back({it->first, it->second});
+        }
+        return to;
+    };
+    const std::vector<int> lmap = index_map(lets_info),
+                           cmap = index_map(constraints),
+                           kmap = index_map(criteria),
+                           dmap = index_map(display);
+    keep_mapped(lets_info, lmap);
+    keep_mapped(display, dmap);
+
+    // Only constraints and criterion bounds have groups before
+    // build_implicit().
+    std::vector<int> gmap(groups.size(), -1);
+    int next_group = 0;
+    for(std::size_t g = 0; g < groups.size(); ++g) {
+        RowGroup & rg = groups[g];
+        rg.source =
+            (rg.kind == GroupKind::Constraint ? cmap : kmap)[uz(rg.source)];
+        if(rg.source >= 0) gmap[g] = next_group++;
+    }
+    keep_mapped(groups, gmap);
+    keep_mapped(P.groups, gmap);
+    for(ConstraintInfo & ci : constraints)
+        for(int & g : ci.groups) g = gmap[uz(g)];
+    for(CriterionInfo & ci : criteria)
+        if(ci.group >= 0) ci.group = gmap[uz(ci.group)];
+    keep_mapped(constraints, cmap);
+    keep_mapped(criteria, kmap);
+    keep_mapped(P.criteria, kmap);
+    if(objective >= 0) objective = kmap[uz(objective)];
+    std::erase_if(P.objective,
+                  [&](const ObjTerm & o) { return kmap[uz(o.criterion)] < 0; });
+    for(ObjTerm & o : P.objective) o.criterion = kmap[uz(o.criterion)];
+
+    // An item registers its aggregates before checks that can still fail it,
+    // and the verification computes every aggregate: one left behind would
+    // read a node that finalize() gives no slot.
+    auto each_term = [&](auto && f) {
+        for(GroupImpl & G : P.groups)
+            for(RowTemplate & t : G.rows) {
+                f(t.lhs);
+                f(t.rhs);
+            }
+        for(Term & t : P.criteria) f(t);
+        for(ObjTerm & o : P.objective) f(o.term);
+    };
+    std::vector<int> amap(P.aggs.size(), -1);
+    each_term([&](const Term & t) {
+        if(t.agg_index >= 0) amap[uz(t.agg_index)] = 0;
+    });
+    int next_agg = 0;
+    for(int & a : amap)
+        if(a >= 0) a = next_agg++;
+    keep_mapped(P.aggs, amap);
+    each_term([&](Term & t) {
+        if(t.agg_index >= 0) t.agg_index = amap[uz(t.agg_index)];
+    });
+    return true;
 }
 
 Plan Program::make_plan(const std::vector<int> & roots) const {
@@ -2046,6 +2320,7 @@ CompileResult compile(const Instance & instance,
     const bool ok = c.run();
     r.diagnostics = std::move(c.diags);
     if(!ok) return r;
+    r.excluded = std::move(c.excluded);
     auto m = std::make_shared<Model>();
     ModelBuilder::fill(*m, c, std::move(prog), instance);
     r.model = std::move(m);

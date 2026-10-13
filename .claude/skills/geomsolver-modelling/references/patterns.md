@@ -83,7 +83,7 @@ Every row was added to the test scene, compiled with `--eval` (exit 0, no warnin
 | 29 | "a fixed value" (a known size) | **params** `"tv_w": "123cm"` | a constant: params, not design |
 | 30 | "already decided: P is at (1, 2)" | **design** `"P": {"type": "point", "domain": "box(0.5, 0.5, 3.5, 2.5)", "value": [1, 2], "fixed": true}` | `value` in SI; or keep it free and run `--fix P` |
 | 31 | "W between 40 cm and 1.2 m" (W is chosen) | **design** `"W": {"type": "scalar", "min": "40cm", "max": "1.2m", "unit": "cm"}` | hard limits, no row |
-| 32 | "the distance AP between L_min and L_max" (computed) | **criteria** `{"name": "len_max", "expr": "dist(A, P)", "role": "max", "bound": "L_max", "unit": "cm"}` **criteria** `{"name": "len_min", "expr": "dist(A, P)", "role": "min", "bound": "L_min", "unit": "cm"}` | `a <= e <= b` is an error (one comparison only) |
+| 32 | "the distance AP between L_min and L_max" (computed) | **criteria** `{"name": "len", "expr": "dist(A, P)", "role": "range", "bound": ["L_min", "L_max"], "unit": "cm"}` | one group, rows `(lo)`/`(hi)`; to move one limit with `--bound`/`--pareto`, write a `max` and a `min` criterion instead; as a constraint: `L_min <= dist(A, P) <= L_max` |
 | 33 | "never higher than h_max during the motion" | **criteria** `{"name": "height", "expr": "max_over(s, max_y(body))", "role": "max", "bound": "h_max", "unit": "cm"}` | `max` with `max_over`, `min` with `min_over` |
 | 34 | "a chain of exactly 90 cm from A to the tip at the start" | **constraints** `{"name": "chain", "expr": "dist(A, at(s = 0, tip)) == 90cm"}` | |
 | 35 | "as compact as possible" (smallest reach into the room during the motion) | **criteria** `{"name": "protrusion", "expr": "max_over(s, max_proj(body, dir(45deg)))", "role": "minimize", "unit": "cm"}` | `dir(...)` = the direction "into the room" |
@@ -141,8 +141,19 @@ from the TV."
   ]
 ```
 
-With `params` `wall_gap` 10cm, `gap` 20cm, `tv_max` 2m and the room, couch, armchair and tv in
-`geometry`: 60 of 65 runs reach r = 135.1298 cm; `rug_in`, `armchair` and `to_tv` are active.
+With `params` `wall_gap` 10cm, `gap` 20cm, `tv_max` 2m and this `geometry`:
+
+```json
+  "geometry": {
+    "room": {"type": "rect", "x": 2.5, "y": 2, "width": 5, "height": 4},
+    "couch": {"type": "rect", "x": 0.45, "y": 2, "width": 0.9, "height": 2.2},
+    "armchair": {"type": "circle", "x": 3.6, "y": 0.6, "r": 0.45},
+    "tv": {"type": "point", "x": 4.95, "y": 2}
+  }
+```
+
+all 65 runs reach r = 136.7251 cm with T = (3.022261, 2.532749) m; `rug_in`, `armchair` and `to_tv`
+are active.
 
 ## 6. Worked translation 2: a motion with "at some point"
 
@@ -186,8 +197,9 @@ The swing must reach as little into the room as possible."
   ]
 ```
 
-35 of 65 runs end feasible, all at depth = 121.0053 cm: H = (0.6282305, 0) m, L = 104.192 cm,
-w = 60.2404 deg; `plant` and `at_spot` are active.
+With the `params` and `geometry` of the filled example in `assets/problem-sheet.md`, 64 of 65 runs end
+feasible, all at depth = 121.0053 cm: H = (0.6282306, 0) m, L = 104.192 cm, w = 60.2404 deg; `plant`
+and `at_spot` are active.
 
 ## 7. Worked translation 3: changing an existing instance
 
@@ -210,7 +222,7 @@ Done on a COPY of `tests/data/tv_corner_ref.json` (never edit the fixture itself
 ```
 
 5. `--eval`: exit 0, no warning. Solve the original and the copy with the same settings:
-   original 104.3729 cm (51 of 65 runs), changed 104.6179 cm (52 of 65 runs). The change costs 0.245 cm.
+   original 104.3729 cm (65 of 65 runs), changed 104.6179 cm (65 of 65 runs). The change costs 0.245 cm.
 6. If the point must also lie between the two ends, add the second row of pattern 23. If the
    changed problem has no feasible design, go to `references/diagnosis.md` section 5.
 
@@ -255,6 +267,6 @@ from B to D. The working file is `assets/templates/fourbar.json`; the reference 
    2 or more variants of the best solution (the same linkage with A<->B, c<->d swapped), and the
    implicit rows `assembly of p` (one per `at()` pose too) with a margin >= 0.
 
-The template solves to reach = 66.28354 cm in 21 of 257 runs; `body_top`, `link1_top`, `wall` and
-`link_angle` are active. A branch that depends on `tau` gets the warning "the branch of dyad()
+The template solves to reach = 66.28353 cm in 86 of 257 runs (186 feasible); at the best run
+`body_top`, `link2_top`, `wall` and `link_angle` are active. A branch that depends on `tau` gets the warning "the branch of dyad()
 depends on sweep 'tau'"; a dyad whose inputs are all fixed must close, or the file does not compile.

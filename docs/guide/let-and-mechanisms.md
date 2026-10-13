@@ -24,7 +24,7 @@ A let gives a name to an expression. The value can be of any type: a scalar, a v
 - **The value is a string.** `"phi": 0.5` is a schema error, `let.phi: expected a string, got a number`; write `"phi": "0.5"` or make it a param.
 - **Params cannot use lets**, since params are constant: `params.gap at column 0: 'l1' is a let binding and cannot appear in a constant expression`.
 
-Every let is compiled, used or not, and a constant let must be finite. The Inspector lists all lets with their current values, and `geomsolver-cli --probe NAME` prints any of them at the result.
+Every let is compiled, used or not, and a constant let must be finite. The GUI's Quantities panel lists all lets with their current values, the Elements panel lists those whose value is a shape among its derived elements, such as the TV's `tv`, and `geomsolver-cli --probe NAME` prints any of them at the result. In the GUI, a let's formula is written in the [formula pop-up](../getting-started/gui.md#the-formula-pop-up), which shows its value as you type.
 
 A let is not a copy: every use of its name refers to the same computed value, so naming intermediate results does not make the model slower.
 
@@ -152,13 +152,13 @@ At τ = 0 the dyad then returns exactly `p0`: probed on the hand design, `at(tau
 
 ```text title="geomsolver-cli docs/instances/guide-a-flap.json (excerpt)"
 instance docs/instances/guide-a-flap.json  (n = 8, 13 row groups, SLSQP)
-65 of 65 runs finished, 21 feasible, 44 distinct solutions, 0.07 s on 16 threads
+65 of 65 runs finished, 47 feasible, 20 distinct solutions, 0.12 s on 16 threads
   #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
-  1    66.28354 cm        yes       6.21e-09     12    2         52 (uniform 51)    converged (11, 30)
-  2    68.8909 cm         yes       8.02e-08     2     2         29 (uniform 28)    converged (6, 13)
-  3    84.10524 cm        yes       2.36e-09     7     2         30 (uniform 29)    converged (2, 7)
+  1    66.28354 cm        yes       9.91e-09     19    2         36 (uniform 35)    converged (10, 29)
+  2    68.8909 cm         yes       8.02e-08     5     2         24 (uniform 23)    converged (6, 13)
+  3    69.22538 cm        yes       7.25e-08     6     2         25 (uniform 24)    converged (10, 26)
 ...
-best solution (run 52, uniform 51)
+best solution (run 36, uniform 35)
 design
   A          (0.2452701, 0.4250515) m
   B          (0.2404828, 0.4946042) m
@@ -168,22 +168,22 @@ criteria (2001 samples per sweep)
   name             role      value              bound / where
   protrusion       minimize  66.28354 cm        at tau=0.613
   height           max       75.80433 cm        <= 95 cm  ok  at tau=0.553
-  link_angle       min       15 deg             >= 15 deg  ok  at tau=0.044
+  link_angle       min       15 deg             >= 15 deg  ok  at tau=0.0435
   link_1           min       14.34649 cm        >= 8 cm  ok
   link_2           min       8.039584 cm        >= 8 cm  ok
 ...
-  assembly of p                  0.005950707        ok         tau=0.044
+  assembly of p                  0.005950707        ok         tau=0.0435
   assembly of p at tau=1         0.07293009         ok         
 ```
 
-![The solved flap in the GUI at tau = 0.62. A vertical wall on the left, the cabinet's top and bottom panels, and the pivot zone inside the cabinet. The flap is drawn mid-swing as a blue board passing just above the front edge of the top panel, with ghosts fanning from the closed vertical pose to the open horizontal pose above the cabinet. Two short links, blue and red, join the pivot zone to the flap, and their flap-side pivots trace arcs. The design points c and d are drawn left of the wall, at their flap-frame coordinates, inside their dashed box.](../assets/screenshots/guide-a-flap.png)
+![The solved flap in the GUI at tau = 0.62, the sweep bar showing the tau slider at 0.6200, and "minimize protrusion = 66.28354 cm" at the top right. A vertical wall on the left, the cabinet's top and bottom panels, and the pivot zone inside the cabinet holding A and B. The flap is drawn mid-swing as a blue board passing just above the front edge of the top panel, with ghosts fanning from the closed vertical pose to the open horizontal pose above the cabinet. Two short links, blue from A and red from B, join the pivot zone to the flap, and their flap-side pivots trace arcs. The design points c and d are drawn left of the wall, at their flap-frame coordinates, inside their dashed box.](../assets/screenshots/guide-a-flap.png)
 
-The best design keeps the flap within 66.28354 cm of the wall while it opens. A solve with `--starts 512` finds nothing better (56 of 513 runs reach it). Only 21 of 65 runs end feasible: a linkage is a hard problem for a local solver, and the multistart is not optional.
+The best design keeps the flap within 66.28354 cm of the wall while it opens. A solve with `--starts 512` finds nothing better (191 of 513 runs reach it). 47 of 65 runs end feasible, but at four different designs, and only 19 reach the best one: a linkage has several local optima, and the multistart is not optional.
 
 Two rows explain the shape of the solution:
 
-- `link_angle`, the smallest angle between the two links over the motion, is active at τ = 0.044, and so is the tightest assembly margin, 0.005950707 m, at the same pose. That is no coincidence: C − A = p − K1 and D − B = p − K2, so **the links are parallel exactly when the dyad's circles are tangent**. When the links are parallel, the linkage is at a dead centre: it jams there, and the dyad's derivatives grow without bound. The lower bound on the angle between the links keeps the design 15° away from it, and at τ = 0.044 the design sits on that bound.
-- The 2 variants of the best solution are the same linkage with the labels swapped: run 61 has A and B, c and d exchanged. See [label symmetry](#pitfalls).
+- `link_angle`, the smallest angle between the two links over the motion, is active at τ = 0.0435, and so is the tightest assembly margin, 0.005950707 m, at the same pose. That is no coincidence: C − A = p − K1 and D − B = p − K2, so **the links are parallel exactly when the dyad's circles are tangent**. When the links are parallel, the linkage is at a dead centre: it jams there, and the dyad's derivatives grow without bound. The lower bound on the angle between the links keeps the design 15° away from it, and at τ = 0.0435 the design sits on that bound.
+- The 2 variants of the best solution are the same linkage with the labels swapped: run 34 has A and B, c and d exchanged. See [label symmetry](#pitfalls).
 
 ## Why lengths by construction {#by-construction}
 
@@ -203,10 +203,10 @@ Both formulations reach the same optimum, 66.28354 cm. The reference-pose formul
 
 | Starts | Lengths by construction (`guide-a-flap.json`) | Lengths as variables (`guide-a-flap-lengths.json`) |
 | --- | --- | --- |
-| **65, seed 1** | 12 runs | 6 runs |
-| **65, seed 2** | 11 runs | 7 runs |
-| **65, seed 3** | 6 runs | 4 runs |
-| **513, seed 1** | 56 runs | 40 runs |
+| **65, seed 1** | 19 runs | 15 runs |
+| **65, seed 2** | 26 runs | 13 runs |
+| **65, seed 3** | 23 runs | 14 runs |
+| **513, seed 1** | 191 runs | 102 runs |
 
 ```bash
 geomsolver-cli docs/instances/guide-a-flap-lengths.json --seed 2
@@ -215,7 +215,7 @@ geomsolver-cli docs/instances/guide-a-flap-lengths.json --seed 2
 The reasons are structural:
 
 - **No equality rows.** The closed pose holds exactly for every design, instead of to within `feas_tol` at the end of a solve.
-- **Fewer ways to fail.** With free lengths, a random start is almost never a linkage that assembles at the closed pose; with derived lengths, every start does, and only the rest of the motion remains to be fixed.
+- **Every start assembles.** With free lengths, a random start is almost never a linkage that assembles at the closed pose, and phase 1 has to find one first; with derived lengths, every start does, and only the rest of the motion remains to be fixed. This is about reaching the optimum, not about ending feasible: phase 1 makes slightly more free-length runs feasible (54 of 65 at seed 1, against 47), but fewer of them reach the optimum.
 - **Fewer coordinates.** The derived version has 8 coordinates and no equality; the other has 10 and two equalities.
 
 When the reference pose is free, as in the corner TV, its position and angle are design variables in place of the lengths, and every start still assembles at the reference pose.
@@ -248,21 +248,21 @@ Every dyad gets its assembly row, and every pose fixed with `at()` gets a copy:
 The full turn of the crank is a requirement in itself: the assembly row of `Q` must hold at every crank angle, which needs, among other things, a crank shorter than the other links of its four-bar.
 
 ```text title="geomsolver-cli docs/instances/guide-a-chain.json (excerpt)"
-65 of 65 runs finished, 43 feasible, 49 distinct solutions, 0.30 s on 16 threads
+65 of 65 runs finished, 50 feasible, 39 distinct solutions, 0.24 s on 16 threads
   #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
-  1    156.1691 deg       yes       7.38e-10     5     1         10 (uniform 9)     converged (6, 14)
+  1    156.1691 deg       yes       6.97e-09     11    1         64 (uniform 63)    converged (5, 14)
 ...
-  w_hi       257.2472 deg
-  w_lo       56.01121 deg
+  w_hi       257.2475 deg
+  w_lo       56.01143 deg
 ...
   swing            maximize  156.1691 deg       
   out_max          report    90 deg             at th=4.48934
   out_min          report    -66.16908 deg      at th=0.977035
 ```
 
-The witnesses agree with the fine grid: `w_hi` = 257.25° where `out_max` is reached (4.48934 rad), `w_lo` = 56.01° where `out_min` is (0.977035 rad). The output reaches 90°, the limit of the `rocker` constraint; 5 of 65 runs find this design, and 64 of 513 with `--starts 512`, none better.
+The witnesses agree with the fine grid: `w_hi` = 257.25° where `out_max` is reached (4.48934 rad), `w_lo` = 56.01° where `out_min` is (0.977035 rad). The output reaches 90°, the limit of the `rocker` constraint; 11 of 65 runs find this design, and 70 of 513 with `--starts 512`, none better.
 
-![The solved six-bar at th = 2.75 rad. A short light-blue crank at the origin O1 drives a long blue coupler to the joint Q, held by the blue rocker from O2. A red coupler from Q drives the red output rocker O3-R. Q and R trace arcs, and the orange handles Q0 and R0 mark the joints in the reference pose.](../assets/screenshots/guide-a-chain.png)
+![The solved six-bar at th = 2.75 rad, the sweep bar showing the th slider at 2.7500, and "maximize swing = 156.1691 deg" at the top right. A short light-blue crank at the origin O1 drives a long blue coupler to the joint Q, held by the blue rocker from O2. A red coupler from Q drives the red output rocker O3-R. Q and R trace arcs, and the orange handles Q0 and R0 mark the joints in the reference pose; the dashed boxes are the domains of the design points.](../assets/screenshots/guide-a-chain.png)
 
 !!! note "Angles that wrap"
     `out` is `angle_between(R0 - O3, R - O3)`, a signed angle in (−180°, 180°]. Without the `rocker` constraint, which keeps the output within 90° of its reference direction, the solver finds designs whose output turns all the way round: `out` then jumps from 180° to −180°, and the best "swing" is a meaningless 187.4336° (`--set 'constraints[2].enabled=false'`). Keep an angle you optimise away from ±180°.

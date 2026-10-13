@@ -170,15 +170,21 @@ public:
         auto lhs = expr();
         if(is_relop(peek())) {
             const Token op = next();
-            auto rhs = expr();
             auto rel = node(Ast::Kind::Relation, op.column);
             rel->text = op.text;
             adopt(*rel, std::move(lhs));
-            adopt(*rel, std::move(rhs));
+            adopt(*rel, expr());
+            if(is_relop(peek())) {
+                const Token second = next();
+                check_chain(op, second);
+                rel->second_column = second.column;
+                adopt(*rel, expr());
+                if(is_relop(peek()))
+                    throw SyntaxError{peek().column,
+                                      "at most two comparisons are allowed, "
+                                      "as in lo <= e <= hi"};
+            }
             lhs = std::move(rel);
-            if(is_relop(peek()))
-                throw SyntaxError{peek().column,
-                                  "only one comparison is allowed"};
         }
         if(peek().kind != Token::Kind::End) unexpected(peek());
         return lhs;
@@ -191,6 +197,17 @@ private:
     }
     static bool is_op(const Token & t, std::string_view op) {
         return t.kind == Token::Kind::Op && t.text == op;
+    }
+    static void check_chain(const Token & first, const Token & second) {
+        const Token & eq = first.text == "==" ? first : second;
+        if(eq.text == "==")
+            throw SyntaxError{eq.column,
+                              "'==' cannot be chained: a two-sided relation "
+                              "is lo <= e <= hi or hi >= e >= lo"};
+        if(first.text != second.text)
+            throw SyntaxError{second.column,
+                              "the two comparisons of a chain must point the "
+                              "same way: lo <= e <= hi or hi >= e >= lo"};
     }
 
     const Token & peek(int k = 0) const {
@@ -380,6 +397,17 @@ private:
 
 }  // namespace
 
+bool is_identifier(std::string_view s) {
+    if(s.empty()) return false;
+    auto alpha = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+    };
+    if(!alpha(s[0])) return false;
+    for(const char c : s)
+        if(!alpha(c) && !(c >= '0' && c <= '9')) return false;
+    return true;
+}
+
 ParseResult parse_expression(std::string_view text) {
     ParseResult r;
     try {
@@ -404,9 +432,12 @@ std::string to_string(const Ast & a) {
         case Ast::Kind::Member:
             return to_string(*a.args[0]) + "." + a.text;
         case Ast::Kind::Binary:
-        case Ast::Kind::Relation:
-            return "(" + to_string(*a.args[0]) + " " + a.text + " " +
-                   to_string(*a.args[1]) + ")";
+        case Ast::Kind::Relation: {
+            std::string s = "(" + to_string(*a.args[0]);
+            for(std::size_t i = 1; i < a.args.size(); ++i)
+                s += " " + a.text + " " + to_string(*a.args[i]);
+            return s + ")";
+        }
         case Ast::Kind::Call: {
             std::string s = a.text + "(";
             for(std::size_t i = 0; i < a.args.size(); ++i) {

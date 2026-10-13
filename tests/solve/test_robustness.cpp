@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -26,17 +27,27 @@ std::shared_ptr<const Model> tv_with(const std::function<void(Json &)> & edit) {
 
 }  // namespace
 
-TEST_CASE("check: a NaN report criterion does not make a design infeasible") {
+TEST_CASE(
+    "check: a NaN report or disabled criterion does not make a design "
+    "infeasible") {
     auto m = tv_with([](Json & d) {
+        d["format"] = "geomsolver-instance/2";
         d["criteria"].push_back(Json{{"name", "nan_report"},
                                      {"expr", "sqrt(l1 - 0.6)"},
                                      {"role", "report"}});
+        d["criteria"].push_back(Json{{"name", "nan_disabled"},
+                                     {"expr", "sqrt(l1 - 0.6)"},
+                                     {"role", "min"},
+                                     {"bound", 0},
+                                     {"enabled", false}});
     });
     Evaluator ev(*m);
     const std::vector<double> x = optimum_x(*m);
-    const Check c = check(ev, x, 2001, {}, false, true);
-    const int k = criterion(*m, "nan_report");
-    CHECK(std::isnan(c.v.criteria[static_cast<std::size_t>(k)].value));
+    const Check c = check(ev, x, verify_settings(2001), {}, false, true);
+    for(const char * name : {"nan_report", "nan_disabled"}) {
+        const int k = criterion(*m, name);
+        CHECK(std::isnan(c.v.criteria[static_cast<std::size_t>(k)].value));
+    }
     CHECK(c.finite);
     CHECK(c.feasible(1e-7));
     SolverSettings s = tv_settings(*m);
@@ -86,6 +97,29 @@ TEST_CASE("solve: re-solves on unchanged samples are bounded") {
     CHECK(r.exchange == ExchangeStatus::InfeasibleOnSamples);
 }
 
+TEST_CASE("solve: a feasible solve stopped by its budget is re-solved") {
+    // maxeval 15 from the hand design (nearby values miss it on this
+    // fixture's SLSQP path): a phase-2 solve ends on its budget at a feasible
+    // point with no sample to add. It is re-solved on the same samples, not
+    // reported converged.
+    auto m = tv_model();
+    Evaluator ev(*m);
+    SolverSettings s = tv_settings(*m);
+    s.maxeval = 15;
+    const RunResult r = solve_from(*m, ev, m->initial_x(), s, {}, 1);
+    std::vector<LocalSummary> p2;
+    for(const LocalSummary & l : r.solves)
+        if(l.mode == NlpMode::Phase2) p2.push_back(l);
+    const auto cut = std::ranges::find(p2, LocalStatus::MaxevalReached,
+                                       &LocalSummary::status);
+    REQUIRE(cut != p2.end());
+    REQUIRE(cut + 1 != p2.end());
+    CHECK(cut[1].samples == cut->samples);
+    CHECK(r.exchange == ExchangeStatus::Converged);
+    CHECK(p2.back().status == LocalStatus::Converged);
+    CHECK(std::fabs(r.objective - kOptimum) < 1e-6);
+}
+
 TEST_CASE("solve: COBYLA returns when rows agree only up to rounding") {
     // Each link kept link_gap away from the TV it carries, on the reduced
     // problem: where a link's joint is the binding feature, its rows at every
@@ -124,8 +158,8 @@ TEST_CASE("solve: COBYLA returns when rows agree only up to rounding") {
         Evaluator ev(*m);
         std::vector<RunResult> runs;
         for(const std::size_t i : {11u, 16u, 26u})
-            runs.push_back(
-                solve_from(*m, ev, starts[i].x, s, {}, starts[i].seed));
+            runs.push_back(solve_from(*m, ev, starts[i].x, s, {},
+                                      starts[i].seed, nullptr, starts[i].kind));
         const std::lock_guard lock(out->mutex);
         out->runs = std::move(runs);
         out->done = true;
@@ -142,6 +176,41 @@ TEST_CASE("solve: COBYLA returns when rows agree only up to rounding") {
         CHECK(r.exchange != ExchangeStatus::Error);
         CHECK(r.evaluations > 0);
     }
+}
+
+TEST_CASE("solve: SLSQP converges with rows on their bound to rounding") {
+    // Each TV-side joint held at exactly link_gap behind the TV, as in
+    // data/tv_corner.json: wherever a joint is its link's nearest feature, the
+    // link's rows are 0 up to rounding, gradient included. Passed to SLSQP as
+    // they are, phase 2 fails from the hand design and the run ends
+    // infeasible on its samples.
+    auto inst = tv_instance();
+    REQUIRE(inst->set("params.link_gap", 0.02));
+    for(const char * v : {"c", "d"})
+        REQUIRE(inst->set(std::format("design.{}.domain", v),
+                          "box(-W/2, -link_gap, W/2, -link_gap)"));
+    REQUIRE(inst->set_design_value("c", std::vector<double>{-0.1, -0.02}));
+    REQUIRE(inst->set_design_value("d", std::vector<double>{0.06, -0.02}));
+    const std::size_t k = inst->doc()["constraints"].size();
+    REQUIRE(
+        inst->set(std::format("constraints[{}]", k),
+                  Json{{"name", "link1_tv"},
+                       {"forall", "tau"},
+                       {"expr", "clearance(segment(A, C), tv) >= link_gap"}}));
+    REQUIRE(
+        inst->set(std::format("constraints[{}]", k + 1),
+                  Json{{"name", "link2_tv"},
+                       {"forall", "tau"},
+                       {"expr", "clearance(segment(B, D), tv) >= link_gap"}}));
+    const std::shared_ptr<const Model> m = compile_ok(*inst);
+    Evaluator ev(*m);
+    const RunResult r =
+        solve_from(*m, ev, m->initial_x(), tv_settings(*m), {}, 1);
+    CHECK(r.exchange == ExchangeStatus::Converged);
+    CHECK(r.feasible);
+    CHECK(r.objective == doctest::Approx(1.0938545).epsilon(1e-6));
+    for(const LocalSummary & l : r.solves)
+        if(l.mode == NlpMode::Phase2) CHECK(l.status == LocalStatus::Converged);
 }
 
 TEST_CASE("pareto: bound overrides of other criteria hold at every point") {

@@ -54,16 +54,26 @@ bool SolverService::start(SolveJob job, std::string * error) {
         return c >= 0 && c < static_cast<int>(m.criteria().size()) &&
                m.criteria()[static_cast<std::size_t>(c)].group >= 0;
     };
-    for(const BoundOverride & b : job.bounds)
+    auto range = [&](int c) -> const CriterionInfo * {
+        const CriterionInfo & ci = m.criteria()[static_cast<std::size_t>(c)];
+        return ci.role == CriterionRole::Range ? &ci : nullptr;
+    };
+    for(const BoundOverride & b : job.bounds) {
         if(!check_bound(b.criterion))
             return fail("bound override of a criterion without a bound");
+        if(const CriterionInfo * ci = range(b.criterion))
+            return fail(range_override_message(ci->name));
+    }
     if(job.kind == JobKind::Pareto) {
         if(job.pareto.criteria.empty() || job.pareto.bounds.empty())
             return fail("a Pareto job needs criteria and bounds");
-        for(const int c : job.pareto.criteria)
+        for(const int c : job.pareto.criteria) {
             if(!check_bound(c))
                 return fail(
                     "Pareto criterion without a bound (role max or min)");
+            if(const CriterionInfo * ci = range(c))
+                return fail(range_override_message(ci->name));
+        }
     }
 
     std::lock_guard lock(mutex_);

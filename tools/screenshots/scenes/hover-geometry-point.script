@@ -1,0 +1,5 @@
+# The hover tooltip of a geometry point, kitchen_view.
+open tests/data/tv_corner_ref.json
+move 477 65
+wait 28
+shot

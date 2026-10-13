@@ -1,0 +1,843 @@
+diff -ruN -x imgui_backends -x imgui_fonts pristine/CMakeLists.txt src/CMakeLists.txt
+--- pristine/CMakeLists.txt	2026-10-12 02:14:35.000000000 +0200
++++ src/CMakeLists.txt	2026-10-12 04:41:23.328308472 +0200
+@@ -51,6 +51,13 @@
+   endif()
+ endif()
+ 
++# Experimental IPOPT backend: Ipopt 3.14 (C interface) from a directory that
++# holds libipopt.so and include/coin-or, e.g. the casadi Python wheel.
++set(GS_IPOPT_DIR "/home/plaiseek/.local/lib/python3.10/site-packages/casadi"
++    CACHE PATH "Directory with libipopt.so and include/coin-or")
++list(APPEND CMAKE_BUILD_RPATH "${GS_IPOPT_DIR}")
++list(APPEND CMAKE_INSTALL_RPATH "${GS_IPOPT_DIR}")
++
+ function(gs_configure_target target)
+   target_include_directories(${target} PUBLIC ${PROJECT_SOURCE_DIR}/include)
+   if(WARNINGS)
+@@ -80,6 +87,8 @@
+   add_library(gs_solve STATIC ${GS_SOLVE_SOURCES})
+   gs_configure_target(gs_solve)
+   target_link_libraries(gs_solve PUBLIC gs_engine NLopt::nlopt TBB::tbb)
++  target_include_directories(gs_solve PRIVATE ${GS_IPOPT_DIR}/include/coin-or)
++  target_link_libraries(gs_solve PUBLIC ${GS_IPOPT_DIR}/libipopt.so)
+ endif()
+ 
+ 
+diff -ruN -x imgui_backends -x imgui_fonts pristine/include/gs/solve/local.hpp src/include/gs/solve/local.hpp
+--- pristine/include/gs/solve/local.hpp	2026-10-12 02:14:35.000000000 +0200
++++ src/include/gs/solve/local.hpp	2026-10-12 04:45:12.665725925 +0200
+@@ -83,6 +83,13 @@
+     // report garbage with a success code.
+     long nonfinite = 0;
+     std::string message;  // nlopt's error message, if any
++    // IPOPT backends only. nlopt_code then holds Ipopt's
++    // ApplicationReturnStatus and message its name.
++    long hessian_evaluations = 0;  // evaluations spent on FD Hessians
++    long hessians = 0;             // Hessian requests (IPOPT_FDH)
++    long out_of_bounds = 0;        // evaluations requested outside lb/ub
++    double out_of_bounds_max = 0.0;  // largest distance outside lb/ub
++    int iterations = 0;            // last Ipopt iteration count seen
+ };
+ 
+ inline constexpr double kNonFiniteValue = 1e10;
+diff -ruN -x imgui_backends -x imgui_fonts pristine/include/gs/solve/run.hpp src/include/gs/solve/run.hpp
+--- pristine/include/gs/solve/run.hpp	2026-10-12 02:14:35.000000000 +0200
++++ src/include/gs/solve/run.hpp	2026-10-12 04:45:12.665725925 +0200
+@@ -26,6 +26,12 @@
+     int samples = 0;  // total samples over all sweeps
+     double f = std::numeric_limits<double>::quiet_NaN();
+     std::string message;
++    // Largest model row on the solve's samples at its returned point (solver
++    // units, equality rows as |h|).
++    double max_row = std::numeric_limits<double>::quiet_NaN();
++    long hessian_evaluations = 0, hessians = 0, out_of_bounds = 0;
++    double out_of_bounds_max = 0.0;
++    int iterations = 0;
+ };
+ 
+ enum class ExchangeStatus : std::uint8_t {
+diff -ruN -x imgui_backends -x imgui_fonts pristine/include/gs/solve/settings.hpp src/include/gs/solve/settings.hpp
+--- pristine/include/gs/solve/settings.hpp	2026-10-12 02:14:35.000000000 +0200
++++ src/include/gs/solve/settings.hpp	2026-10-12 04:38:59.680527908 +0200
+@@ -12,9 +12,11 @@
+ 
+ class Model;
+ 
+-enum class Algorithm : std::uint8_t { SLSQP, COBYLA };
++// IPOPT: Ipopt (C interface) with a limited-memory Hessian; IPOPT_FDH: Ipopt
++// with the Lagrangian Hessian from central differences of exact gradients.
++enum class Algorithm : std::uint8_t { SLSQP, COBYLA, IPOPT, IPOPT_FDH };
+ 
+-// "SLSQP", "COBYLA".
++// "SLSQP", "COBYLA", "IPOPT", "IPOPT_FDH".
+ std::string_view algorithm_name(Algorithm a);
+ // Case-insensitive; also accepts the nlopt names "LD_SLSQP", "LN_COBYLA", ...
+ std::optional<Algorithm> parse_algorithm(std::string_view name);
+diff -ruN -x imgui_backends -x imgui_fonts pristine/src/cli/main.cpp src/src/cli/main.cpp
+--- pristine/src/cli/main.cpp	2026-10-12 02:14:35.000000000 +0200
++++ src/src/cli/main.cpp	2026-10-12 04:38:59.680527908 +0200
+@@ -40,7 +40,7 @@
+   --starts N                seeded uniform starts (default: solver.starts)
+   --seed S                  multistart seed (default: solver.seed)
+   --threads T               worker threads, 0 = all cores
+-  --algorithm A             SLSQP | COBYLA
++  --algorithm A             SLSQP | COBYLA | IPOPT | IPOPT_FDH
+   --set PATH=VALUE          edit the instance before compiling (repeatable),
+                             e.g. params.edge_margin=0.05 or
+                             criteria[3].role=maximize: VALUE is read as JSON
+@@ -338,7 +338,7 @@
+             s.algorithm = gs::Algorithm::SLSQP;
+         } else {
+             std::cerr << "unknown algorithm '" << *a.algorithm
+-                      << "': expected SLSQP or COBYLA\n";
++                      << "': expected SLSQP, COBYLA, IPOPT or IPOPT_FDH\n";
+             return 2;
+         }
+     }
+diff -ruN -x imgui_backends -x imgui_fonts pristine/src/gs/solve/ipopt_backend.cpp src/src/gs/solve/ipopt_backend.cpp
+--- pristine/src/gs/solve/ipopt_backend.cpp	1970-01-01 01:00:00.000000000 +0100
++++ src/src/gs/solve/ipopt_backend.cpp	2026-10-12 04:45:12.665725925 +0200
+@@ -0,0 +1,499 @@
++#include "ipopt_backend.hpp"
++
++#include <algorithm>
++#include <atomic>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <string_view>
++
++#include <IpStdCInterface.h>
++
++namespace gs::detail {
++
++namespace {
++
++using uz = std::size_t;
++
++// Ipopt's nlp_lower_bound_inf / nlp_upper_bound_inf defaults.
++constexpr double kIpoptInf = 1e19;
++// Central-difference step of the FD Hessian, relative to max(1, |x_j|).
++constexpr double kFdStep = 1e-6;
++
++enum class StopReason { None, Stop, Maxeval, Stopval, Error };
++
++std::string_view ipopt_status_name(int s) {
++    switch(s) {
++        case Solve_Succeeded: return "Solve_Succeeded";
++        case Solved_To_Acceptable_Level: return "Solved_To_Acceptable_Level";
++        case Infeasible_Problem_Detected: return "Infeasible_Problem_Detected";
++        case Search_Direction_Becomes_Too_Small:
++            return "Search_Direction_Becomes_Too_Small";
++        case Diverging_Iterates: return "Diverging_Iterates";
++        case User_Requested_Stop: return "User_Requested_Stop";
++        case Feasible_Point_Found: return "Feasible_Point_Found";
++        case Maximum_Iterations_Exceeded: return "Maximum_Iterations_Exceeded";
++        case Restoration_Failed: return "Restoration_Failed";
++        case Error_In_Step_Computation: return "Error_In_Step_Computation";
++        case Maximum_CpuTime_Exceeded: return "Maximum_CpuTime_Exceeded";
++        case Maximum_WallTime_Exceeded: return "Maximum_WallTime_Exceeded";
++        case Not_Enough_Degrees_Of_Freedom:
++            return "Not_Enough_Degrees_Of_Freedom";
++        case Invalid_Problem_Definition: return "Invalid_Problem_Definition";
++        case Invalid_Option: return "Invalid_Option";
++        case Invalid_Number_Detected: return "Invalid_Number_Detected";
++        case Unrecoverable_Exception: return "Unrecoverable_Exception";
++        case NonIpopt_Exception_Thrown: return "NonIpopt_Exception_Thrown";
++        case Insufficient_Memory: return "Insufficient_Memory";
++        case Internal_Error: return "Internal_Error";
++        default: return "?";
++    }
++}
++
++bool finite_all(const double * p, uz count) {
++    for(uz i = 0; i < count; ++i)
++        if(!std::isfinite(p[i])) return false;
++    return true;
++}
++
++struct Ctx {
++    Ctx(LocalProblem & p, const LocalOptions & o)
++        : problem(p)
++        , opt(o)
++        , n(uz(p.n()))
++        , mi(uz(p.m_ineq()))
++        , me(uz(p.m_eq()))
++        , m(mi + me)
++        , fd(o.algorithm == Algorithm::IPOPT_FDH)
++        , cx(n)
++        , df(n)
++        , g(mi)
++        , dg(mi * n)
++        , h(me)
++        , dh(me * n)
++        , pdf(n)
++        , pg(mi)
++        , pdg(mi * n)
++        , ph(me)
++        , pdh(me * n)
++        , px(n)
++        , ix(n)
++        , ig(m) {}
++
++    LocalProblem & problem;
++    const LocalOptions & opt;
++    uz n, mi, me, m;
++    bool fd;
++    IpoptProblem ip = nullptr;
++
++    // Evaluation cache at cx (always with derivatives, like every SLSQP
++    // evaluation, so evaluation counts compare one to one).
++    std::vector<double> cx;
++    bool have = false, bad_value = false, bad_grad = false;
++    double f = 0.0;
++    std::vector<double> df, g, dg, h, dh;
++
++    // FD probe buffers, separate so probes keep the cache at the iterate.
++    double pf = 0.0;
++    std::vector<double> pdf, pg, pdg, ph, pdh, px;
++    // Divided differences of [grad f; jac g; jac h] per column j, at hx.
++    std::vector<double> hx, D;
++    bool have_h = false;
++
++    std::vector<double> ix, ig;  // GetIpoptCurrentIterate buffers
++    std::vector<double> stop_x;  // iterate that met stopval
++
++    std::exception_ptr error;
++    StopReason reason = StopReason::None;
++    long evaluations = 0, gradient_evaluations = 0, nonfinite = 0;
++    long hessian_evaluations = 0, hessians = 0, out_of_bounds = 0;
++    double oob_max = 0.0;
++    const char * where = "?";
++    int iterations = 0;
++
++    bool halted() {
++        if(error) return true;
++        if(opt.stop && opt.stop->load(std::memory_order_relaxed)) {
++            if(reason == StopReason::None) reason = StopReason::Stop;
++            return true;
++        }
++        return false;
++    }
++
++    void check_bounds(const double * x) {
++        double d = 0.0;
++        for(uz j = 0; j < n; ++j)
++            d = std::max({d, opt.lb[j] - x[j], x[j] - opt.ub[j]});
++        if(d > 0.0) {
++            ++out_of_bounds;
++            oob_max = std::max(oob_max, d);
++            if(std::getenv("GS_IPOPT_DEBUG_OOB"))
++                std::fprintf(stderr, "oob %.3e (in %s)\n", d, where);
++        }
++    }
++
++    // Evaluates into the given buffers; false when the problem threw.
++    bool raw_eval(const double * x, double * pf_, double * pdf_, double * pg_,
++                  double * pdg_, double * ph_, double * pdh_) {
++        LocalBuffers b;
++        b.f = pf_;
++        b.df = pdf_;
++        b.g = pg_;
++        b.dg = pdg_;
++        b.h = ph_;
++        b.dh = pdh_;
++        check_bounds(x);
++        try {
++            problem.evaluate(x, b);
++        } catch(...) {
++            error = std::current_exception();
++            return false;
++        }
++        ++evaluations;
++        ++gradient_evaluations;
++        return true;
++    }
++
++    bool ensure(const double * x) {
++        if(halted()) return false;
++        if(have && std::equal(x, x + n, cx.begin())) return true;
++        have = false;
++        if(!raw_eval(x, &f, df.data(), g.data(), dg.data(), h.data(),
++                     dh.data()))
++            return false;
++        bad_value = !std::isfinite(f) || !finite_all(g.data(), mi) ||
++                    !finite_all(h.data(), me);
++        bad_grad = !finite_all(df.data(), n) ||
++                   !finite_all(dg.data(), dg.size()) ||
++                   !finite_all(dh.data(), dh.size());
++        if(bad_value || bad_grad) ++nonfinite;
++        std::copy(x, x + n, cx.begin());
++        have = true;
++        return true;
++    }
++
++    // Gradient rows [grad f; jac g; jac h] at px into out ((1 + m) x n).
++    bool probe(double * out) {
++        if(!raw_eval(px.data(), &pf, pdf.data(), pg.data(), pdg.data(),
++                     ph.data(), pdh.data()))
++            return false;
++        ++hessian_evaluations;
++        std::copy(pdf.begin(), pdf.end(), out);
++        std::copy(pdg.begin(), pdg.end(), out + n);
++        std::copy(pdh.begin(), pdh.end(), out + n + mi * n);
++        if(!finite_all(out, (1 + m) * n)) {
++            ++nonfinite;
++            return false;
++        }
++        return true;
++    }
++
++    bool build_differences(const double * x) {
++        const uz block = (1 + m) * n;
++        D.assign(n * block, 0.0);
++        std::vector<double> plus(block), minus(block);
++        for(uz j = 0; j < n; ++j) {
++            const double step = kFdStep * std::max(1.0, std::fabs(x[j]));
++            // One-sided at a bound: the engine must stay inside the box.
++            const double xp = std::min(x[j] + step, opt.ub[j]);
++            const double xm = std::max(x[j] - step, opt.lb[j]);
++            if(!(xp > xm)) continue;
++            std::copy(x, x + n, px.begin());
++            px[j] = xp;
++            if(!probe(plus.data())) return false;
++            px[j] = xm;
++            if(!probe(minus.data())) return false;
++            const double inv = 1.0 / (xp - xm);
++            double * Dj = D.data() + j * block;
++            for(uz k = 0; k < block; ++k) Dj[k] = (plus[k] - minus[k]) * inv;
++        }
++        hx.assign(x, x + n);
++        have_h = true;
++        return true;
++    }
++
++    // Lower triangle, row by row, of the symmetrised FD Lagrangian Hessian.
++    bool hessian(const double * x, double obj_factor, const double * lambda,
++                 double * values) {
++        if(halted()) return false;
++        ++hessians;
++        if(!(have_h && std::equal(x, x + n, hx.begin())) &&
++           !build_differences(x))
++            return false;
++        const uz block = (1 + m) * n;
++        // H(r, j) = d/dx_j of dL/dx_r.
++        std::vector<double> H(n * n, 0.0);
++        for(uz j = 0; j < n; ++j) {
++            const double * Dj = D.data() + j * block;
++            for(uz r = 0; r < n; ++r) {
++                double v = obj_factor * Dj[r];
++                for(uz i = 0; i < m; ++i) v += lambda[i] * Dj[n + i * n + r];
++                H[r * n + j] = v;
++            }
++        }
++        uz k = 0;
++        for(uz r = 0; r < n; ++r)
++            for(uz j = 0; j <= r; ++j)
++                values[k++] = 0.5 * (H[r * n + j] + H[j * n + r]);
++        return true;
++    }
++};
++
++bool eval_f(ipindex, ipnumber * x, bool, ipnumber * obj, UserDataPtr u) {
++    auto & c = *static_cast<Ctx *>(u);
++    c.where = "eval_f";
++    if(!c.ensure(x) || !std::isfinite(c.f)) return false;
++    *obj = c.f;
++    return true;
++}
++
++bool eval_grad_f(ipindex, ipnumber * x, bool, ipnumber * grad, UserDataPtr u) {
++    auto & c = *static_cast<Ctx *>(u);
++    c.where = "eval_grad_f";
++    if(!c.ensure(x) || !finite_all(c.df.data(), c.n)) return false;
++    std::copy(c.df.begin(), c.df.end(), grad);
++    return true;
++}
++
++bool eval_g(ipindex, ipnumber * x, bool, ipindex, ipnumber * g, UserDataPtr u) {
++    auto & c = *static_cast<Ctx *>(u);
++    c.where = "eval_g";
++    if(!c.ensure(x)) return false;
++    if(!finite_all(c.g.data(), c.mi) || !finite_all(c.h.data(), c.me))
++        return false;
++    std::copy(c.g.begin(), c.g.end(), g);
++    std::copy(c.h.begin(), c.h.end(), g + c.mi);
++    return true;
++}
++
++bool eval_jac_g(ipindex, ipnumber * x, bool, ipindex, ipindex, ipindex * iRow,
++                ipindex * jCol, ipnumber * values, UserDataPtr u) {
++    auto & c = *static_cast<Ctx *>(u);
++    if(!values) {
++        uz k = 0;
++        for(uz i = 0; i < c.m; ++i)
++            for(uz j = 0; j < c.n; ++j) {
++                iRow[k] = static_cast<ipindex>(i);
++                jCol[k] = static_cast<ipindex>(j);
++                ++k;
++            }
++        return true;
++    }
++    c.where = "eval_jac_g";
++    if(!c.ensure(x)) return false;
++    if(!finite_all(c.dg.data(), c.dg.size()) ||
++       !finite_all(c.dh.data(), c.dh.size()))
++        return false;
++    std::copy(c.dg.begin(), c.dg.end(), values);
++    std::copy(c.dh.begin(), c.dh.end(), values + c.dg.size());
++    return true;
++}
++
++bool eval_h(ipindex, ipnumber * x, bool, ipnumber obj_factor, ipindex,
++            ipnumber * lambda, bool, ipindex, ipindex * iRow, ipindex * jCol,
++            ipnumber * values, UserDataPtr u) {
++    auto & c = *static_cast<Ctx *>(u);
++    if(!values) {
++        uz k = 0;
++        for(uz r = 0; r < c.n; ++r)
++            for(uz j = 0; j <= r; ++j) {
++                iRow[k] = static_cast<ipindex>(r);
++                jCol[k] = static_cast<ipindex>(j);
++                ++k;
++            }
++        return true;
++    }
++    if(!c.fd) return false;
++    c.where = "eval_h";
++    return c.hessian(x, obj_factor, lambda, values);
++}
++
++bool intermediate(ipindex, ipindex iter, ipnumber, ipnumber, ipnumber,
++                  ipnumber, ipnumber, ipnumber, ipnumber, ipnumber, ipindex,
++                  UserDataPtr u) {
++    auto & c = *static_cast<Ctx *>(u);
++    c.iterations = static_cast<int>(iter);
++    if(c.error) {
++        c.reason = StopReason::Error;
++        return false;
++    }
++    if(c.halted()) return false;
++    // FD probes do not count: the FD Hessian stands in for an exact one.
++    if(c.evaluations - c.hessian_evaluations >= c.opt.maxeval) {
++        c.reason = StopReason::Maxeval;
++        return false;
++    }
++    if(std::isfinite(c.opt.stopval)) {
++        // Restoration iterates are mapped back to the original NLP too.
++        if(!GetIpoptCurrentIterate(c.ip, false, static_cast<ipindex>(c.n),
++                                   c.ix.data(), nullptr, nullptr,
++                                   static_cast<ipindex>(c.m), nullptr, nullptr))
++            return true;
++        c.where = "intermediate";
++        if(!c.ensure(c.ix.data())) return !c.error && !c.halted();
++        if(c.bad_value) return true;
++        double viol = 0.0;
++        for(uz i = 0; i < c.mi; ++i) viol = std::max(viol, c.g[i]);
++        for(uz i = 0; i < c.me; ++i) viol = std::max(viol, std::fabs(c.h[i]));
++        bool inside = true;
++        for(uz j = 0; j < c.n; ++j)
++            inside &= c.ix[j] >= c.opt.lb[j] && c.ix[j] <= c.opt.ub[j];
++        if(inside && c.f <= c.opt.stopval && viol <= c.opt.constraint_tol) {
++            c.stop_x = c.ix;
++            c.reason = StopReason::Stopval;
++            return false;
++        }
++    }
++    return true;
++}
++
++void str_option(IpoptProblem ip, const char * key, const char * value) {
++    AddIpoptStrOption(ip, const_cast<char *>(key), const_cast<char *>(value));
++}
++void num_option(IpoptProblem ip, const char * key, double value) {
++    AddIpoptNumOption(ip, const_cast<char *>(key), value);
++}
++void int_option(IpoptProblem ip, const char * key, int value) {
++    AddIpoptIntOption(ip, const_cast<char *>(key), value);
++}
++
++// GS_IPOPT_OPTS="key=value;key=value": integer, then number, then string.
++void env_options(IpoptProblem ip) {
++    const char * env = std::getenv("GS_IPOPT_OPTS");
++    if(!env) return;
++    std::string all(env);
++    std::size_t pos = 0;
++    while(pos < all.size()) {
++        std::size_t end = all.find(';', pos);
++        if(end == std::string::npos) end = all.size();
++        const std::string item = all.substr(pos, end - pos);
++        pos = end + 1;
++        const std::size_t eq = item.find('=');
++        if(eq == std::string::npos) continue;
++        std::string key = item.substr(0, eq), value = item.substr(eq + 1);
++        char * kp = key.data();
++        char * stop = nullptr;
++        const long iv = std::strtol(value.c_str(), &stop, 10);
++        if(!value.empty() && *stop == '\0' &&
++           AddIpoptIntOption(ip, kp, static_cast<ipindex>(iv)))
++            continue;
++        const double dv = std::strtod(value.c_str(), &stop);
++        if(!value.empty() && *stop == '\0' && AddIpoptNumOption(ip, kp, dv))
++            continue;
++        AddIpoptStrOption(ip, kp, value.data());
++    }
++}
++
++std::atomic<long> g_output_counter{0};
++
++LocalStatus status_of(int s, StopReason reason) {
++    switch(s) {
++        case Solve_Succeeded:
++        case Solved_To_Acceptable_Level:
++        case Feasible_Point_Found:
++            return LocalStatus::Converged;
++        case User_Requested_Stop:
++            switch(reason) {
++                case StopReason::Stopval: return LocalStatus::StopvalReached;
++                case StopReason::Maxeval: return LocalStatus::MaxevalReached;
++                case StopReason::Stop: return LocalStatus::Stopped;
++                default: return LocalStatus::Failure;
++            }
++        case Maximum_Iterations_Exceeded:
++            return LocalStatus::MaxevalReached;
++        case Maximum_CpuTime_Exceeded:
++        case Maximum_WallTime_Exceeded:
++            return LocalStatus::MaxtimeReached;
++        case Invalid_Option:
++        case Invalid_Problem_Definition:
++        case Not_Enough_Degrees_Of_Freedom:
++            return LocalStatus::InvalidArgs;
++        default:
++            return LocalStatus::Failure;
++    }
++}
++
++}  // namespace
++
++void ipopt_minimize(LocalProblem & problem, std::vector<double> & x,
++                    const LocalOptions & o, LocalResult & r,
++                    std::exception_ptr & error) {
++    Ctx c(problem, o);
++    const uz n = c.n, m = c.m;
++    std::vector<double> xl(n), xu(n), gl(m, -kIpoptInf), gu(m, 0.0);
++    for(uz j = 0; j < n; ++j) {
++        xl[j] = std::isfinite(o.lb[j]) ? o.lb[j] : -kIpoptInf;
++        xu[j] = std::isfinite(o.ub[j]) ? o.ub[j] : kIpoptInf;
++    }
++    for(uz i = c.mi; i < m; ++i) gl[i] = 0.0;
++    const ipindex nele_jac = static_cast<ipindex>(m * n);
++    const ipindex nele_hess = static_cast<ipindex>(n * (n + 1) / 2);
++    IpoptProblem ip = CreateIpoptProblem(
++        static_cast<ipindex>(n), xl.data(), xu.data(), static_cast<ipindex>(m),
++        gl.data(), gu.data(), nele_jac, nele_hess, 0, &eval_f, &eval_g,
++        &eval_grad_f, &eval_jac_g, &eval_h);
++    if(!ip) {
++        r.status = LocalStatus::InvalidArgs;
++        r.message = "CreateIpoptProblem failed";
++        return;
++    }
++    c.ip = ip;
++    str_option(ip, "sb", "yes");
++    int_option(ip, "print_level", 0);
++    num_option(ip, "tol", 1e-8);
++    num_option(ip, "constr_viol_tol", o.constraint_tol);
++    num_option(ip, "acceptable_constr_viol_tol", o.constraint_tol);
++    int_option(ip, "max_iter", 1000000);
++    str_option(ip, "linear_solver", "mumps");
++    num_option(ip, "bound_relax_factor", 0.0);
++    str_option(ip, "honor_original_bounds", "yes");
++    str_option(ip, "hessian_approximation", c.fd ? "exact" : "limited-memory");
++    if(o.maxtime > 0.0) num_option(ip, "max_wall_time", o.maxtime);
++    if(const char * out = std::getenv("GS_IPOPT_OUTPUT")) {
++        const char * lvl = std::getenv("GS_IPOPT_PRINT");
++        std::string file = std::string(out) + "." +
++                           std::to_string(g_output_counter.fetch_add(1));
++        OpenIpoptOutputFile(ip, file.data(), lvl ? std::atoi(lvl) : 5);
++    }
++    env_options(ip);
++    SetIntermediateCallback(ip, &intermediate);
++
++    std::vector<double> xs = x;
++    double obj = 0.0;
++    const int status =
++        IpoptSolve(ip, xs.data(), nullptr, &obj, nullptr, nullptr, nullptr, &c);
++    FreeIpoptProblem(ip);
++    error = c.error;
++
++    if(c.reason == StopReason::Stopval && c.stop_x.size() == n)
++        xs = c.stop_x;
++    bool finite = true;
++    for(const double v : xs) finite &= std::isfinite(v);
++    if(finite)
++        for(uz j = 0; j < n; ++j) x[j] = std::clamp(xs[j], o.lb[j], o.ub[j]);
++    r.nlopt_code = status;
++    r.status = status_of(status, c.reason);
++    if(r.status == LocalStatus::Stopped && c.reason != StopReason::Stop)
++        r.status = LocalStatus::Failure;
++    // The stop flag can end the solve before the first intermediate call
++    // (the callbacks then fail), with any return status.
++    if(c.reason == StopReason::Stop) r.status = LocalStatus::Stopped;
++    r.message = std::string(ipopt_status_name(status));
++    if(status == User_Requested_Stop)
++        r.message += c.reason == StopReason::Stopval   ? " (stopval)"
++                     : c.reason == StopReason::Maxeval ? " (maxeval)"
++                     : c.reason == StopReason::Stop    ? " (stop flag)"
++                                                       : " (error)";
++    r.evaluations = c.evaluations;
++    r.gradient_evaluations = c.gradient_evaluations;
++    r.nonfinite = c.nonfinite;
++    r.hessian_evaluations = c.hessian_evaluations;
++    r.hessians = c.hessians;
++    r.out_of_bounds = c.out_of_bounds;
++    r.out_of_bounds_max = c.oob_max;
++    r.iterations = c.iterations;
++}
++
++}  // namespace gs::detail
+diff -ruN -x imgui_backends -x imgui_fonts pristine/src/gs/solve/ipopt_backend.hpp src/src/gs/solve/ipopt_backend.hpp
+--- pristine/src/gs/solve/ipopt_backend.hpp	1970-01-01 01:00:00.000000000 +0100
++++ src/src/gs/solve/ipopt_backend.hpp	2026-10-12 04:39:12.349773672 +0200
+@@ -0,0 +1,18 @@
++#pragma once
++
++#include <exception>
++#include <vector>
++
++#include "gs/solve/local.hpp"
++
++namespace gs::detail {
++
++// One Ipopt solve from x (already inside the bounds); x becomes the point
++// Ipopt returns. Fills r's status, nlopt_code (Ipopt's return status),
++// message and counters, but not r.x / r.f. An exception thrown by the problem
++// is stored in `error` (Ipopt is stopped first) for minimize() to rethrow.
++void ipopt_minimize(LocalProblem & problem, std::vector<double> & x,
++                    const LocalOptions & options, LocalResult & r,
++                    std::exception_ptr & error);
++
++}  // namespace gs::detail
+diff -ruN -x imgui_backends -x imgui_fonts pristine/src/gs/solve/local.cpp src/src/gs/solve/local.cpp
+--- pristine/src/gs/solve/local.cpp	2026-10-12 02:14:35.000000000 +0200
++++ src/src/gs/solve/local.cpp	2026-10-12 04:42:11.554239344 +0200
+@@ -7,6 +7,8 @@
+ 
+ #include <nlopt.hpp>
+ 
++#include "ipopt_backend.hpp"
++
+ namespace gs {
+ 
+ std::string_view status_name(LocalStatus s) {
+@@ -43,6 +45,9 @@
+             return nlopt::LD_SLSQP;
+         case Algorithm::COBYLA:
+             return nlopt::LN_COBYLA;
++        case Algorithm::IPOPT:
++        case Algorithm::IPOPT_FDH:
++            break;
+     }
+     return nlopt::LD_SLSQP;
+ }
+@@ -233,6 +238,26 @@
+     for(uz j = 0; j < x0.size(); ++j)
+         x0[j] = std::clamp(x0[j], options.lb[j], options.ub[j]);
+ 
++    if(options.algorithm == Algorithm::IPOPT ||
++       options.algorithm == Algorithm::IPOPT_FDH) {
++        LocalResult r;
++        std::exception_ptr error;
++        detail::ipopt_minimize(problem, x0, options, r, error);
++        if(error) std::rethrow_exception(error);
++        std::vector<double> g(uz(problem.m_ineq())), h(uz(problem.m_eq()));
++        LocalBuffers b;
++        b.f = &r.f;
++        b.g = g.data();
++        b.h = h.data();
++        problem.evaluate(x0.data(), b);
++        ++r.evaluations;
++        if(!std::isfinite(r.f) || !finite_all(g.data(), g.size()) ||
++           !finite_all(h.data(), h.size()))
++            r.status = LocalStatus::NonFinite;
++        r.x = std::move(x0);
++        return r;
++    }
++
+     Driver d(problem, options);
+     nlopt::opt opt(nlopt_algorithm(options.algorithm),
+                    static_cast<unsigned>(n));
+diff -ruN -x imgui_backends -x imgui_fonts pristine/src/gs/solve/report.cpp src/src/gs/solve/report.cpp
+--- pristine/src/gs/solve/report.cpp	2026-10-12 02:14:35.000000000 +0200
++++ src/src/gs/solve/report.cpp	2026-10-12 04:45:12.665725925 +0200
+@@ -301,7 +301,35 @@
+         for(const auto & t : rr.samples) samples += static_cast<int>(t.size());
+         e["samples"] = samples;
+         e["evaluations"] = rr.evaluations;
++        e["gradient_evaluations"] = rr.gradient_evaluations;
++        e["nonfinite"] = rr.nonfinite;
+         e["wall_seconds"] = rr.wall_seconds;
++        if(rr.worst_group >= 0 &&
++           rr.worst_group < static_cast<int>(m.groups().size()))
++            e["worst"] = m.groups()[uz(rr.worst_group)].name;
++        e["x0"] = rr.x0;
++        e["x"] = rr.x;
++        Json solves = Json::array();
++        for(const LocalSummary & ls : rr.solves) {
++            Json se = Json::object();
++            se["phase"] = ls.mode == NlpMode::Phase1 ? "phase1" : "phase2";
++            se["code"] = ls.nlopt_code;
++            se["status"] = std::string(status_name(ls.status));
++            se["evaluations"] = ls.evaluations;
++            se["gradient_evaluations"] = ls.gradient_evaluations;
++            se["hessian_evaluations"] = ls.hessian_evaluations;
++            se["hessians"] = ls.hessians;
++            se["iterations"] = ls.iterations;
++            se["nonfinite"] = ls.nonfinite;
++            se["out_of_bounds"] = ls.out_of_bounds;
++            se["out_of_bounds_max"] = ls.out_of_bounds_max;
++            se["samples"] = ls.samples;
++            se["f"] = num(ls.f);
++            se["max_row"] = num(ls.max_row);
++            if(!ls.message.empty()) se["message"] = ls.message;
++            solves.push_back(se);
++        }
++        e["solves"] = solves;
+         if(!rr.error.empty()) e["error"] = rr.error;
+         runs.push_back(e);
+     }
+diff -ruN -x imgui_backends -x imgui_fonts pristine/src/gs/solve/run.cpp src/src/gs/solve/run.cpp
+--- pristine/src/gs/solve/run.cpp	2026-10-12 02:14:35.000000000 +0200
++++ src/src/gs/solve/run.cpp	2026-10-12 04:55:47.839843076 +0200
+@@ -9,6 +9,7 @@
+ #include <optional>
+ #include <stdexcept>
+ #include <thread>
++#include <cstdlib>
+ 
+ namespace gs {
+ 
+@@ -144,6 +145,11 @@
+     ls.samples = total_samples(S);
+     ls.f = lr.f;
+     ls.message = lr.message;
++    ls.hessian_evaluations = lr.hessian_evaluations;
++    ls.hessians = lr.hessians;
++    ls.out_of_bounds = lr.out_of_bounds;
++    ls.out_of_bounds_max = lr.out_of_bounds_max;
++    ls.iterations = lr.iterations;
+     return ls;
+ }
+ 
+@@ -194,8 +200,9 @@
+     std::vector<double> x = r.x0;
+     SampleSets S = SampleSets::uniform(m, s.initial_samples);
+ 
+-    auto account = [&](const LocalResult & lr, NlpMode mode) {
++    auto account = [&](const LocalResult & lr, NlpMode mode, double max_row) {
+         r.solves.push_back(summary(lr, mode, S));
++        r.solves.back().max_row = max_row;
+         r.evaluations += lr.evaluations;
+         r.gradient_evaluations += lr.gradient_evaluations;
+         r.nonfinite += lr.nonfinite;
+@@ -229,18 +236,57 @@
+                     const std::vector<double> xa = P1.start(x1);
+                     LocalOptions o = local_options(s, P1, xa, seed, stop);
+                     o.stopval = kPhase1Target;
++                    // Experiment: GS_PHASE1_ALG=IPOPT runs phase 1 with Ipopt
++                    // whatever the algorithm of phase 2.
++                    if(const char * p1 = std::getenv("GS_PHASE1_ALG"))
++                        if(const auto a = parse_algorithm(p1)) o.algorithm = *a;
+                     const LocalResult lr = minimize(P1, xa, o);
+-                    account(lr, NlpMode::Phase1);
+                     if(lr.status == LocalStatus::Stopped) r.stopped = true;
+                     const std::vector<double> xr(
+                         lr.x.begin(),
+                         lr.x.begin() + static_cast<std::ptrdiff_t>(nm));
+                     const double w = P1.max_row(xr);
++                    account(lr, NlpMode::Phase1, w);
+                     if(attempt == 0 || w < worst) {
+                         x = xr;
+                         worst = w;
+                     }
+                 }
++                // Diagnostic (GS_DIAG_PHASE1=1): when phase 1 ends
++                // infeasible, one Ipopt phase-1 solve from its point tells a
++                // local minimum of the violation from a stalled solve. The
++                // run itself is unaffected (x, counters).
++                if(std::getenv("GS_DIAG_PHASE1") && !(worst <= s.constraint_tol) &&
++                   !r.stopped) {
++                    const std::vector<double> xa = P1.start(x);
++                    LocalOptions o = local_options(s, P1, xa, seed, stop);
++                    o.stopval = kPhase1Target;
++                    o.algorithm = Algorithm::IPOPT;
++                    const LocalResult lr = minimize(P1, xa, o);
++                    const std::vector<double> xr(
++                        lr.x.begin(),
++                        lr.x.begin() + static_cast<std::ptrdiff_t>(nm));
++                    double moved = 0.0;
++                    for(uz j = 0; j < nm; ++j)
++                        moved = std::max(moved, std::fabs(xr[j] - x[j]));
++                    LocalSummary ls = summary(lr, NlpMode::Phase1, S);
++                    ls.max_row = P1.max_row(xr);
++                    const Check c0 = check(ev, x, s.verify_samples, bounds);
++                    std::string crit;
++                    for(uz ci = 0; ci < c0.v.criteria.size(); ++ci)
++                        if(m.criteria()[ci].group == c0.v.worst_group)
++                            crit = std::format(" criterion {}={:.6g}",
++                                               m.criteria()[ci].name,
++                                               c0.v.criteria[ci].value);
++                    ls.message = std::format(
++                        "diag: {} moved={:.3g} from={:.6g} worst={}{}",
++                        lr.message, moved, worst,
++                        c0.v.worst_group >= 0
++                            ? m.groups()[uz(c0.v.worst_group)].name
++                            : std::string("-"),
++                        crit);
++                    r.solves.push_back(ls);
++                }
+             }
+ 
+             std::optional<Iterate> best;
+@@ -254,11 +300,11 @@
+                 const std::vector<double> xa = P2.start(x);
+                 const LocalResult lr =
+                     minimize(P2, xa, local_options(s, P2, xa, seed, stop));
+-                account(lr, NlpMode::Phase2);
+                 stuck_evals += lr.evaluations;
+                 std::copy(lr.x.begin(),
+                           lr.x.begin() + static_cast<std::ptrdiff_t>(nm),
+                           x.begin());
++                account(lr, NlpMode::Phase2, P2.max_row(x));
+                 r.exchange_iterations = it;
+                 if(lr.status == LocalStatus::Stopped) r.stopped = true;
+ 
+diff -ruN -x imgui_backends -x imgui_fonts pristine/src/gs/solve/settings.cpp src/src/gs/solve/settings.cpp
+--- pristine/src/gs/solve/settings.cpp	2026-10-12 02:14:35.000000000 +0200
++++ src/src/gs/solve/settings.cpp	2026-10-12 04:38:59.680527908 +0200
+@@ -16,6 +16,10 @@
+             return "SLSQP";
+         case Algorithm::COBYLA:
+             return "COBYLA";
++        case Algorithm::IPOPT:
++            return "IPOPT";
++        case Algorithm::IPOPT_FDH:
++            return "IPOPT_FDH";
+     }
+     return "?";
+ }
+@@ -25,9 +29,11 @@
+     std::transform(up.begin(), up.end(), up.begin(), [](unsigned char c) {
+         return static_cast<char>(std::toupper(c));
+     });
+-    for(const Algorithm a : {Algorithm::SLSQP, Algorithm::COBYLA}) {
++    for(const Algorithm a : {Algorithm::SLSQP, Algorithm::COBYLA,
++                             Algorithm::IPOPT, Algorithm::IPOPT_FDH}) {
+         const std::string_view n = algorithm_name(a);
+         if(up == n) return a;
++        if(a == Algorithm::IPOPT || a == Algorithm::IPOPT_FDH) continue;
+         const std::string_view prefix = a == Algorithm::COBYLA ? "LN_" : "LD_";
+         if(up.size() == prefix.size() + n.size() && up.starts_with(prefix) &&
+            up.ends_with(n))

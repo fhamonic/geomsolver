@@ -1,0 +1,14 @@
+# The grid and the ghosts turned off from the View menu.
+open tests/data/tv_corner_ref.json
+wait 16
+click L 92 10
+wait 4
+# Grid
+click L 100 139
+wait 4
+click L 92 10
+wait 4
+# Ghosts
+click L 100 234
+wait 3
+shot

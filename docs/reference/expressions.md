@@ -27,7 +27,7 @@ Probes are printed after the verification report, one per line, with 10 signific
 | **`let.<name>`** | string | full | any |
 | **`constraints[i].expr`** | string | relation | Scalar on both sides |
 | **`criteria[i].expr`** | string | full, plus `max_over` / `min_over` | Scalar |
-| **`criteria[i].bound`** | number or string | constant | Scalar |
+| **`criteria[i].bound`** | number or string; for role `range`, an array of two | constant | Scalar |
 | **`display[i].expr`** | string | full | any |
 | **`--probe EXPR`** | command-line argument | full | any |
 
@@ -39,7 +39,7 @@ params.k at column 0: 'u' is a sweep and cannot appear in a constant expression
 params.k at column 0: 'arm' is a let binding and cannot appear in a constant expression
 ```
 
-A **full** context may use every name. A **relation** is a full expression with exactly one comparison at the top (see [Relations](#relations)).
+A **full** context may use every name. A **relation** is a full expression with one comparison at the top, or a chain of two (see [Relations](#relations)).
 
 ## Lexical rules
 
@@ -78,7 +78,7 @@ From lowest to highest precedence:
 
 | Level | Operators | Grouping | Notes |
 | --- | --- | --- | --- |
-| **1** | `<=` `>=` `==` (`<` `>`) | none | one comparison at most, at the top of a constraint only |
+| **1** | `<=` `>=` `==` (`<` `>`) | none | at the top of a constraint only: one comparison, or two in the same direction (`lo <= e <= hi`) |
 | **2** | `+` `-` | left to right | |
 | **3** | `*` `/` | left to right | |
 | **4** | unary `-` | prefix | binds looser than `^` |
@@ -218,6 +218,7 @@ The direction decides whether the form compiles. "At every value of the sweep" c
 | **`max_over(s, f) <= max_over(s, g)`** and other aggregate pairs, `==` included | one side at one sample | compiles without a warning, but use a witness |
 | criterion, role `max`, on `max_over`; role `min` on `min_over` | bound at every s | yes |
 | criterion, role `max` on `min_over`; role `min` on `max_over` | | error |
+| criterion, role `range`, on either aggregate | one of its two bounds at one sample | error |
 | criterion, role `minimize` on `max_over`; `maximize` on `min_over` | worst case (epigraph) | yes |
 | criterion, role `minimize` on `min_over`; `maximize` on `max_over` | the value at the extreme sample | yes |
 | criterion, role `report`, any aggregate | shown only | yes |
@@ -230,20 +231,30 @@ constraints[0].expr at column 0: max_over(u, f) >= b only asks for f >= b at one
 
 ## Relations
 
-A constraint's `expr` is a relation: two Scalar expressions and one comparison.
+A constraint's `expr` is a relation: one comparison between two Scalar expressions, or a chain of two comparisons that bounds one expression from both sides.
 
 - The comparison is `<=`, `>=` or `==`; `<` and `>` mean `<=` and `>=`.
-- Only one comparison is allowed, and only at the top level. A criterion's `expr` takes none: it uses `role` and `bound`.
+- A **two-sided relation** `lo <= e <= hi`, or `hi >= e >= lo`, chains two comparisons in the same direction. It is one constraint and one row group of two rows, `lo - e` and `e - hi`, named after the constraint with `(lo)` and `(hi)`: `height(lo)`, `height(hi)`. Its margin is that of the side closer to violation. `==` cannot be chained, and a chain has two comparisons at most.
+- Comparisons are allowed only at the top level. A criterion's `expr` takes none: it uses `role` and `bound`, or role `range` and two bounds.
 - An equality `==` becomes an equality row of the NLP (two opposite inequality rows during phase 1).
-- A top-level `abs()` on the smaller side, `abs(e) <= b` or `b >= abs(e)`, is split into the two smooth rows `e <= b` and `-e <= b`. The same holds for a criterion with role `max` whose expression is `abs(e)`. `abs(e) >= b` is not split.
+- A top-level `abs()` on the smaller side, `abs(e) <= b` or `b >= abs(e)`, is split into the two smooth rows `e <= b` and `-e <= b`, named `(+)` and `(-)`. The same holds for a criterion with role `max` whose expression is `abs(e)`, and for the upper side of a chain or of a `range` criterion: `0 <= abs(e) <= b` has the rows `(lo)`, `(hi+)` and `(hi-)`. `abs(e) >= b` is not split.
+- Each comparison of a chain follows the rules of a single one. Every side is Scalar and depends on the `forall` sweep only, and a `max_over` / `min_over` side must be in the "at every value" direction of each comparison it takes part in: `max_over(u, tip.y) <= s <= 2` compiles, `-1 <= max_over(u, tip.y) <= 2` is the error of the [aggregate table](#max_oversweep-body-and-min_oversweep-body) at the aggregate's column. A comparison between two constants gets the warning of a constant constraint at its own column, `this comparison does not depend on any design variable`, even when the other comparison varies.
+- The rows of a group repeat together over the samples of one sweep. A chain whose two comparisons need different repetitions is an error: one over two sweeps, or one that compares two aggregates next to one checked at every sample.
 
 ```text
 probes[4] at column 2: a comparison is only allowed at the top level of a constraint
-probes[10] at column 7: only one comparison is allowed
+constraints[0].expr at column 20: at most two comparisons are allowed, as in lo <= e <= hi
+constraints[0].expr at column 15: the two comparisons of a chain must point the same way: lo <= e <= hi or hi >= e >= lo
+constraints[0].expr at column 2: '==' cannot be chained: a two-sided relation is lo <= e <= hi or hi >= e >= lo
+constraints[0].expr at column 45: one comparison of this chain is between two max_over/min_over sides and the other is checked at every sample of 'u': write them as two constraints
 constraints[0].expr at column 0: a constraint needs a comparison (<=, >= or ==)
 constraints[0].expr at column 0: constraint sides must be Scalar, got Vec
 criteria[1].expr at column 2: a criterion is an expression, not a comparison (use "role" and "bound")
 ```
+
+The second to fifth lines are `0 <= norm(tip) <= 2 <= 3`, `norm(tip) <= 2 >= 0`, `0 == norm(tip) <= 2` and `max_over(u, tip.y) <= max_over(u, norm(tip)) <= 2`.
+
+Each constraint also has a **value**, which the GUI shows in the constraint's sheet and the tooltip of its status, disabled constraints included: the middle of a chain; for one comparison, the side that is not constant when the other one is, else lhs − rhs. A `max_over` / `min_over` side contributes its body, so the value follows the sweep slider like the side of a `forall` constraint. For the playground's `norm(tip) <= 2` it is `norm(tip)`.
 
 [Constraints](../guide/constraints.md) explains how to choose between the forms.
 
@@ -283,12 +294,15 @@ constraints[0].expr at column 0: depends on sweep 'u' but "forall" is 'v'
 criteria[1].expr at column 3: depends on sweep 'u': wrap it in max_over(u, ...) / min_over(u, ...) or fix the sweep with at()
 ```
 
-Two warnings point at relations that cannot do what they say:
+Two warnings point at relations that cannot do what they say. The second is longer for an equality:
 
 ```text
 warning: constraints[0].forall: the constraint does not depend on sweep 'u': "forall" has no effect
 warning: constraints[0].expr: does not depend on any design variable: it is always satisfied or always violated
+warning: constraints[0].expr: does not depend on any design variable: it is always satisfied or always violated, and as an equality it stops every SLSQP solve; disable it
 ```
+
+An equality row that no design variable moves has a zero gradient, which makes SLSQP's equality system singular. With `--set 'constraints[0].expr=norm(P) == 5' --set constraints[0].forall=null`, a constraint that always holds, every solve of the playground stops "roundoff limited" where it starts: the 65 runs end `stalled` at 65 distinct points instead of one optimum, s = 0.
 
 ## Limits
 

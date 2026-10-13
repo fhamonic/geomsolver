@@ -1,0 +1,7 @@
+# The Constraints panel with couch selected, and its sheet in Properties:
+# Enabled, its sweep, its formula, its value and status.
+open tests/data/tv_corner_ref.json
+panel constraints
+select constraint couch
+wait 16
+shot

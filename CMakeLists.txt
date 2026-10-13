@@ -34,12 +34,13 @@ find_package(GLEW REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(nlohmann_json_schema_validator REQUIRED)
 find_package(NLopt REQUIRED)
-if(NOT WIN32)
-  find_package(TBB REQUIRED)
-endif()
+# gs_solve runs its multistart on std::jthread; before glibc 2.34 that needs
+# libpthread on the link line.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
 # A non-system GCC (e.g. /opt/gcc-15) ships a newer libstdc++ than the system
-# one; binaries and the shared libtbb must find it at run time.
+# one; the binaries must find it at run time.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   execute_process(
     COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
@@ -79,13 +80,27 @@ file(GLOB_RECURSE GS_SOLVE_SOURCES CONFIGURE_DEPENDS
 if(GS_SOLVE_SOURCES)
   add_library(gs_solve STATIC ${GS_SOLVE_SOURCES})
   gs_configure_target(gs_solve)
-  target_link_libraries(gs_solve PUBLIC gs_engine NLopt::nlopt TBB::tbb)
+  target_link_libraries(gs_solve PUBLIC gs_engine NLopt::nlopt Threads::Threads)
 endif()
 
 
-# ################### geomsolver: GUI ####################
-file(GLOB_RECURSE GS_UI_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/src/ui/*.cpp)
-add_executable(geomsolver src/main.cpp ${GS_UI_SOURCES}
+# ################### gs_app: GUI logic, no toolkit ####################
+# Links no GUI toolkit: a front-end (src/front/<toolkit>) adds its own, and
+# another toolkit's front-end must be able to reuse gs_app as it is.
+# tests/app/toolkit_free.cmake fails on an include of a toolkit header.
+file(GLOB_RECURSE GS_APP_SOURCES CONFIGURE_DEPENDS
+     ${PROJECT_SOURCE_DIR}/src/gs/app/*.cpp)
+if(GS_APP_SOURCES)
+  add_library(gs_app STATIC ${GS_APP_SOURCES})
+  gs_configure_target(gs_app)
+  target_link_libraries(gs_app PUBLIC gs_engine gs_solve)
+endif()
+
+
+# ################### geomsolver: the ImGui front-end ####################
+file(GLOB_RECURSE GS_FRONT_SOURCES CONFIGURE_DEPENDS
+     ${PROJECT_SOURCE_DIR}/src/front/imgui/*.cpp)
+add_executable(geomsolver ${GS_FRONT_SOURCES}
                imgui_backends/imgui_impl_glfw.cpp
                imgui_backends/imgui_impl_opengl3.cpp)
 gs_configure_target(geomsolver)
@@ -95,15 +110,8 @@ set_source_files_properties(imgui_backends/imgui_impl_glfw.cpp
                             imgui_backends/imgui_impl_opengl3.cpp
                             PROPERTIES COMPILE_OPTIONS "-w")
 target_include_directories(geomsolver PUBLIC imgui_backends dependencies)
-target_link_libraries(geomsolver PUBLIC glfw GLEW::GLEW imgui::imgui implot::implot)
-target_link_libraries(geomsolver PUBLIC nlohmann_json::nlohmann_json nlohmann_json_schema_validator)
-target_link_libraries(geomsolver PUBLIC TBB::tbb)
-if(TARGET gs_engine)
-  target_link_libraries(geomsolver PUBLIC gs_engine)
-endif()
-if(TARGET gs_solve)
-  target_link_libraries(geomsolver PUBLIC gs_solve)
-endif()
+target_link_libraries(geomsolver PUBLIC gs_app glfw GLEW::GLEW imgui::imgui
+                                        implot::implot)
 
 
 # ################### geomsolver-cli: headless solving ####################
@@ -125,7 +133,7 @@ if(ENABLE_TESTING)
   set(GS_DATA_DIR ${PROJECT_SOURCE_DIR}/data)
   set(GS_LIVE_INSTANCE ${GS_DATA_DIR}/tv_corner.json CACHE FILEPATH
       "Instance the live_instance test compiles and solves")
-  foreach(suite engine solve)
+  foreach(suite engine solve app)
     file(GLOB_RECURSE GS_TEST_${suite} CONFIGURE_DEPENDS
          ${PROJECT_SOURCE_DIR}/tests/${suite}/*.cpp)
     if(GS_TEST_${suite} AND TARGET gs_${suite})
@@ -140,6 +148,19 @@ if(ENABLE_TESTING)
   # Headless: runs before any window or GL context is created.
   add_test(NAME geomsolver_selftest
            COMMAND geomsolver --selftest ${GS_TEST_DATA_DIR}/tv_corner_ref.json)
+  # Scripts played with no window, checked through their --dump.
+  add_test(NAME gui_scripts
+           COMMAND ${CMAKE_COMMAND} -DGUI=$<TARGET_FILE:geomsolver>
+                   -DROOT=${PROJECT_SOURCE_DIR}
+                   -DWORK=${CMAKE_CURRENT_BINARY_DIR}/gui_scripts
+                   -P ${PROJECT_SOURCE_DIR}/tests/gui/gui_scripts.cmake)
+  add_test(NAME gs_app_toolkit_free
+           COMMAND ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR}
+                   -P ${PROJECT_SOURCE_DIR}/tests/app/toolkit_free.cmake)
+  # Every screenshot a page shows is made by docs.sh, which makes nothing
+  # else; no binary or display is needed.
+  add_test(NAME docs_screenshots
+           COMMAND bash ${PROJECT_SOURCE_DIR}/tools/screenshots/docs.sh --check)
   if(TARGET geomsolver-cli)
     add_test(NAME geomsolver_cli
              COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:geomsolver-cli>

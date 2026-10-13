@@ -143,8 +143,8 @@ TEST_CASE("bound overrides equal a recompiled model with the new bound") {
         for(std::size_t i = 0; i < vb.g.size(); ++i)
             CHECK(vb.g[i] == doctest::Approx(vt.g[i]).epsilon(1e-14).scale(1));
 
-        const Check cb = check(eb, x, 401, ov);
-        const Check ct = check(et, x, 401, {});
+        const Check cb = check(eb, x, verify_settings(401), ov);
+        const Check ct = check(et, x, verify_settings(401), {});
         for(std::size_t g = 0; g < cb.v.groups.size(); ++g)
             CHECK(cb.v.groups[g].violation ==
                   doctest::Approx(ct.v.groups[g].violation)
@@ -197,7 +197,7 @@ TEST_CASE("check: NaN rows fail verification that Evaluator::verify passes") {
     MESSAGE("Evaluator::verify on NaN rows: max_violation "
             << raw.max_violation << ", feasible " << raw.feasible(1e-7));
     CHECK(raw.feasible(1e-7));  // the engine trap the solver guards against
-    const Check c = check(ev, x, 101, {});
+    const Check c = check(ev, x, verify_settings(101), {});
     CHECK_FALSE(c.finite);
     CHECK_FALSE(c.feasible(1e-7));
     CHECK(std::isnan(c.v.max_violation));
@@ -209,6 +209,40 @@ TEST_CASE("check: NaN rows fail verification that Evaluator::verify passes") {
     CHECK_FALSE(r.feasible);
     CHECK_FALSE(r.finite);
     CHECK(r.nonfinite > 0);
+}
+
+}  // namespace gs::test
+
+namespace gs::test {
+
+TEST_CASE("check: NaN between a fixed sweep's samples is reported only") {
+    // sqrt(abs(tau - 0.25) - 0.1) is NaN around tau = 0.25, between the
+    // samples 0, 0.5 and 1.
+    Json d = Json::parse(R"J({
+      "format": "geomsolver-instance/2",
+      "sweeps": {"tau": {"min": 0, "max": 1, "samples": 3, "sampling": "fixed"}},
+      "design": {"s": {"type": "scalar", "min": 0, "max": 1, "value": 0.5}},
+      "constraints": [{"name": "hole", "forall": "tau",
+                       "expr": "sqrt(abs(tau - 0.25) - 0.1) >= -s"}],
+      "criteria": [{"name": "k", "expr": "s", "role": "minimize"}]
+    })J");
+    auto m = model_from(d);
+    Evaluator ev(*m);
+    const Check c =
+        check(ev, m->initial_x(), verify_settings(2001), {}, false, true);
+    CHECK(c.finite);
+    CHECK(c.feasible(1e-7));
+    CHECK(rows_finite(ev, m->initial_x(), verify_settings(2001)));
+    CHECK(std::isnan(c.v.max_between));
+    CHECK(c.v.worst_between_group == 0);
+
+    d["sweeps"]["tau"]["sampling"] = "adaptive";
+    auto a = model_from(d);
+    Evaluator ea(*a);
+    const Check u =
+        check(ea, a->initial_x(), verify_settings(2001), {}, false, true);
+    CHECK_FALSE(u.finite);
+    CHECK_FALSE(u.feasible(1e-7));
 }
 
 }  // namespace gs::test

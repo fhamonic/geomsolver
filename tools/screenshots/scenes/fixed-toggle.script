@@ -1,0 +1,9 @@
+# A click on Released in A's row of Variables fixes A: its handle turns
+# into a grey square.
+open tests/data/tv_corner_ref.json
+panel variables
+wait 16
+click L 1039 97
+click L 800 10
+wait 4
+shot

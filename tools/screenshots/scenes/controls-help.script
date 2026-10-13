@@ -1,0 +1,9 @@
+# Help > Controls.
+open tests/data/tv_corner_ref.json
+wait 16
+click L 131 10
+wait 4
+# Help > Controls
+click L 150 36
+wait 20
+shot

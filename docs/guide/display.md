@@ -10,7 +10,7 @@ The fold-up desk of the [constraints page](constraints.md) draws its board with 
 
 Solved and with the slider at a = 0.9489 rad, where the board passes closest to the lamp, the canvas looks like this:
 
-![The solved desk in the canvas: the board drawn filled in blue at about 54 degrees, seven faint ghosts from horizontal to vertical, a thin arc traced by the front edge, the red chain from E to the open board's front edge, the lamp filled in yellow just clear of the board, the grey shelf, wall and floor, and "lamp gap = 0.010002" in the top-right corner](../assets/screenshots/guide-b-display-desk.png)
+![The solved desk in the canvas, with the sweep bar under it showing the slider a at 0.9489: the board drawn filled in blue at about 54 degrees from the hinge H, seven faint ghosts from horizontal to vertical, a thin arc traced by the front edge, the red chain from E to the open board's front edge, the lamp filled in yellow just clear of the board, the grey shelf, wall and floor. The top right reads "feasible on 2001 samples", "maximize depth = 64.36129 cm" and, in yellow, "lamp gap = 0.010002".](../assets/screenshots/guide-b-display-desk.png)
 
 ## Anatomy of a display item
 
@@ -23,6 +23,7 @@ Solved and with the slider at a = 0.9489 rad, where the board passes closest to 
 | **`label`** | none | Text drawn with the item. |
 | **`ghosts`** | `0` | Also draw the item at this many sweep values, from 0 to 1000. |
 | **`trace`** | `false` | Draw the path of a point over its sweep. |
+| **`visible`** | `true` | `false` hides the item, its ghosts and its trace. |
 
 A display item has no `unit`: a scalar item shows its value in SI units.
 
@@ -72,7 +73,7 @@ The corner TV uses both: six ghosts of the TV body, and the traces of the TV-sid
 --8<-- "tests/data/tv_corner_ref.json:78:85"
 ```
 
-![Close-up of the solved corner TV in the canvas, couch pose: the TV body filled in blue with six faint ghosts fanning out over the cabinet, link 1 in blue from A and link 2 in red from B, both 3 px wide, the blue and red arcs traced by C and D, the yellow screen normal, and the dashed pivot zone along the wall](../assets/screenshots/guide-b-display-tv.png)
+![Close-up of the solved corner TV in the canvas, couch pose: the TV body filled in blue with six faint ghosts fanning out over the cabinet, link 1 in blue from A and link 2 in red from B, both 3 px wide, the blue and red arcs traced by C and D, the yellow screen normal from the TV's centre, the pivot_zone strip along the wall that holds A and B, and the handles c and d below the floor, at their coordinates in the TV frame.](../assets/screenshots/guide-b-display-tv.png)
 
 ## Freezing a pose with `at()`
 
@@ -100,9 +101,25 @@ The canvas writes the name of every design point and of every geometry entry tha
 
 so `A` takes the colour of link 1 and `B` that of link 2. The View menu turns all labels on or off.
 
+## The drawing of a name
+
+A display item whose expression is exactly the name of a design point, a let or a geometry entry is that name's drawing in the GUI. In the corner TV, `tv`, `A`, `B`, `C`, `D` and `living_target` are drawn this way. On the canvas, a click on the TV selects the let `tv`, not a display item, and a click on the dot of `A` selects the design point `A`, as its handle does. Hiding the name hides its drawing too. Only the first item of a name counts, and not one with `"visible": false`: a second item that draws `A` is a display item of its own.
+
+Every other item has no name. The GUI calls it by its place in the list, `display[2]`, or by its label.
+
+## Hiding and showing
+
+Select entries on the canvas or in a list, then right-click and choose **Hide** or **Show**, or use the View menu, or click the eye of the entry's row in Elements or Quantities. Where the choice is kept depends on what is hidden:
+
+- **A display item without a name** gets `"visible": false` in the file. It is an edit like any other: one undo step, and the document is modified. **Show** removes the key. The key needs no format `/2`.
+- **A design point, a geometry entry or a let** is hidden in the GUI's settings for this file (`settings.json`, see [The window](../getting-started/gui.md#the-window)), not in the document. It is not an undo step, it does not mark the document modified, and it stays hidden after an undo, a reload or a restart. A hidden design point loses its handle, its domain and its label, and is still a variable of the solver. Included geometry can be hidden too.
+- **A let** is not drawn until you show it, unless a display item draws it. **Show** draws a point as a dot, a shape as its outline, in a neutral colour with its name, and lists a scalar in the top-right corner. **Draw as display item** in the right-click menu adds an item `{"expr": "p", "label": "p"}` for each selected let instead, which you can then style; **Remove drawing** deletes the item that draws the selected name.
+
+What is hidden cannot be clicked or boxed, and the fits leave it out.
+
 ## Editing in the GUI
 
-The Inspector's **Display items** section lists every item with a colour picker (with an alpha slider), its expression, a delete button, and fields for `label`, `fill`, `trace`, `width` (0.5 to 10) and `ghosts` (0 to 64). **Add display item** appends `{"expr": "vec(0, 0)", "color": "#ffffff"}`. Every edit recompiles the instance; an expression error shows under the item, and the last instance that compiled stays on the canvas until you fix it.
+The Quantities panel lists the items without a name, by their label or `display[i]`, with their eye, their expression and their value; click a row to select the item (see [Selecting and deleting](../getting-started/gui.md#selecting-and-deleting)). Properties then edits its expression, whether it is shown, a colour with its opacity, and `label`, `fill`, `trace`, `width` (0.5 to 10) and `ghosts` (0 to 64). The drawing of a name is edited the same way in the name's own sheet: select the let `tv`, and Properties shows its formula, then the colour, fill and ghosts of the item that draws it, with **Remove drawing**. **Add display item** appends `{"expr": NAME, "color": "#ffffff"}` for the one selected name, else `{"expr": "vec(0, 0)", "color": "#ffffff"}`. Every edit recompiles the instance; an expression error shows under the field, and the last instance that compiled stays on the canvas until you fix it.
 
 ## Next steps
 

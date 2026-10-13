@@ -2,11 +2,14 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "gs/engine/evaluator.hpp"
 #include "gs/engine/model.hpp"
 #include "gs/solve/local.hpp"
+#include "gs/solve/settings.hpp"
 
 namespace gs {
 
@@ -83,7 +86,9 @@ private:
     std::vector<double> g_, g_jac_, obj_, obj_jac_;
 };
 
-// Fine-grid verification under bound overrides.
+// The solver's verification of a design, under bound overrides: on
+// s.verify_samples uniform positions per sweep, except that a fixed sweep is
+// judged on its own samples (Evaluator::verify with s.initial_samples).
 struct Check {
     // Groups and criteria with the overridden bounds applied; max_violation
     // and worst_group recomputed accordingly.
@@ -99,15 +104,21 @@ struct Check {
 };
 
 // scan_rows also runs rows_finite (about the cost of the verification).
-Check check(Evaluator & ev, std::span<const double> x, int samples,
+Check check(Evaluator & ev, std::span<const double> x, const SolverSettings & s,
             std::span<const BoundOverride> bounds, bool curves = false,
             bool scan_rows = false);
 
-// Every NLP row and objective piece on the uniform grid is finite.
-bool rows_finite(Evaluator & ev, std::span<const double> x, int samples);
+// Every NLP row and objective piece on the grid of check() is finite.
+bool rows_finite(Evaluator & ev, std::span<const double> x,
+                 const SolverSettings & s);
 
 // Shift added to every row of `criterion`'s bound group when its bound
-// becomes `bound`, 0 for criteria without a bound group.
+// becomes `bound`, 0 for criteria without a bound group. Throws
+// std::invalid_argument for a range criterion, which has two bounds.
 double bound_shift(const Model & m, int criterion, double bound);
+
+// Why a bound override cannot apply to a range criterion, for every caller
+// that refuses one.
+std::string range_override_message(std::string_view criterion);
 
 }  // namespace gs

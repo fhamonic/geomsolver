@@ -14,9 +14,10 @@ The examples on this page come from the corner-TV fixture, `tests/data/tv_corner
 | --- | --- | --- |
 | **`name`** | yes | Identifies the criterion in the GUI, the CLI output, `--bound`, `--pareto` and the results file. Names must be unique among criteria. |
 | **`expr`** | yes | A scalar expression. Not a comparison: `w >= 0.5` is an error that asks for `role` and `bound` instead. |
-| **`role`** | yes | `minimize`, `maximize`, `max`, `min` or `report`. |
-| **`bound`** | for `max` and `min` | A number in SI units or a constant expression, usually a param name. |
+| **`role`** | yes | `minimize`, `maximize`, `max`, `min`, `range` or `report`. |
+| **`bound`** | for `max`, `min` and `range` | A number in SI units or a constant expression, usually a param name. For `range`, two of them: `[lo, hi]`. |
 | **`unit`** | no | Display unit: `deg`, `rad`, `m`, `cm`, `mm` or `%`. |
+| **`enabled`** | no | `false` switches the criterion off; see [Disabling a criterion](#disabling-a-criterion). |
 | **`note`** | no | Free text. |
 
 Any other key gets a warning and is ignored. A `bound` on a role that has none gets a warning too. The former `weight` key is an error (see [Why bounds and not weights](#why-bounds-and-not-weights)).
@@ -29,17 +30,44 @@ Any other key gets a warning and is ignored. A `bound` on a role that has none g
 | **`maximize`** | Makes the value as large as possible. | `depth` of the desk on the [constraints page](constraints.md) |
 | **`max`** | Keeps the value at most `bound`: the same row as the constraint `expr <= bound`. | the fixture's `view_couch`, `link_1` |
 | **`min`** | Keeps the value at least `bound`: the same row as the constraint `expr >= bound`. | the fixture's `kitchen_visible`, `link_angle` |
+| **`range`** | Keeps the value between the two bounds `[lo, hi]`: the same rows as the constraint `lo <= expr <= hi`. | the link lengths in [A two-sided bound](#a-two-sided-bound) |
 | **`report`** | Nothing. The value is only shown. | |
 
-`minimize` and `maximize` make the criterion the **objective**. A second one is an error:
+`minimize` and `maximize` make the criterion the **objective**. A second enabled one is an error:
 
 ```text
 criteria[1].role: a second objective (the first is criteria[0]): an instance has one "minimize" or "maximize" criterion. Bound the others (role "max" / "min") and run a Pareto study over their bounds, or write the sum you want in one expression
 ```
 
-An instance without an objective is a feasibility problem: the solver looks for designs that satisfy every row and reports an objective of 0. Turning the desk's `depth` into a report (`--set 'criteria[0].role=report'`) gives 16 feasible runs, clustered as one solution with 8 variants, because nothing makes one feasible design better than another.
+An instance without an objective is a feasibility problem: the solver looks for designs that satisfy every row and reports an objective of 0. Turning the desk's `depth` into a report (`--set 'criteria[0].role=report'`) gives 64 feasible runs, clustered as one solution with 19 variants, because nothing makes one feasible design better than another.
 
 A `report` criterion takes no part in the solve: when it evaluates to NaN it shows as n/a, and the design is judged on its rows alone.
+
+## Disabling a criterion
+
+`"enabled": false` switches a criterion off without deleting it, and keeps its role and bound for later. A disabled criterion:
+
+- still compiles: an unknown name in it is an error, as in an enabled one;
+- is still evaluated and reported, with `disabled` where its bound and verdict would be;
+- has no row group, so it never makes a design infeasible, even when it evaluates to NaN;
+- is never the objective, so a disabled `minimize` may stay beside the enabled objective;
+- is not taken by `--bound`, `--pareto` or the GUI's Pareto study.
+
+`"enabled": false` needs [format `/2`](../reference/instance.md#format): `--set` raises the format and says so. On the fixture, disabling `view_couch` shows what that requirement costs:
+
+```bash
+build/geomsolver-cli tests/data/tv_corner_ref.json --set 'criteria[1].enabled=false'
+```
+
+```text title="output (excerpt)"
+note: --set criteria[1].enabled: "format" raised to "geomsolver-instance/2", which criteria[1].enabled requires
+...
+  view_couch       max       30.01466 deg       disabled
+```
+
+The protrusion drops from 104.3729 cm to 102.7183 cm, and `view_couch` grows to 30°: in the couch pose, the screen points 30° away from `living_target`. A [Pareto study](#trade-offs-pareto-studies) over the bound gives the price of each level in between.
+
+Role `report` has the same effect on the solve, but a report criterion has no bound: one left on it gets a warning. In the GUI, a disabled criterion shows its value, dimmed, followed by `disabled`.
 
 ## Bounds
 
@@ -68,10 +96,41 @@ The bound is in SI units like every expression, so `"2deg"` is 0.0349 rad. A par
 
 ### A two-sided bound
 
-A quantity with a lower and an upper limit takes two criteria, one `max` and one `min`, like the fixture's link lengths:
+Role `range` keeps the value between two bounds, written `"bound": [lo, hi]`; each one is a number or a constant expression, as for `max` and `min`. The criterion has one row group, `name:bound`, with the rows `(lo)` and `(hi)` of the constraint `lo <= expr <= hi`, and the group's margin is that of the closer bound. The CLI prints the bounds as `lo <= value <= hi`.
+
+The fixture writes each link length as two criteria, one `max` and one `min`:
 
 ```json title="tests/data/tv_corner_ref.json (criteria)"
 --8<-- "tests/data/tv_corner_ref.json:69:72"
+```
+
+Two `range` criteria state the same limits, and give the same optimum with the same 65 hits. Here the `min` twins become reports:
+
+```bash
+build/geomsolver-cli tests/data/tv_corner_ref.json \
+  --set 'criteria[7].role=range' --set 'criteria[7].bound=["link_min", "link_max"]' \
+  --set 'criteria[8].role=range' --set 'criteria[8].bound=["link_min", "link_max"]' \
+  --set 'criteria[9].role=report' --set 'criteria[9].bound=null' \
+  --set 'criteria[10].role=report' --set 'criteria[10].bound=null'
+```
+
+```text title="output (excerpt)"
+instance tests/data/tv_corner_ref.json  (n = 13, 21 row groups, SLSQP)
+  1    104.3729 cm        yes       8.61e-15     65    2         25 (uniform 24)    converged (4, 9)
+...
+  link_1           range     54.01567 cm        10 cm <= value <= 100 cm  ok
+  link_2           range     47.62165 cm        10 cm <= value <= 100 cm  ok
+...
+  link_1:bound                   44.01567 cm        ok         
+  link_2:bound                   37.62165 cm        ok         
+```
+
+`link_1` is 44.01567 cm above its lower bound and 45.98433 cm below its upper one: the margin shown is the smaller. A `range` criterion on `abs(e)` splits its upper side like a `max` criterion, into the rows `(hi+)` and `(hi-)`. On a `max_over` or `min_over`, one of the two bounds asks for a single sample, so `range` on an aggregate whose body depends on the sweep is an error.
+
+`--bound` and `--pareto` replace one bound and do not apply to a range:
+
+```text title="... --bound link_1=50"
+geomsolver-cli: criterion 'link_1' has two bounds (role range): a bound override or a Pareto study takes a criterion with role max or min
 ```
 
 For a tolerance around a centre value, a single `max` criterion on `abs()` is enough: as in a constraint, a top-level `abs(e)` under role `max` is split into two smooth rows. The fixture's `view_couch`, `view_kitchen`, `centred_offset` and `centred_angle` are written this way. A `min` criterion on `abs()` is not split.
@@ -92,11 +151,13 @@ The CLI prints criteria in their units, and the bound rows of the constraints ta
 
 A bounded criterion's row group is named after it with `:bound`. An invalid unit is a schema error that lists the allowed ones.
 
-In the GUI, each criterion shows its value in its unit, coloured green when its bound has room, amber when the bound is active and red when it is violated. The role, bound and unit have editors under the name:
+In the GUI, the Criteria panel shows each criterion's value in its unit with its verdict, such as `46.50 cm ≤ 100.0`, coloured green when its bound has room, amber when the bound is active and red when it is violated:
 
-![Criteria section of the Inspector for the solved fixture: protrusion 104.4 cm at tau=0 in white, view_couch and view_kitchen 2.000 deg and kitchen_visible 86.00 % in amber, link_angle 15.00 deg at tau=0.6930 in amber, wall_x 10.11 cm in green; each with role, bound and unit fields above its expression](../assets/screenshots/guide-b-criteria-inspector.png)
+![The Criteria panel for the solved fixture, widened, one row per criterion with its checkbox in the column headed On, its role, name, formula and status: protrusion, minimize, 104.4 cm in white; view_couch and view_kitchen "2.000 deg ≤ 2.000", kitchen_visible "86.00 % ≥ 86.00", link_angle "15.00 deg ≥ 15.00" and wall_y "2.000 cm ≥ 2.000" in amber; wall_x "10.11 cm ≥ 2.000", link_1, link_2, link_1_min and link_2_min in green; centred_offset, centred_angle and centre_setback in amber.](../assets/screenshots/guide-b-criteria-panel.png)
 
-Switching a criterion to a role without a bound removes its bound; switching back to `max` or `min` in the same session restores it, and a criterion that never had one starts from its current value.
+The role, bound and unit are edited in Properties, and the formula in the [formula pop-up](../getting-started/gui.md#the-formula-pop-up), which also adds a criterion.
+
+Switching a criterion to a role without a bound removes its bound; switching back to `max` or `min` in the same session restores it, and a criterion that never had one starts from its current value. Role `range` has two bound fields, *from* and *to*. A new bound is the current value to 4 digits, rounded so that the criterion holds. Switching between `range` and `max` or `min` keeps each kind of bound aside in the same way: a criterion switched to `range` for the first time reaches from its current value to its `max` bound, or from its `min` bound to its current value, when it meets that bound, and otherwise starts with both bounds at its current value.
 
 ## Worst cases over a motion
 
@@ -138,32 +199,32 @@ build/geomsolver-cli tests/data/tv_corner_ref.json --pareto view_couch,view_kitc
 ```
 
 ```text title="output (excerpt)"
-pareto study: bound of view_couch, view_kitchen (4 points, 0.07 s)
+pareto study: bound of view_couch, view_kitchen (4 points, 0.08 s)
   bound          objective          feasible  hits / runs
-  0 deg          105.7293 cm        yes       6 / 9
-  1 deg          105.0493 cm        yes       8 / 10
-  2 deg          104.3729 cm        yes       8 / 10
-  4 deg          103.1087 cm        yes       9 / 10
+  0 deg          105.7293 cm        yes       9 / 9
+  1 deg          105.0493 cm        yes       10 / 10
+  2 deg          104.3729 cm        yes       10 / 10
+  4 deg          103.1087 cm        yes       10 / 10
 ```
 
-- Every listed criterion gets each bound in turn. The criteria must have a bound role (`max` or `min`) and share a display unit; the bounds are in that unit.
+- Every listed criterion gets each bound in turn. The criteria must have a bound role (`max` or `min`, not `range`) and share a display unit; the bounds are in that unit.
 - Each point runs `pareto_starts` (8) seeded starts, plus the previous point's best design and the instance's design: hence 9 runs for the first point and 10 for the others.
 - `--bound` still applies to the criteria the study does not sweep.
 - `--write-instance out.json --write-point K` saves the design of point K (1-based) with its bounds.
 
 !!! warning "Check the hits before reading the front"
-    Ten runs per point is enough for the fixture, not for every problem. A point with 1 hit, a point marked infeasible between feasible ones, or a front that does not move monotonically with the bound may simply have missed its optimum. On the [flap linkage](let-and-mechanisms.md#four-bar), `--pareto link_angle --bounds 5,10,15,20,25,30` finds each point from 10 deg on in 1 run of 10, and reports 25 deg as infeasible:
+    Ten runs per point is enough for the fixture, not for every problem. A point with 1 hit, a point marked infeasible between feasible ones, or a front that does not move monotonically with the bound may simply have missed its optimum. On the [flap linkage](let-and-mechanisms.md#four-bar), `--pareto link_1,link_2 --bounds 8,10,12,14,16,18` raises the shortest allowed link length. At 12 cm it reports 69.22539 cm from 1 run of 10, more than the 68.8909 cm it finds at 14 cm, a stricter bound:
 
-    | `link_angle` bound | default (`pareto_starts` 8) | `--set solver.pareto_starts=256` |
+    | `link_1`, `link_2` bound | default (`pareto_starts` 8) | `--set solver.pareto_starts=256` |
     | --- | --- | --- |
-    | **5 deg** | 64.62076 cm, 4 / 9 | 64.62075 cm, 44 / 257 |
-    | **10 deg** | 65.68445 cm, 1 / 10 | 65.68444 cm, 29 / 258 |
-    | **15 deg** | 66.28354 cm, 1 / 10 | 66.28353 cm, 30 / 258 |
-    | **20 deg** | 66.95653 cm, 1 / 10 | 66.95653 cm, 10 / 258 |
-    | **25 deg** | infeasible, 1 / 10 | 80.06378 cm, 7 / 258 |
-    | **30 deg** | 83.80354 cm, 1 / 10 | 83.80354 cm, 3 / 258 |
+    | **8 cm** | 66.28353 cm, 5 / 9 | 66.28353 cm, 105 / 257 |
+    | **10 cm** | 67.57097 cm, 4 / 10 | 67.47938 cm, 5 / 258 |
+    | **12 cm** | 69.22539 cm, 1 / 10 | 68.8909 cm, 53 / 258 |
+    | **14 cm** | 68.8909 cm, 2 / 10 | 68.8909 cm, 63 / 258 |
+    | **16 cm** | 68.8909 cm, 4 / 10 | 68.8909 cm, 70 / 258 |
+    | **18 cm** | 68.8909 cm, 4 / 10 | 68.8909 cm, 76 / 258 |
 
-    Raise `solver.pareto_starts` for a linkage, or confirm a doubtful point with a full multistart: `--bound link_angle=25` finds no feasible run in 65, `--bound link_angle=25 --starts 256` finds 6, at 80.06378 cm.
+    The 10 cm point shows that no sign is certain: 4 hits, and still 0.09 cm above the best value, which 5 runs of 258 find. Raise `solver.pareto_starts` for a linkage, or confirm a doubtful point with a full multistart: `--bound link_1=12 --bound link_2=12` finds 68.8909 cm in 13 of 65 runs.
 
 The visibility study of the fixture shows a rising marginal cost:
 
@@ -189,7 +250,7 @@ In the Solver tab, open **Pareto study**:
 
 The Solutions table lists one row per point with every criterion, and the plot shows the objective against the bound. Click a point to load its design. The same study can be started from the command line with `geomsolver tests/data/tv_corner_ref.json --pareto view_couch,view_kitchen --bounds 0,0.5,1,1.5,2,3,4 --tab solver`:
 
-![Solver tab after a Pareto study of view_couch and view_kitchen on the fixture: a table of seven feasible points from 105.72925 cm at 0 deg to 103.10872 cm at 4 deg, and a plot of the objective falling as the bound rises from 0 to 4 deg](../assets/screenshots/guide-b-pareto-gui.png)
+![Solver tab after a Pareto study of view_couch and view_kitchen on the fixture: 69/69 runs, 7/7 points, a table of seven feasible points from 105.72925 cm at 0 deg to 103.10872 cm at 4 deg, each with the row it is worst on, and, under the Pareto study section with the two criteria and the bounds 0,0.5,1,1.5,2,3,4, a plot of the objective falling as the bound rises from 0 to 4 deg](../assets/screenshots/guide-b-pareto-gui.png)
 
 ## Why bounds and not weights
 

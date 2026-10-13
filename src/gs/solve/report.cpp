@@ -28,10 +28,16 @@ std::string_view role_name(CriterionRole r) {
             return "max";
         case CriterionRole::Min:
             return "min";
+        case CriterionRole::Range:
+            return "range";
         case CriterionRole::Report:
             return "report";
     }
     return "?";
+}
+
+std::string_view sampling_name(Sampling s) {
+    return s == Sampling::Fixed ? "fixed" : "adaptive";
 }
 
 std::string_view kind_name(GroupKind k) {
@@ -139,6 +145,15 @@ Json run_json(const Model & m, const RunResult & r) {
         j["worst_at"] =
             where(m, m.groups()[uz(r.worst_group)].sweep, g.t, g.sweep_value);
     }
+    if(r.between_group >= 0 && uz(r.between_group) < r.groups.size() &&
+       r.groups[uz(r.between_group)].between) {
+        const BetweenSamples & b = *r.groups[uz(r.between_group)].between;
+        const RowGroup & rg = m.groups()[uz(r.between_group)];
+        j["between_samples"] =
+            Json{{"max_violation", num(r.between_violation)},
+                 {"worst", rg.name},
+                 {"worst_at", where(m, rg.sweep, b.t, b.sweep_value)}};
+    }
     if(r.x.size() == static_cast<uz>(m.n())) {
         j["design"] = design_json(m, r.x);
         Json shown = Json::object();
@@ -163,19 +178,30 @@ Json run_json(const Model & m, const RunResult & r) {
         const CriterionCheck & cc = r.criteria[c];
         Json e = Json::object();
         e["role"] = std::string(role_name(ci.role));
+        e["enabled"] = ci.enabled;
         e["value"] = num(cc.value);
         e["unit"] = ci.unit;
         e["display"] = num(to_display(cc.value, ci.unit));
         if(std::isfinite(cc.violation)) {
             e["violation"] = cc.violation;
-            e["bound"] =
-                num(cc.value - (ci.role == CriterionRole::Max ? cc.violation
-                                                              : -cc.violation));
+            // Max and min bounds may be overridden, which only the violation
+            // records; a range cannot be.
+            e["bound"] = ci.role == CriterionRole::Range
+                             ? Json::array({ci.lower, ci.bound})
+                             : num(cc.value - (ci.role == CriterionRole::Max
+                                                   ? cc.violation
+                                                   : -cc.violation));
         }
         if(cc.sample >= 0) {
             e["t"] = num(cc.t);
             e["sweep_value"] = num(cc.sweep_value);
         }
+        if(cc.between)
+            e["between"] =
+                Json{{"value", num(cc.between->value)},
+                     {"display", num(to_display(cc.between->value, ci.unit))},
+                     {"t", num(cc.between->t)},
+                     {"sweep_value", num(cc.between->sweep_value)}};
         crit[ci.name] = e;
     }
     j["criteria"] = crit;
@@ -192,6 +218,10 @@ Json run_json(const Model & m, const RunResult & r) {
             e["t"] = gc.t;
             e["sweep_value"] = num(gc.sweep_value);
         }
+        if(gc.between)
+            e["between"] = Json{{"violation", num(gc.between->value)},
+                                {"t", num(gc.between->t)},
+                                {"sweep_value", num(gc.between->sweep_value)}};
         ver.push_back(e);
     }
     j["verification"] = ver;
@@ -226,6 +256,16 @@ Json run_json(const Model & m, const RunResult & r) {
     return j;
 }
 
+Json sweeps_json(const Model & m, const SolverSettings & s) {
+    Json j = Json::object();
+    for(const SweepInfo & sw : m.sweeps())
+        j[sw.name] = Json{{"min", sw.min},
+                          {"max", sw.max},
+                          {"sampling", sampling_name(sw.sampling)},
+                          {"samples", sw.initial_samples(s.initial_samples)}};
+    return j;
+}
+
 namespace {
 
 Json header(const Model & m, const SolverSettings & s, const char * kind) {
@@ -234,6 +274,7 @@ Json header(const Model & m, const SolverSettings & s, const char * kind) {
     j["kind"] = kind;
     j["instance"] = m.instance_path().string();
     j["settings"] = to_json(s);
+    j["sweeps"] = sweeps_json(m, s);
     j["coordinates"] = m.coordinate_names();
     return j;
 }
@@ -300,6 +341,8 @@ Json results_json(const Model & m, const SolverSettings & s,
         int samples = 0;
         for(const auto & t : rr.samples) samples += static_cast<int>(t.size());
         e["samples"] = samples;
+        if(rr.between_group >= 0)
+            e["between_violation"] = num(rr.between_violation);
         e["evaluations"] = rr.evaluations;
         e["wall_seconds"] = rr.wall_seconds;
         if(!rr.error.empty()) e["error"] = rr.error;
@@ -390,27 +433,61 @@ std::string format_design_difference(const Model & m,
     return s;
 }
 
+std::string format_sweeps(const Model & m, const SolverSettings & s) {
+    std::string out;
+    bool plain = true;
+    for(const SweepInfo & sw : m.sweeps()) {
+        plain &= sw.sampling == Sampling::Adaptive && sw.samples <= 0;
+        const int n = sw.initial_samples(s.initial_samples);
+        out += std::format("{}{} {}", out.empty() ? "" : "; ", sw.name,
+                           sw.sampling == Sampling::Fixed
+                               ? std::format("fixed, {} samples", n)
+                               : std::format("adaptive from {} samples", n));
+    }
+    return plain ? std::string() : "sweeps: " + out + "\n";
+}
+
 std::string format_check(const Model & m, const Check & c, double feas_tol) {
     const Verification & V = c.v;
     std::string s;
-    s += std::format("criteria ({} samples per sweep)\n", V.samples);
+    std::string fixed;
+    for(uz k = 0; k < m.sweeps().size() && k < V.t.size(); ++k)
+        if(m.sweeps()[k].sampling == Sampling::Fixed)
+            fixed += std::format("{}{} on its {} samples",
+                                 fixed.empty() ? "; " : ", ",
+                                 m.sweeps()[k].name, V.t[k].size());
+    s += std::format("criteria ({} samples per sweep{})\n", V.samples, fixed);
     s += std::format("  {} {} {} {}\n", pad("name", 16), pad("role", 9),
                      pad("value", 18), "bound / where");
     for(uz i = 0; i < m.criteria().size(); ++i) {
         const CriterionInfo & ci = m.criteria()[i];
         const CriterionCheck & cc = V.criteria[i];
         std::string tail;
-        if(ci.role == CriterionRole::Max || ci.role == CriterionRole::Min) {
+        if(!ci.enabled) {
+            tail = "disabled";
+        } else if(ci.role == CriterionRole::Max ||
+                  ci.role == CriterionRole::Min) {
             const double bound =
                 cc.value -
                 (ci.role == CriterionRole::Max ? cc.violation : -cc.violation);
             tail = std::format(
                 "{} {}  {}", ci.role == CriterionRole::Max ? "<=" : ">=",
                 format_value(bound, ci.unit), status(cc.violation, feas_tol));
+        } else if(ci.role == CriterionRole::Range) {
+            tail = std::format("{} <= value <= {}  {}",
+                               format_value(ci.lower, ci.unit),
+                               format_value(ci.bound, ci.unit),
+                               status(cc.violation, feas_tol));
         }
         const std::string at = where(m, criterion_sweep(m, static_cast<int>(i)),
                                      cc.t, cc.sweep_value);
         if(!at.empty()) tail += (tail.empty() ? "at " : "  at ") + at;
+        if(cc.between)
+            tail += std::format(
+                "{}between samples {} at {}", tail.empty() ? "" : "  ",
+                format_value(cc.between->value, ci.unit),
+                where(m, criterion_sweep(m, static_cast<int>(i)), cc.between->t,
+                      cc.between->sweep_value));
         s += std::format("  {} {} {} {}\n", pad(ci.name, 16),
                          pad(std::string(role_name(ci.role)), 9),
                          pad(format_value(cc.value, ci.unit), 18), tail);
@@ -421,17 +498,41 @@ std::string format_check(const Model & m, const Check & c, double feas_tol) {
         feas_tol);
     s += std::format("  {} {} {} {}\n", pad("name", 30), pad("margin", 18),
                      pad("status", 10), "worst at");
+    auto margin_text = [&](const RowGroup & rg, double violation) {
+        const std::string unit = group_unit(m, rg);
+        if(unit.empty() && std::isfinite(violation))
+            return std::format("{:.7g}", -violation == 0.0 ? 0.0 : -violation);
+        return format_value(-violation, unit);
+    };
     for(uz g = 0; g < m.groups().size(); ++g) {
         const RowGroup & rg = m.groups()[g];
         const GroupCheck & gc = V.groups[g];
-        const std::string unit = group_unit(m, rg);
-        std::string margin = format_value(-gc.violation, unit);
-        if(unit.empty() && std::isfinite(gc.violation))
-            margin = std::format("{:.7g}",
-                                 -gc.violation == 0.0 ? 0.0 : -gc.violation);
-        s += std::format("  {} {} {} {}\n", pad(rg.name, 30), pad(margin, 18),
+        s += std::format("  {} {} {} {}\n", pad(rg.name, 30),
+                         pad(margin_text(rg, gc.violation), 18),
                          pad(status(gc.violation, feas_tol), 10),
                          where(m, rg.sweep, gc.t, gc.sweep_value));
+    }
+    if(V.worst_between_group >= 0) {
+        s += std::format(
+            "between the samples of fixed sweeps ({} samples per sweep; "
+            "reported only, feasibility is judged on the samples)\n",
+            V.samples);
+        s += std::format("  {} {} {} {}\n", pad("name", 30), pad("margin", 18),
+                         pad("status", 10), "worst at");
+        for(uz g = 0; g < m.groups().size(); ++g) {
+            const RowGroup & rg = m.groups()[g];
+            const GroupCheck & gc = V.groups[g];
+            if(!gc.between) continue;
+            const double v = gc.between->value;
+            s += std::format(
+                "  {} {} {} {}\n", pad(rg.name, 30),
+                pad(margin_text(rg, v), 18),
+                pad(!std::isfinite(v) ? "NON-FINITE"
+                    : v <= feas_tol   ? "ok"
+                                      : "missed",
+                    10),
+                where(m, rg.sweep, gc.between->t, gc.between->sweep_value));
+        }
     }
     std::string worst = "none";
     if(V.worst_group >= 0) {
@@ -447,6 +548,13 @@ std::string format_check(const Model & m, const Check & c, double feas_tol) {
         c.feasible(feas_tol) ? "yes" : "NO", feas_tol, V.max_violation, worst,
         format_value(V.objective, objective_unit(m)),
         c.finite ? "" : "  [NON-FINITE VALUES]");
+    if(V.worst_between_group >= 0) {
+        const RowGroup & rg = m.groups()[uz(V.worst_between_group)];
+        const BetweenSamples & b = *V.groups[uz(V.worst_between_group)].between;
+        std::string at = where(m, rg.sweep, b.t, b.sweep_value);
+        s += std::format("between samples: max violation {:.6g} ({}{})\n",
+                         V.max_between, rg.name, at.empty() ? "" : " at " + at);
+    }
     return s;
 }
 

@@ -1,0 +1,11 @@
+# Deleting A asks first, and lists the expressions that use it.
+open tests/data/tv_corner_ref.json
+wait 16
+select design A
+wait 4
+click L 54 10
+wait 4
+# Edit > Delete
+click L 90 78
+wait 20
+shot

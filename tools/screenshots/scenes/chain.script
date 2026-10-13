@@ -1,0 +1,4 @@
+# A chain of links over a fixed sweep.
+open docs/instances/guide-a-chain.json
+wait 29
+shot

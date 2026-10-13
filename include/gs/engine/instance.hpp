@@ -24,11 +24,11 @@ struct LoadResult {
     bool ok() const { return instance != nullptr && !has_errors(diagnostics); }
 };
 
-// The instance document ("geomsolver-instance/1") and its included geometry
-// files. The ordered JSON document is the source of truth: edits go through
-// set()/erase(), compile() reads it, save() writes it back with key order and
-// unknown keys preserved. Not thread-safe; compile it to get an immutable
-// Model.
+// The instance document ("geomsolver-instance/1" or "/2") and its included
+// geometry files. The ordered JSON document is the source of truth: edits go
+// through set()/erase(), compile() reads it, save() writes it back with key
+// order and unknown keys preserved. Not thread-safe; compile it to get an
+// immutable Model.
 class Instance {
 public:
     using Json = nlohmann::ordered_json;
@@ -59,10 +59,17 @@ public:
     // index 0 of a missing array creates it). Setting "include" (or anything
     // below it) re-reads the included files. A failed set leaves the
     // document unchanged; non-finite numbers and invalid UTF-8 are refused
-    // (they cannot be saved as JSON).
+    // (they cannot be saved as JSON). Writing a key that needs
+    // "geomsolver-instance/2" ("sweeps.tau.samples") into a /1 document
+    // raises its "format" to /2, which compile() would otherwise refuse;
+    // `note` then says so, and is cleared otherwise.
     bool set(std::string_view json_path, Json value,
-             std::string * error = nullptr);
+             std::string * error = nullptr, std::string * note = nullptr);
     bool erase(std::string_view json_path, std::string * error = nullptr);
+    // Replaces the whole document (an undo, a rename), keeping path()
+    // and this object, which callers hold on to. The included files are
+    // re-read only when "include" differs. dirty() becomes `dirty`.
+    void restore(Json doc, bool dirty);
     // value: one number (scalar) or two (point), SI; refused when not finite.
     bool set_design_value(std::string_view var, std::span<const double> value,
                           std::string * error = nullptr);
@@ -100,6 +107,12 @@ private:
 // entry of a name-keyed map ("params.x"). Instance::set creates any missing
 // key, so a caller can warn before a misspelt path adds one.
 bool schema_lists_key(std::string_view json_path);
+
+// The paths of the keys of `doc` that need "geomsolver-instance/2"
+// ("sweeps.tau.samples", a criterion's "enabled": false), which a /1
+// document must not hold: compile() refuses them there. Lowering "format"
+// to /1 is safe only while this is empty.
+std::vector<std::string> format2_keys(const nlohmann::ordered_json & doc);
 
 // Rendering used by Instance::save: objects and arrays whose whole line
 // (indent, key and trailing comma included) fits in `width` columns stay on

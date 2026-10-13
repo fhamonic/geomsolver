@@ -12,7 +12,7 @@
       "id": 2,
       "name": "diagnose-infeasible-tv-instance",
       "prompt": "geomsolver can't find any feasible design for my instance tv_corner.json (it includes example_room.json, both are in the input folder), even though the violations it reports look tiny. Is it a solver problem? Figure out why there is no feasible design and tell me exactly what I could change to get one, with the cost of each option. Don't change my file.",
-      "expected_output": "A diagnosis that the problem is over-constrained (many requirements violated by about the same small amount; more starts do not help), not a solver weakness; no advice to loosen feas_tol; at least one concrete relaxation verified by a run to give feasible designs (for example centre_setback / edge_margin from 15.5 to about 14.5 cm, about 103.9 cm protrusion, or centre_tol from 1 to about 3 cm, about 101.7 cm) with its objective; the input file left unchanged.",
+      "expected_output": "A diagnosis that the problem is over-constrained (many requirements violated by about the same small amount; more starts do not help), not a solver weakness; no advice to loosen feas_tol; at least one concrete relaxation verified by a run to give feasible designs (for example centre_setback / edge_margin from 15.5 to about 14.5 cm, about 103.4 cm protrusion, or centre_tol from 1 to about 3 cm, about 99.3 cm) with its objective; the input file left unchanged.",
       "files": ["evals/files/diagnose/tv_corner.json", "evals/files/diagnose/example_room.json"]
     },
     {

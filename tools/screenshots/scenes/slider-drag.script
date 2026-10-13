@@ -1,0 +1,10 @@
+# phi0's slider in Properties dragged to the left: the TV turns, one undo
+# step.
+open tests/data/tv_corner_ref.json
+panel variables
+select design phi0
+wait 16
+drag L 877 831 817 831
+click L 800 10
+wait 4
+shot

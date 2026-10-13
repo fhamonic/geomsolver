@@ -1,0 +1,6 @@
+# The View menu.
+open tests/data/tv_corner_ref.json
+wait 16
+click L 92 10
+wait 3
+shot

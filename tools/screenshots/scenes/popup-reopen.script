@@ -1,0 +1,19 @@
+# Opened, cancelled and opened again, then clicks in the name field and in
+# the formula field: what is typed there shows its candidates inline, over
+# nothing, and not dimmed.
+open tests/data/tv_corner_ref.json
+wait 16
+action formula.add_constraint
+wait 8
+key Escape
+wait 8
+action formula.add_constraint
+wait 8
+click L 800 458
+wait 2
+click L 900 483
+wait 2
+text "dist(cou"
+move 640 700
+wait 4
+shot

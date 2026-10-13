@@ -2,6 +2,7 @@
 
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -17,11 +18,18 @@ struct SampleSets {
     std::vector<std::vector<double>> t;
     // n >= 2: t_i = i / (n - 1) for every sweep; n == 1: {0}.
     static SampleSets uniform(const Model & model, int n);
+    // The samples a solve starts from: SweepInfo::initial_samples(n) uniform
+    // positions per sweep.
+    static SampleSets initial(const Model & model, int n);
+    // The grid feasibility is judged on: `n` uniform positions per adaptive
+    // sweep, and the initial samples (initial(model, n_initial)) of each
+    // fixed sweep.
+    static SampleSets verdict(const Model & model, int n, int n_initial);
 };
 
 struct NlpRow {
     int group = -1;  // index into Model::groups()
-    int split = 0;   // 0, or 1 for the second row of a split abs()
+    int split = 0;   // row of its context, 0 to RowGroup::split - 1
     // Index in the sample set of the group's sweep; -1 for unrepeated rows.
     int sample = -1;
 };
@@ -61,6 +69,17 @@ struct NlpBuffers {
     int obj_ld = 0;
 };
 
+// A row group or criterion judged on the samples of a fixed sweep, seen on
+// the uniform grid instead: its worst value there, which covers the poses
+// between the samples, and where. Reported only, never part of a verdict.
+struct BetweenSamples {
+    // GroupCheck: the violation, as GroupCheck::violation; CriterionCheck:
+    // the value of the max_over / min_over (SI).
+    double value = std::numeric_limits<double>::quiet_NaN();
+    double t = std::numeric_limits<double>::quiet_NaN();
+    double sweep_value = std::numeric_limits<double>::quiet_NaN();
+};
+
 struct GroupCheck {
     // Max over the group's rows in natural units: > 0 violated by that much,
     // <= 0 the margin. Equality rows count |g|; Assembly groups report the
@@ -69,7 +88,11 @@ struct GroupCheck {
     int sample = -1;  // argmax sample (-1 for unrepeated groups)
     double t = std::numeric_limits<double>::quiet_NaN();
     double sweep_value = std::numeric_limits<double>::quiet_NaN();
-    std::vector<double> curve;  // per-sample violation, when requested
+    // Per-sample violation on the grid of the group's sweep
+    // (Verification::t), when requested.
+    std::vector<double> curve;
+    // Set when the group depends on a fixed sweep (Sampling::Fixed).
+    std::optional<BetweenSamples> between;
 };
 
 struct CriterionCheck {
@@ -77,19 +100,31 @@ struct CriterionCheck {
     int sample = -1;     // selected sample of a max_over / min_over, else -1
     double t = std::numeric_limits<double>::quiet_NaN();
     double sweep_value = std::numeric_limits<double>::quiet_NaN();
-    // Max role: value - bound; Min role: bound - value; NaN otherwise.
+    // Max role: value - bound; Min role: bound - value; Range role:
+    // max(lower - value, value - bound); NaN otherwise, and for a disabled
+    // criterion.
     double violation = std::numeric_limits<double>::quiet_NaN();
+    // Set for a max_over / min_over of a fixed sweep.
+    std::optional<BetweenSamples> between;
 };
 
 struct Verification {
-    int samples = 0;
-    std::vector<double> t;                 // the grid, shared by all sweeps
+    int samples = 0;  // positions of the uniform grid, per sweep
+    // The grid of each sweep, normalised: `samples` uniform positions, or a
+    // fixed sweep's own samples (SampleSets::verdict).
+    std::vector<std::vector<double>> t;
     std::vector<GroupCheck> groups;        // aligned with Model::groups()
     std::vector<CriterionCheck> criteria;  // aligned with Model::criteria()
     double objective = 0.0;  // value of Model::objective(), 0 without one
     double max_violation = -std::numeric_limits<double>::infinity();
     int worst_group = -1;
+    // The largest GroupCheck::between value (NaN as soon as one is) and its
+    // group; NaN and -1 when no group has one.
+    double max_between = std::numeric_limits<double>::quiet_NaN();
+    int worst_between_group = -1;
     bool feasible(double tol) const { return max_violation <= tol; }
+    // Sets max_between and worst_between_group from the groups' figures.
+    void find_worst_between();
 };
 
 // Scratch state for evaluating one Model. Not thread-safe: use one Evaluator
@@ -121,9 +156,22 @@ public:
     std::vector<CriterionCheck> criteria(std::span<const double> x,
                                          const SampleSets & samples);
 
-    // Rows and criteria on a uniform grid of `samples` points per sweep.
+    // Rows and criteria on a uniform grid of `samples` points per sweep,
+    // whatever the sweeps' Sampling.
     Verification verify(std::span<const double> x, int samples = 2001,
                         bool curves = false);
+    // verify(x, samples, initial_samples) would otherwise compile as the
+    // uniform check with curves = true, and silently ignore a fixed sweep's
+    // samples: the verdict is verdict().
+    Verification verify(std::span<const double> x, int samples,
+                        int initial_samples) = delete;
+    // The solver's verdict: rows and criteria on
+    // SampleSets::verdict(model, samples, initial_samples). Without a fixed
+    // sweep, the same as verify(x, samples, curves); with one, the groups and
+    // criteria that depend on it also get their `between` figures, from a
+    // second pass over the uniform grid.
+    Verification verdict(std::span<const double> x, int samples,
+                         int initial_samples, bool curves);
 
     // Values of lets / display items / probes with every sweep at sweep_t
     // (normalised, one entry per sweep; missing entries count as t = 0).

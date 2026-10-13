@@ -1,0 +1,9 @@
+# File > Open: the path field has the keyboard.
+open tests/data/tv_corner_ref.json
+wait 16
+click L 20 10
+wait 4
+# File > Open
+click L 40 36
+wait 20
+shot

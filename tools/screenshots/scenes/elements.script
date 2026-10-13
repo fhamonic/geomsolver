@@ -1,0 +1,6 @@
+# The Elements panel: the design points, the room's geometry, read-only,
+# and the derived lets of type Shape, each group under its header.
+open tests/data/tv_corner_ref.json
+panel elements
+wait 16
+shot

@@ -1,6 +1,9 @@
+#include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <thread>
@@ -79,6 +82,71 @@ TEST_CASE("minimize: equality rows go to algorithms that support them") {
         const LocalResult r = minimize(q, {0.9, 0.9}, box_options(a, 2));
         CHECK(r.x[0] == doctest::Approx(0.25).epsilon(1e-5));
         CHECK(r.x[1] == doctest::Approx(0.55).epsilon(1e-5));
+    }
+}
+
+namespace {
+
+// min z  s.t.  (x0 - 0.3)^2 + (x1 - 0.7)^2 - z <= 0,  x0 + x1 <= 0.8, plus
+// kRows rows that are 0 up to rounding, as the engine returns a row that is
+// identically on its bound: values of about 1e-17 and gradients of about
+// 1e-16, both changing with the bits of x. Optimum (0.2, 0.6), z = 0.02.
+struct RoundingRows : LocalProblem {
+    static constexpr int kRows = 20;
+    int n() const override { return 3; }
+    int m_ineq() const override { return 2 + kRows; }
+    // In [-1, 1], a hash of x0, x1 and k.
+    static double noise(const double * x, int k) {
+        std::uint64_t h =
+            0x9e3779b97f4a7c15ULL * static_cast<std::uint64_t>(k + 1);
+        for(int j = 0; j < 2; ++j) {
+            h ^= std::bit_cast<std::uint64_t>(x[j]);
+            h *= 0xbf58476d1ce4e5b9ULL;
+            h ^= h >> 31;
+        }
+        return static_cast<double>(h >> 11) * 0x1.0p-52 - 1.0;
+    }
+    void evaluate(const double * x, const LocalBuffers & o) override {
+        *o.f = x[2];
+        o.g[0] =
+            (x[0] - 0.3) * (x[0] - 0.3) + (x[1] - 0.7) * (x[1] - 0.7) - x[2];
+        o.g[1] = x[0] + x[1] - 0.8;
+        for(int i = 0; i < kRows; ++i) o.g[2 + i] = 1e-17 * noise(x, 3 * i);
+        if(!o.df) return;
+        const double d[] = {
+            0.0, 0.0, 1.0, 2 * (x[0] - 0.3), 2 * (x[1] - 0.7), -1.0,
+            1.0, 1.0, 0.0};
+        std::copy(d, d + 3, o.df);
+        std::copy(d + 3, d + 9, o.dg);
+        for(int i = 0; i < kRows; ++i) {
+            double * row = o.dg + 3 * (2 + i);
+            row[0] = 1e-16 * noise(x, 3 * i + 1);
+            row[1] = 1e-16 * noise(x, 3 * i + 2);
+            row[2] = 0.0;
+        }
+    }
+};
+
+}  // namespace
+
+TEST_CASE(
+    "minimize: SLSQP is not thrown off by rows on their bound to "
+    "rounding") {
+    // Taken at face value, these rows make SLSQP stop "roundoff limited" at
+    // or near the start (with 5 of them, it reports convergence at points
+    // that are no optimum).
+    LocalOptions o = box_options(Algorithm::SLSQP, 3);
+    o.lb[2] = -kInf;
+    o.ub[2] = kInf;
+    o.initial_step = {{2, 1e-2}};
+    for(const double x0 : {0.1, 0.2, 0.5}) {
+        CAPTURE(x0);
+        RoundingRows p;
+        const LocalResult r = minimize(p, {x0, 0.3, 1.0}, o);
+        CHECK(r.status == LocalStatus::Converged);
+        CHECK(r.x[0] == doctest::Approx(0.2).epsilon(1e-4));
+        CHECK(r.x[1] == doctest::Approx(0.6).epsilon(1e-4));
+        CHECK(r.f == doctest::Approx(0.02).epsilon(1e-4));
     }
 }
 

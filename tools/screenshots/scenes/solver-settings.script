@@ -1,0 +1,8 @@
+# The Solver panel's settings form.
+open tests/data/tv_corner_ref.json
+panel solver
+wait 16
+# The Settings header.
+click L 1060 594
+wait 3
+shot

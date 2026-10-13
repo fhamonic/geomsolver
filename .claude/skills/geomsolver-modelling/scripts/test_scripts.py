@@ -108,6 +108,26 @@ def make_variants(tmp: Path) -> dict[str, Path]:
         "design": {"P": {"type": "point", "domain": "box(0, 0, 1, 1)", "value": [0.5, 0.5]}},
         "constraints": [{"name": "near_target", "expr": "dist(P, target) <= tol"}],
         "criteria": [{"name": "low", "expr": "P.y", "role": "minimize", "unit": "cm"}]}, indent=1))
+    # the link lengths as range criteria (bound [lo, hi]), and one range that cannot hold
+    rng = json.loads(text)
+    for k in (7, 8):
+        rng["criteria"][k].update(role="range", bound=["link_min", "link_max"])
+    for k in (9, 10):
+        rng["criteria"][k]["role"] = "report"
+        del rng["criteria"][k]["bound"]
+    write("tv_range.json", json.dumps(rng, indent=1))
+    rng["criteria"][7]["bound"] = ["link_min", "15cm"]
+    write("tv_range_tight.json", json.dumps(rng, indent=1))
+    # disabled criteria: the first minimize is not the objective, and no lint reads a disabled bound
+    dis = json.loads(text)
+    dis["format"] = "geomsolver-instance/2"
+    dis["criteria"][0]["enabled"] = False
+    dis["criteria"][2].update(bound=5, enabled=False)
+    dis["criteria"][3]["role"] = "maximize"
+    del dis["criteria"][3]["bound"]
+    dis["criteria"].append({"name": "tv_in", "expr": "max_over(tau, clearance(tv, couch))", "role": "max",
+                            "bound": -0.01, "enabled": False})
+    write("tv_disabled.json", json.dumps(dis, indent=1))
     assert base["params"]["edge_margin"] == 0.10
     return out
 
@@ -178,6 +198,10 @@ def main() -> int:
     expect("exit 0, FEASIBLE", code == 0 and out.startswith("VERDICT: FEASIBLE"))
     expect("warning listed", "warning: constraints[0].notes: unknown key 'notes'" in out)
 
+    code, out, _ = case("check: --set a key of format /2", CHECK, str(FIXTURE), "--set", "sweeps.tau.samples=9")
+    expect("the CLI's note on the raised format is not an error",
+           code == 1 and "note:" not in out and out.split("ERRORS", 1)[1].split("WARNINGS")[0].strip() == "(none)")
+
     code, out, _ = case("check: start-tutorial-5 --solve", CHECK, str(TUTORIAL), "--solve")
     expect("exit 0, width 98.81456 cm", code == 0 and "width = 98.81456 cm" in out)
 
@@ -190,6 +214,21 @@ def main() -> int:
     expect("LINT: misspelt keys the CLI drops silently",
            "top-level key 'constraint'" in lint and "design.S.fix is ignored without a warning: did you mean 'fixed'?" in lint)
     expect("NEXT starts with LINT", out.splitlines()[-1].startswith("NEXT: LINT lists 7"))
+
+    code, out, _ = case("check: link lengths as range criteria --solve", CHECK, str(v["tv_range.json"]), "--solve")
+    crit = out.split("CRITERIA", 1)[1].split("\nACTIVE")[0]
+    expect("exit 0, the same 104.3729 cm", code == 0 and "protrusion = 104.3729 cm" in out)
+    expect("CRITERIA shows both bounds of a range",
+           any(ln.split()[:2] == ["link_1", "range"] and "10 .. 100" in ln for ln in crit.splitlines()))
+
+    code, out, _ = case("check: a disabled objective and disabled bounds", CHECK, str(v["tv_disabled.json"]))
+    crit = out.split("CRITERIA", 1)[1].split("\nACTIVE")[0]
+    expect("exit 1, no error from format /2", code == 1 and out.split("ERRORS", 1)[1].split("WARNINGS")[0].strip() == "(none)")
+    expect("the enabled maximize is the objective", "best objective: kitchen_visible = 85.80526 % (maximize)" in out)
+    expect("CRITERIA marks the disabled ones",
+           all(any(ln.split()[:1] == [n] and "disabled" in ln.split() for ln in crit.splitlines())
+               for n in ("protrusion", "view_kitchen", "tv_in")))
+    expect("no LINT on a disabled bound", "(none)" in out.split("LINT", 1)[1].split("RUNS")[0])
 
     code, out, _ = case("check: --probe that does not compile", CHECK, str(FIXTURE), "--probe", "dist(A)")
     expect("exit 2, ERROR naming the probe", code == 2 and out.startswith("VERDICT: ERROR") and "--probe" in out.splitlines()[-1])
@@ -237,6 +276,12 @@ def main() -> int:
     code, out, wall = case("diagnose: two conflicting bounds", DIAG, str(v["pair.json"]))
     expect("exit 0, SIGNATURE: CONFLICT", code == 0 and "SIGNATURE: CONFLICT" in out)
     expect("RECOMMEND relaxes one of the two bounds", "RECOMMEND: --bound far_door=" in out or "RECOMMEND: --bound near_lamp=" in out)
+
+    code, out, wall = case("diagnose: a range that cannot hold", DIAG, str(v["tv_range_tight.json"]),
+                           "--max-probes", "4")
+    expect("the range row is described with both bounds", "needs 10 cm <= value <= 15 cm" in out)
+    expect("EXPLAIN says --bound cannot move a range, no --bound probe of it",
+           "link_1:bound: a range criterion, which --bound cannot move" in out and "--bound link_1=" not in out)
 
     code, out, wall = case("diagnose: only a constraint is violated", DIAG, str(v["constraint_only.json"]))
     expect("exit 0, RECOMMEND loosens the param", code == 0 and "RECOMMEND: --set params.tol=" in out)

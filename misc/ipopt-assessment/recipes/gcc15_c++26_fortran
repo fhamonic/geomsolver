@@ -1,0 +1,9 @@
+include(gcc15_c++26)
+
+[conf]
+# Conan has no Fortran compiler setting: hand gfortran only to the recipes
+# that need it, so openblas keeps building its C-translated LAPACK.
+coin-mumps/*:tools.build:compiler_executables={"c": "/opt/gcc-15/bin/gcc", "cpp": "/opt/gcc-15/bin/g++", "fortran": "/usr/bin/gfortran"}
+# gcc15 defaults to C23, which breaks old autoconf probes and K&R C
+coin-mumps/*:tools.build:cflags=["-std=gnu17"]
+coin-ipopt/*:tools.build:cflags=["-std=gnu17"]

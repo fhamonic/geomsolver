@@ -1,0 +1,7 @@
+# A file with several errors, and the Messages panel listing them.
+open docs/instances/guide-b-desk-errors-broken.json
+wait 16
+# The Messages tab.
+click L 60 703
+wait 3
+shot

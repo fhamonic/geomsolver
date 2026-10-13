@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.15)
+project(test_package LANGUAGES CXX)
+find_package(ipopt REQUIRED CONFIG)
+add_executable(hs071_c hs071_c.cpp)
+target_link_libraries(hs071_c PRIVATE ipopt::ipopt)
+target_compile_features(hs071_c PRIVATE cxx_std_26)

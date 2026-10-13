@@ -1,0 +1,9 @@
+# The Document panel of the corner TV, in a taller bottom row.
+open tests/data/tv_corner_ref.json
+panel document
+# The border between the canvas and the panels under it, dragged up; the
+# pointer then leaves it, which would stay highlighted.
+drag L 300 691 300 380
+move 1590 10
+wait 29
+shot document.ppm

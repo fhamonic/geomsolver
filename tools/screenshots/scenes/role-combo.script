@@ -1,0 +1,8 @@
+# link_1's Role in Properties, opened.
+open tests/data/tv_corner_ref.json
+panel criteria
+select criterion link_1
+wait 16
+click L 830 806
+wait 4
+shot

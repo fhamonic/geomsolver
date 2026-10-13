@@ -121,7 +121,8 @@ def split_messages(stderr: str) -> tuple[list[str], list[str]]:
         if line.startswith("usage:"):
             break
         line = line.rstrip()
-        if not line.strip() or re.match(r"\[\w+\] \d+/\d+ runs", line):
+        # "note: --set ...: format raised": the scripts never write the file, so it changes nothing for the user
+        if not line.strip() or re.match(r"\[\w+\] \d+/\d+ runs", line) or line.startswith("note:"):
             continue
         (warnings if line.startswith("warning:") else errors).append(line)
     return errors, warnings
@@ -197,7 +198,8 @@ def objective_name(run: dict | None) -> str | None:
     if not run:
         return None
     for name, c in run.get("criteria", {}).items():
-        if c.get("role") in ("minimize", "maximize"):
+        # a disabled criterion keeps its role, and may precede the objective
+        if c.get("role") in ("minimize", "maximize") and c.get("enabled") is not False:
             return name
     return None
 
@@ -266,9 +268,11 @@ def describe_row(row: dict, run: dict, instance: dict) -> dict:
         name, c = crit
         unit = c.get("unit") or ""
         s = scale_of(unit)
+        b = c.get("bound")
         out.update(criterion=name, unit=unit, role=c.get("role"),
                    value=c.get("display", c.get("value")),
-                   bound=None if c.get("bound") is None else c["bound"] * s,
+                   # role "range" has [lo, hi]
+                   bound=None if b is None else [x * s for x in b] if isinstance(b, list) else b * s,
                    violation=None if v is None else v * s, margin=None if v is None else -v * s)
     else:
         unit = {"assembly": "m", "membership": "m"}.get(row["kind"], "SI")
@@ -281,7 +285,14 @@ def row_cells(d: dict, violated: bool) -> list[str]:
     at = f" at {d['at']}" if d.get("at") else ""
     u = f" {d['unit']}" if d.get("unit") and d["unit"] != "SI" else ""
     kind = d["kind"]
-    if kind == "criterion bound":
+    if kind == "criterion bound" and isinstance(d.get("bound"), list):
+        lo, hi = d["bound"]
+        if violated:
+            detail = (f"value {g(d['value'])}{u}, needs {g(lo)}{u} <= value <= {g(hi)}{u}, "
+                      f"out by {g(d['violation'])}{u}{at}")
+        else:
+            detail = f"value {g(d['value'])}{u} in [{g(lo)}, {g(hi)}]{u}, margin {g(d['margin'], 3)}{u}{at}"
+    elif kind == "criterion bound":
         rel = "<=" if d.get("role") == "max" else ">="
         word = "over by" if d.get("role") == "max" else "short by"
         if violated:
@@ -359,13 +370,15 @@ def lint_units(instance: dict) -> list[str]:
                 out.append(f"design.{name}.{key} is the number {g(x)}: a JSON number is SI, so this is "
                            f"{g(x * scale_of(unit))} {unit}. If you meant {g(x)} {unit}, write \"{_plain(x)}{unit}\".")
     for i, c in enumerate(instance.get("criteria") or []):
-        if not isinstance(c, dict) or c.get("role") not in ("max", "min"):
+        if not isinstance(c, dict) or c.get("enabled") is False or c.get("role") not in ("max", "min", "range"):
             continue
         unit, b = c.get("unit") or "", c.get("bound")
-        if _is_num(b) and unit in LINT_LIMITS:
-            out.append(f"criteria[{i}].bound ({c.get('name')}) is the number {g(b)}: a JSON number is SI, so the "
-                       f"bound is {g(b * scale_of(unit))} {unit}. If you meant {g(b)} {unit}, write "
-                       f"\"{_plain(b)}{unit}\" (a string with the unit) or a param name.")
+        pair = isinstance(b, list)
+        for k, x in enumerate(b if pair else [b]):
+            if _is_num(x) and unit in LINT_LIMITS:
+                out.append(f"criteria[{i}].bound{f'[{k}]' if pair else ''} ({c.get('name')}) is the number {g(x)}: "
+                           f"a JSON number is SI, so the bound is {g(x * scale_of(unit))} {unit}. If you meant "
+                           f"{g(x)} {unit}, write \"{_plain(x)}{unit}\" (a string with the unit) or a param name.")
     for name, s in (instance.get("sweeps") or {}).items():
         if not isinstance(s, dict):
             continue
@@ -381,7 +394,7 @@ TOP_KEYS = ("format", "description", "include", "params", "geometry", "design", 
             "criteria", "display", "solver")
 SECTION_KEYS = {  # keys the CLI accepts; any other key in these sections is dropped WITHOUT a warning
     "design": {"type", "min", "max", "domain", "value", "fixed", "unit", "note"},
-    "sweeps": {"min", "max", "note"},
+    "sweeps": {"min", "max", "samples", "sampling", "note"},
     "geometry": {"type", "x", "y", "width", "height", "angle", "r", "points", "closed", "note"},
 }
 
@@ -449,7 +462,8 @@ def containment_suspects(instance: dict) -> list[tuple[str, str, str]]:
             scan(f"constraints[{i}] ({c.get('name')})", rhs)
     params = instance.get("params") or {}
     for i, c in enumerate(instance.get("criteria") or []):
-        if not isinstance(c, dict) or c.get("role") != "max" or not isinstance(c.get("expr"), str):
+        if not isinstance(c, dict) or c.get("enabled") is False or c.get("role") != "max" \
+                or not isinstance(c.get("expr"), str):
             continue
         b = c.get("bound")
         b = params.get(b, b) if isinstance(b, str) else b

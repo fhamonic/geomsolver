@@ -20,6 +20,9 @@ namespace gs {
 // [x, y] (point), SI. Fixed variables included.
 nlohmann::ordered_json design_json(const Model & m, std::span<const double> x);
 nlohmann::ordered_json run_json(const Model & m, const RunResult & r);
+// Each sweep's range and sampling under `s`: {"tau": {"min": 0, "max": 1,
+// "sampling": "fixed", "samples": 17}}, "samples" being the initial count.
+nlohmann::ordered_json sweeps_json(const Model & m, const SolverSettings & s);
 
 // Results file ("geomsolver-results/1"): instance path, settings, bound
 // overrides, then the distinct solutions, best first, each with its design,
@@ -36,6 +39,9 @@ bool write_json(const std::filesystem::path & file,
 
 // Plain-text tables (criteria in their display units, row margins in their
 // natural units).
+// "sweeps: tau fixed, 17 samples\n", or "" when every sweep is adaptive and
+// starts from s.initial_samples.
+std::string format_sweeps(const Model & m, const SolverSettings & s);
 std::string format_design(const Model & m, std::span<const double> x);
 std::string format_check(const Model & m, const Check & c, double feas_tol);
 // Also lists the variants of the solutions shown: the design values that

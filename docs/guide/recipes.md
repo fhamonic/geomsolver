@@ -25,9 +25,9 @@ Measured with `pivot_axis` disabled (`--set 'constraints[8].enabled=false'`), an
 
 | Constrained | Protrusion | Gap of link 1 | Gap of link 2 | Runs at the optimum |
 | --- | --- | --- | --- | --- |
-| **neither** (also disable `constraints[6]` and `[7]`) | 104.3729 cm | −5.730608 cm | 8.347213 cm | 51, 2 variants |
-| **link 1 only** (also disable `constraints[7]`) | 104.3729 cm | 8.347213 cm | −5.730608 cm | 19, 1 variant |
-| **both** | 107.5469 cm | 2.499999 cm | 7.309056 cm | 49, 2 variants |
+| **neither** (also disable `constraints[6]` and `[7]`) | 104.3729 cm | −5.730608 cm | 8.347213 cm | 65, 2 variants |
+| **link 1 only** (also disable `constraints[7]`) | 104.3729 cm | 8.347213 cm | −5.730608 cm | 32, 1 variant |
+| **both** | 107.5469 cm | 2.499999 cm | 7.309056 cm | 65, 2 variants |
 
 With link 1 only, the optimum does not move: link 2 now crosses the TV by 5.73 cm instead of link 1. Constraining both links costs 3.17 cm of protrusion.
 
@@ -55,7 +55,7 @@ A point that is a design variable takes the region as its domain. In the zone va
 --8<-- "docs/instances/guide-b-tv-zone.json:22:23"
 ```
 
-A triangle is not a parallelogram, so each point gets an implicit membership row, `A in domain` and `B in domain` in the output. At the optimum, `A` = (0.03, 0.2885969) sits on the triangle's wall-side edge and `B` = (0.45, 0.03) on its far corner: both membership margins are zero to rounding (0 and −5.6e-17 m).
+A triangle is not a parallelogram, so each point gets an implicit membership row, `A in domain` and `B in domain` in the output. At the optimum, `A` = (0.45, 0.03) sits on the triangle's far corner and `B` = (0.03, 0.2885969) on its wall-side edge: both membership margins are zero to rounding (0 and 1.8e-16 m).
 
 A point that moves with a sweep, or any point computed from design variables, cannot have a domain: domains belong to design variables and are constant. Bound its clearance to the region instead: inside a convex polygon, `clearance` is minus the distance to the boundary, so `<= -m` keeps the point at least `m` inside. The zone variant keeps the centre of the TV body 9 cm inside the cabinet's outline at every pose:
 
@@ -90,7 +90,7 @@ The domain of `D` keeps the desk's centre in the room, nothing more. The desk ne
 
 A circle is inside a convex region when its centre is at least its radius inside, hence `-(chair_r + gap)` for the chair's centre `seat`. A convex body is inside a convex region when all its corners are, so these five rows are enough.
 
-`build/geomsolver-cli docs/instances/guide-b-study.json` gives a desk of 376.0904 cm, set across the room at −34.34995° with each corner `gap` from a different wall; the `chair_in` row has a margin of 0.554636 m. 10 of 65 runs reach it, and 71 of 513 with `--starts 512`, none better.
+`build/geomsolver-cli docs/instances/guide-b-study.json` gives a desk of 376.0904 cm, set across the room at −34.34995° with each corner `gap` from a different wall; the `chair_in` row has a margin of 0.554636 m. 10 of 65 runs reach it, and 71 of 513 with `--starts 512`, none better; [troubleshooting](troubleshooting.md#few-runs-reach-the-optimum) explains why and what helps.
 
 ![The solved study room: a grey room outline with its top right corner cut, a long blue desk set diagonally from the upper left to the lower right, each of its four corners 5 cm from a different wall (left, top, bottom and right), and a red chair circle pulled in under the desk's lower edge. The canvas header reads "feasible on 2001 samples" and "maximize width = 376.0904 cm".](../assets/screenshots/guide-b-recipes-study.png)
 
@@ -158,10 +158,10 @@ It gives the same 376.0904 cm desk, with `left`, `bottom`, `right` and `top` act
 
 | `pivot_axis` written as | Protrusion | Runs at the optimum |
 | --- | --- | --- |
-| **`sin_between(B - A, dir(pivot_axis_angle)) == 0`** | 105.6282 cm | 57, 2 variants |
-| **`angle(B - A) == pivot_axis_angle`** | 105.6282 cm | 52, 1 variant |
+| **`sin_between(B - A, dir(pivot_axis_angle)) == 0`** | 105.6282 cm | 65, 2 variants |
+| **`angle(B - A) == pivot_axis_angle`** | 105.6282 cm | 65, 1 variant |
 
-The optimum is the same here, but the `angle()` form lost the relabelled variant and five runs.
+The optimum is the same here, and every run reaches it either way, but the `angle()` form lost the relabelled variant.
 
 ## Minimum distance between pivots
 
@@ -286,13 +286,15 @@ build/geomsolver-cli tests/data/tv_corner_ref.json --set 'criteria[0].role=repor
 
 **Goal:** a quantity between two limits.
 
-Two criteria, one `max` and one `min`, keep each limit visible and separately adjustable:
+As a constraint, chain the two comparisons: `72cm <= H.y <= 76cm` keeps the desk's hinge between 72 and 76 cm, in one row group with a row per limit (see [Two-sided relations](constraints.md#two-sided-relations)). As a criterion, use role `range` with `"bound": [lo, hi]`, which also shows the value and both limits in the criterion's unit (see [A two-sided bound](criteria.md#a-two-sided-bound)).
+
+Two criteria, one `max` and one `min`, keep each limit separately adjustable with `--bound` and a Pareto study, which a `range` criterion refuses. The fixture bounds its link lengths this way:
 
 ```json title="tests/data/tv_corner_ref.json (criteria)"
 --8<-- "tests/data/tv_corner_ref.json:69:72"
 ```
 
-Around a centre value, one `abs()` row does it. The desk keeps its hinge between 72 and 76 cm:
+Around a centre value, one `abs()` row does it. The desk writes its hinge limits as a centre and a tolerance:
 
 ```json title="docs/instances/guide-b-desk.json"
 --8<-- "docs/instances/guide-b-desk.json:7:8"
@@ -302,7 +304,7 @@ Around a centre value, one `abs()` row does it. The desk keeps its hinge between
 --8<-- "docs/instances/guide-b-desk.json:32:32"
 ```
 
-The chained form `72cm <= H.y <= 76cm` is an error: `only one comparison is allowed`.
+Both forms give the 64.36129 cm board.
 
 ## Fixing a variable
 
@@ -314,7 +316,7 @@ In the file, set its `value` and `"fixed": true`. A fixed variable is a constant
 build/geomsolver-cli docs/instances/guide-b-desk.json --set 'design.H.value=[0, 0.74]' --set design.H.fixed=true
 ```
 
-The board is then 62.79036 cm deep instead of 64.36129 cm, with 30 of 65 runs at the optimum. `--write-instance out.json` saves the design with the edits:
+The board is then 62.79036 cm deep instead of 64.36129 cm, with 63 of 65 runs at the optimum. `--write-instance out.json` saves the design with the edits:
 
 ```json title="out.json (design, excerpt)"
     "H": {
@@ -334,7 +336,7 @@ A constraint whose variables are all fixed no longer depends on the design and g
 warning: constraints[2].expr: does not depend on any design variable: it is always satisfied or always violated
 ```
 
-With `H` fixed at 74 cm, `desk_height` is always satisfied. With `--fix H` it is fixed at the file's 80 cm, and `desk_height` is always violated: no run can be feasible, and the summary names it, `max violation 0.04 (desk_height)`. In the GUI, the **fixed** checkbox of a design variable does the same as the `fixed` key.
+With `H` fixed at 74 cm, `desk_height` is always satisfied. With `--fix H` it is fixed at the file's 80 cm, and `desk_height` is always violated: no run can be feasible, and the summary names it, `max violation 0.04 (desk_height)`. An equality decided by fixed variables gets a longer warning, which ends `and as an equality it stops every SLSQP solve; disable it`: disable it even when it holds, as [troubleshooting](troubleshooting.md#3-warnings) measures. In the GUI, the **fixed** checkbox of a design variable does the same as the `fixed` key.
 
 ## Next steps
 

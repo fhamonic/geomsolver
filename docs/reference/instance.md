@@ -1,6 +1,6 @@
 # Instance file keys
 
-An instance is one JSON object, `"format": "geomsolver-instance/1"`. This page lists every key of every section with its type, its default and what it does, and the diagnostics each key can raise. The rules come from the schema (`src/gs/engine/schema.cpp`) and the compiler's checks (`src/gs/engine/compiler.cpp`). For how to use the sections together, read the [modelling guide](../guide/instance-files.md) first.
+An instance is one JSON object, `"format": "geomsolver-instance/1"` or `"geomsolver-instance/2"`. This page lists every key of every section with its type, its default and what it does, and the diagnostics each key can raise. The rules come from the schema (`src/gs/engine/schema.cpp`) and the compiler's checks (`src/gs/engine/compiler.cpp`). For how to use the sections together, read the [modelling guide](../guide/instance-files.md) first.
 
 The file below uses every section and every key. It places the largest round side table on a rug in the example room, clear of the furniture and of a person walking from the kitchen to the couch:
 
@@ -13,7 +13,7 @@ geomsolver-cli docs/instances/ref-instance.json --eval
 geomsolver-cli docs/instances/ref-instance.json
 ```
 
-The written design (T at the rug's centre, r = 30 cm) collides with the walker: `walkway` is violated by 0.1426254 m at s = 0.761. The solve ends with 27 of its 33 runs at one solution, T = (1.341517, 1.337434) and r = 59.3881 cm, where `to_seat` and `walkway` are active.
+The written design (T at the rug's centre, r = 30 cm) collides with the walker: `walkway` is violated by 0.1426254 m at s = 0.761. The solve ends with all 33 of its runs at one solution, T = (1.341517, 1.337434) and r = 59.3881 cm, where `to_seat` and `walkway` are active.
 
 The messages on this page are quoted from runs on this file, edited with `--set` (see [Paths](#paths)), except those about the file itself and about included files, which come from small files made for the purpose. Errors stop the compile and the CLI exits with status 2; warnings are printed and the run goes on.
 
@@ -21,8 +21,8 @@ The messages on this page are quoted from runs on this file, edited with `--set`
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| **`format`** | string | required | Exactly `"geomsolver-instance/1"`. |
-| **`description`** | string | none | Free text, shown in the GUI's Inspector. |
+| **`format`** | string | required | `"geomsolver-instance/1"` or `"geomsolver-instance/2"`. See [format versions](#format). |
+| **`description`** | string | none | Free text, shown and edited in the GUI's Document panel. |
 | **`include`** | array of strings | none | Geometry files merged into this instance. See [include](#include). |
 | **`params`** | object | none | Named constants. See [params](#params). |
 | **`geometry`** | object | none | Named constant shapes. See [geometry](#geometry). |
@@ -40,11 +40,33 @@ Every section is optional: an instance with only `format` compiles, with no vari
 ```text
 the instance must be a JSON object
 required property 'format' not found in object
-format: expected "geomsolver-instance/1", got "geomsolver-instance/2"
+format: expected one of geomsolver-instance/1, geomsolver-instance/2
 description: expected a string, got a number
 constraints: expected an array, got a number
 cannot open 'nothere.json'
 trailing.json: [json.exception.parse_error.101] parse error at line 1, column 36: syntax error while parsing object key - unexpected '}'; expected string literal
+```
+
+## Format versions {#format}
+
+Version 2 adds keys that a geomsolver reading only version 1 would drop without a warning, and so solve another problem: the [`samples` and `sampling`](#sweeps) of a sweep, and a criterion's [`"enabled": false`](#criteria). A file that uses one of them must say `"format": "geomsolver-instance/2"`, which a geomsolver that knows only version 1 refuses. `"enabled": true` is what version 1 does anyway, so it needs no version 2. Every version 1 file is a valid version 2 file.
+
+`/2` stays open until the first release: a build may add optional keys to it until then.
+
+You rarely write `/2` yourself. When the GUI or the CLI's `--set` writes such a key into a `/1` instance, it raises the instance's `format` to `/2` and says so; Save and `--write-instance` then save it that way. Nothing lowers it by itself: once no key needs `/2` any more, the GUI's Document panel offers **Use format /1**.
+
+```text title="--set sweeps.s.samples=9"
+note: --set sweeps.s.samples: "format" raised to "geomsolver-instance/2", which sweeps.s.samples requires
+```
+
+A `/1` file that uses such a key does not compile, with one error per key:
+
+```text title="--set sweeps.s.samples=9 --set format=geomsolver-instance/1"
+sweeps.s.samples: "samples" requires "format": "geomsolver-instance/2"
+```
+
+```text title="--set 'criteria[1].enabled=false' --set format=geomsolver-instance/1"
+criteria[1].enabled: "enabled" requires "format": "geomsolver-instance/2"
 ```
 
 ## include
@@ -134,9 +156,9 @@ geometry.route: a closed polyline needs at least 3 points
 | --- | --- | --- | --- |
 | **`type`** | `"scalar"` or `"point"` | required | |
 | **`value`** | number (scalar) or `[x, y]` (point) | see below | The design written in the file: the start of the solve, and what `--eval` and the GUI show. |
-| **`fixed`** | boolean | `false` | A fixed variable is a constant equal to `value` and gets no coordinate. |
+| **`fixed`** | boolean | `false` | A fixed variable is a constant equal to `value` and gets no coordinate. A point whose domain is a single point is fixed at that point. |
 | **`unit`** | `deg`, `rad`, `m`, `cm`, `mm` or `%` | none (SI) | Display unit in reports and in the GUI. `value`, `min` and `max` stay SI. |
-| **`note`** | string | none | Free text, shown in the GUI's Inspector and when you hover the variable on the canvas. |
+| **`note`** | string | none | Free text, shown in the GUI's lists and Properties, and when you hover the variable on the canvas. |
 
 Other keys are ignored without a warning.
 
@@ -161,10 +183,13 @@ The domain decides how the point maps to solver coordinates:
 | Domain | Coordinates | Implicit row |
 | --- | --- | --- |
 | **parallelogram**: `box(...)`, `rect(...)`, a `rect` geometry, any 4-vertex polygon whose opposite sides are parallel, of non-zero area | 2, named `T.u`, `T.v` | none |
-| **segment**: `segment(p, q)` or a 2-point open polyline | 1, named after the point | none |
-| **any other polygon** (triangle, non-convex, zero area) **or a circle** | 2, over its bounding box | membership: `T in domain`, margin in m |
+| **segment**: `segment(p, q)` or a 2-point open polyline; a parallelogram with one side of zero length (a `box` or `rect` of zero width or height, at any angle); a polygon whose vertices all have the same x or the same y | 1, named after the point | none |
+| **single point**: a polygon whose vertices all coincide (`box(1, 1, 1, 1)`), a segment of zero length or a circle of radius 0 | none: the variable is fixed at that point | none |
+| **any other polygon** (triangle, non-convex, zero area along a slanted line) **or a circle** | 2, over its bounding box | membership: `T in domain`, margin in m |
 
 A polyline of 3 or more points is not a domain. The membership row keeps the point inside the domain; its margin is minus the point's `clearance` to the domain.
+
+A length counts as zero when it is at most 10⁻¹² × max(1, the domain's largest absolute coordinate), so a side computed from params that cancel is still zero. A flat domain gets one coordinate rather than two, of which one would move nothing: every run would end at another value of it, a variant of its own. A single-point domain fixes the variable at that point, whatever its `value` and with no warning; the reports mark it `[fixed]`. With `--set 'design.T.domain=box(1, 1.3, 2, 1.3)'` the side table above has n = 2 (`T` and `r`) and 6 row groups; with the slanted `polygon(vec(1, 1), vec(1.5, 1.5), vec(2, 2))` it has n = 3 and 7, the seventh being `T in domain`; with `circle(vec(1.5, 1.3), 0)` it has n = 1, and the report shows `T` at (1.5, 1.3) m, `[fixed]`.
 
 ### Diagnostics
 
@@ -188,17 +213,22 @@ A `value` of the wrong shape (`[1]` for a point, `[1, 2]` for a scalar) is a sch
 
 ## sweeps
 
-`name → {"min", "max"}`: a parameter of the motion, such as an angle or a pose parameter.
+`name → {"min", "max", "samples", "sampling"}`: a parameter of the motion, such as an angle or a pose parameter.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | **`min`**, **`max`** | number or constant expression | required | The range, max ≥ min. |
+| **`samples`** | integer, 1 to 1000000 | `solver.initial_samples` | The initial samples of the sweep, evenly spaced in t. Needs [format /2](#format). |
+| **`sampling`** | `"adaptive"` or `"fixed"` | `"adaptive"` | `adaptive`: the exchange adds samples where the fine grid finds a violation. `fixed`: the sweep keeps its samples for the whole solve and every requirement over it is judged on them; the fine grid only reports what lies between them. Needs [format /2](#format). |
 
-The solver samples a sweep in normalised t ∈ [0, 1], with the value min + t (max - min); reports print the value (`s=0.761`). Other keys are ignored without a warning.
+The solver samples a sweep in normalised t ∈ [0, 1], with the value min + t (max - min); reports print the value (`s=0.761`). [Fixed sampling](../guide/sweeps.md#fixed) in the guide shows a run. Other keys are ignored without a warning.
 
 ```text
 sweeps.s: required property 'min' not found in object
 sweeps.s: sweep max must be >= min
+sweeps.s.samples: instance is below minimum of 1
+sweeps.s.samples: expected an integer, got a number
+sweeps.s.sampling: expected one of adaptive, fixed
 ```
 
 ## let
@@ -217,12 +247,13 @@ An array of objects, each a relation that a feasible design satisfies.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | **`name`** | string | required | Unique among the constraints. Names the row group in reports. |
-| **`expr`** | string: relation | required | `a <= b`, `a >= b` or `a == b`. See [Relations](expressions.md#relations). |
+| **`expr`** | string: relation | required | `a <= b`, `a >= b`, `a == b`, or two-sided: `lo <= e <= hi`, `hi >= e >= lo`. See [Relations](expressions.md#relations). |
 | **`forall`** | string: a sweep name | none | The relation must hold at every value of that sweep. |
 | **`enabled`** | boolean | `true` | `false` keeps the constraint compiled but adds no row. |
 | **`note`** | string | none | Free text. |
 
-- A disabled constraint must still compile: an unknown name in it is an error.
+- A disabled constraint must still compile: an unknown name in it is an error. The GUI shows its value like that of an enabled one.
+- A two-sided relation is one row group with the rows `<name>(lo)` and `<name>(hi)`.
 - A constraint has no `unit`. Its margin is shown in SI; to see a value in a display unit, write it as a criterion with role `max` or `min`.
 - Any other key gets a warning that lists the known keys.
 
@@ -235,6 +266,7 @@ warning: constraints[0].unit: ignored: a constraint's margin is shown in SI unit
 warning: constraints[0].wieght: unknown key 'wieght' (ignored); a constraint has the keys enabled, expr, forall, name, note
 warning: constraints[0].forall: the constraint does not depend on sweep 's': "forall" has no effect
 warning: constraints[0].expr: does not depend on any design variable: it is always satisfied or always violated
+warning: constraints[0].expr: does not depend on any design variable: it is always satisfied or always violated, and as an equality it stops every SLSQP solve; disable it
 ```
 
 The errors an `expr` can raise are on [Expression language](expressions.md#relations).
@@ -247,9 +279,10 @@ An array of objects: values the solver optimises, bounds, or reports.
 | --- | --- | --- | --- |
 | **`name`** | string | required | Unique among the criteria. Used by `--bound`, `--pareto` and the results. |
 | **`expr`** | string: Scalar expression | required | May be a whole `max_over` / `min_over`. No comparison. |
-| **`role`** | `minimize`, `maximize`, `max`, `min` or `report` | required | See the table below. |
-| **`bound`** | number or constant expression | required for `max` and `min` | The limit, in SI. A string may carry a unit suffix (`"75cm"`, `"86%"`). |
+| **`role`** | `minimize`, `maximize`, `max`, `min`, `range` or `report` | required | See the table below. |
+| **`bound`** | number or constant expression; for `range`, an array of two | required for `max`, `min` and `range` | The limit, in SI. A string may carry a unit suffix (`"75cm"`, `"86%"`). For `range`, `[lo, hi]` with lo ≤ hi. |
 | **`unit`** | `deg`, `rad`, `m`, `cm`, `mm` or `%` | none (SI) | Display unit of the value and of the bound in reports, in the GUI, for `--bound` and for `--pareto`. |
+| **`enabled`** | boolean | `true` | `false` keeps the criterion compiled and reported, but it bounds nothing and is never the objective. `false` needs [format /2](#format). |
 | **`note`** | string | none | Free text. |
 
 | Role | Effect | Row group |
@@ -258,25 +291,33 @@ An array of objects: values the solver optimises, bounds, or reports.
 | **`maximize`** | the objective, maximised | none |
 | **`max`** | `expr <= bound` | `<name>:bound` |
 | **`min`** | `expr >= bound` | `<name>:bound` |
+| **`range`** | `lo <= expr <= hi`, printed as `lo <= value <= hi` | `<name>:bound`, rows `(lo)` and `(hi)` |
 | **`report`** | shown only; does not take part in feasibility | none |
 
-- An instance has at most one objective (`minimize` or `maximize`). Without one, the solve looks for any feasible design and reports the objective as 0.
+- An instance has at most one enabled objective (`minimize` or `maximize`). Without one, the solve looks for any feasible design and reports the objective as 0.
+- A disabled criterion must still compile: an unknown name in it is an error. Its value is computed and reported, with `disabled` in place of its bound and verdict. It has no row group, so it never makes a design infeasible, and `--bound`, `--pareto` and the GUI's Pareto study do not take it. It may keep the role `minimize` or `maximize` beside the enabled objective.
 - A `bound` on a role that has none gets a warning. `weight`, a key of earlier versions, is an error that explains the replacement. Any other key gets a warning.
-- `max` with `abs(e)` is split into two smooth rows, as for a constraint.
+- `max` with `abs(e)` is split into two smooth rows, as for a constraint, and so is the upper side of `range`.
+- `--bound` and `--pareto` take a `max` or `min` criterion; a `range` criterion is refused.
 - `minimize max_over(s, e)` and `maximize min_over(s, e)` optimise the worst case over the sweep; see [Special forms](expressions.md#special-forms) for every pairing of role and aggregate.
 
 ```text
-criteria[1].role: expected one of minimize, maximize, max, min, report
+criteria[1].role: expected one of minimize, maximize, max, min, range, report
 criteria[1]: required property 'bound' not found in object
+criteria[1].bound: role "range" takes two bounds: "bound": [lo, hi]
+criteria[1].bound: role "max" takes one bound; a pair [lo, hi] is for role "range"
+criteria[1].bound: the lower bound 3 exceeds the upper bound 1
+criteria[1].bound: no subschema has succeeded, but one of them is required to validate
 criteria[3].name: duplicate criterion name 'radius' (also criteria[0])
 criteria[1].unit: expected one of deg, rad, m, cm, mm, %
+criteria[1].enabled: expected true or false, got a string
 criteria[1].bound: expected a Scalar, got Vec
 criteria[3].role: a second objective (the first is criteria[0]): an instance has one "minimize" or "maximize" criterion. Bound the others (role "max" / "min") and run a Pareto study over their bounds, or write the sum you want in one expression
 criteria[0].weight: "weight" is no longer supported: an instance has one objective. To maximise, use role "maximize" instead of a negative weight; to trade criteria off, bound all but one (role "max" / "min") and run a Pareto study, or write the weighted sum in one expression
-warning: criteria[3].bound: ignored for role "report": only roles "max" and "min" have a bound
+warning: criteria[3].bound: ignored for role "report": only roles "max", "min" and "range" have a bound
 ```
 
-Removing `role` from a criterion that has no `bound` reports two errors, `required property 'role'` and `required property 'bound'`: the schema's rule "role `max` or `min` needs a bound" also applies when the role is missing. A criterion that has a bound reports only the first. [Criteria and objectives](../guide/criteria.md) explains when to bound a criterion rather than write a constraint.
+Removing `role` from a criterion that has no `bound` reports two errors, `required property 'role'` and `required property 'bound'`: the schema's rule "role `max`, `min` or `range` needs a bound" also applies when the role is missing. A criterion that has a bound reports only the first. [Criteria and objectives](../guide/criteria.md) explains when to bound a criterion rather than write a constraint.
 
 ## display
 
@@ -291,6 +332,7 @@ An array of items drawn on the GUI canvas. They do not affect the solve.
 | **`label`** | string | none | Text drawn next to a point, or at the centre of a shape. |
 | **`ghosts`** | integer, 0 to 1000 | 0 | Also draw the item at that many evenly spaced sweep values. |
 | **`trace`** | boolean | `false` | Draw the path of a point over the sweep. |
+| **`visible`** | boolean | `true` | `false` hides the item: the canvas draws neither it nor its ghosts and trace, and it cannot be picked. Like every key of `display`, it does not change the solve, so a `/1` file may hold it. |
 
 Other keys are ignored without a warning. [Display](../guide/display.md) shows them in use.
 
@@ -300,6 +342,7 @@ display[0].color: instance does not match regex pattern: ^#([0-9a-fA-F]{6}|[0-9a
 display[0].ghosts: instance exceeds maximum of 1000
 display[0].ghosts: expected an integer, got a number
 display[0].width: instance is below minimum of 0
+display[0].visible: expected true or false, got a number
 ```
 
 ## solver

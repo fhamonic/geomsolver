@@ -1,0 +1,4 @@
+# Dashed design domains.
+open docs/instances/guide-a-domains.json
+wait 29
+shot

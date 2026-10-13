@@ -1,6 +1,6 @@
 # Adding a builtin
 
-A builtin is a function of the expression language, such as `clearance` or `sin_between`. Adding one touches up to four files in `src/gs/engine`: the compiler, which checks the call and builds a node; the list of operations; the type inference, when the result is not a scalar; and one templated function that evaluates every operation, both with plain `double` values and with the dual numbers that carry derivatives. Write the evaluation once, with the right type and the right helpers, and the derivatives, constant folding and every solver feature follow.
+A builtin is a function of the expression language, such as `clearance` or `sin_between`. Adding one touches up to five files in `src/gs/engine`: the table of builtins, which gives its name and its number of arguments; the compiler, which checks the call and builds a node; the list of operations; the type inference, when the result is not a scalar; and one templated function that evaluates every operation, both with plain `double` values and with the dual numbers that carry derivatives. Write the evaluation once, with the right type and the right helpers, and the derivatives, constant folding and every solver feature follow.
 
 Read [Numerics and limits](../design-rationale/numerics.md) first: it explains the dual numbers, the bit-identity rule between the two evaluations, and the gradient conventions at kinks that a new function has to respect.
 
@@ -8,13 +8,13 @@ Read [Numerics and limits](../design-rationale/numerics.md) first: it explains t
 
 Follow `sin_between(u, v)`, the sine of the signed angle from `u` to `v`, through the code. Every builtin goes through the same steps.
 
-1. **The name and its arity** are an entry of the `sigs` table in `Compiler::call` (`src/gs/engine/compiler.cpp`). A name that is not in the table is the error "unknown function"; a wrong argument count gets an error that states the expected count.
+1. **The name and its arity** are an entry of the table that `gs::builtin_functions()` returns (`src/gs/engine/builtins.cpp`, declared in `include/gs/engine/builtins.hpp`). `Compiler::call` looks every function call up there: a name that is not in the table is the error "unknown function", and a wrong argument count gets an error that states the expected count.
 
-    ```cpp title="src/gs/engine/compiler.cpp (Compiler::call, the sigs table)"
-    {"sin_between", {2, 2}}, {"mean", {1, -1}},
+    ```cpp title="src/gs/engine/builtins.cpp (the table of builtin_functions())"
+    {"sin_between", Function, 2, 2},
     ```
 
-    `{min, max}` is the number of arguments; a `max` of −1 means any number from `min` on.
+    The two numbers are the minimum and maximum argument counts; a maximum of −1 means any number from the minimum on. The table is sorted by name, which a `static_assert` checks. It holds every name of the language, so that a program can list them: the functions, the special forms `at`, `max_over` and `min_over` (kind `SpecialForm`) and the constant `pi` (kind `Constant`, with its value).
 
 2. **The argument types and the node.** Further down in `Compiler::call`, the name is dispatched. `needs("VV")` checks that both arguments are `Vec`s and reports each wrong one at its column; `mk` builds the node.
 
@@ -60,11 +60,11 @@ if(f == "rotate") {
 
 `translate` of a `Vec` is a vector sum and `segment` is a two-point polyline in the same way. If your function can be written with existing operations, write it in `Compiler::call` with `mk` and `mkv` and skip to [step 5](#5-test-it). The derivatives, the folding of constant arguments and the bit identity then come from operations that are already tested.
 
-Some names are not builtins in this sense. `at`, `max_over` and `min_over` are special forms handled before the table, because they change how their body is evaluated. A function that needs rows of its own, the way `dyad` adds an assembly row for every occurrence, also needs work in `Compiler::build_implicit`; follow the `Op::Dyad` code there.
+Some names are not builtins in this sense. `at`, `max_over` and `min_over` are special forms: `Compiler::call` and `Compiler::side` handle them before the arity check, because they change how their body is evaluated. The table lists them with the kind `SpecialForm`, and a name that is not a call, like `pi`, with the kind `Constant`. A function that needs rows of its own, the way `dyad` adds an assembly row for every occurrence, also needs work in `Compiler::build_implicit`; follow the `Op::Dyad` code there.
 
 ## 2. Register the name
 
-1. Add the name and its arity to `sigs` in `Compiler::call`.
+1. Add the name and its arity to the table in `src/gs/engine/builtins.cpp`, at its place in alphabetical order, with the kind `Function`.
 2. Add the dispatch further down in the same function. `needs()` takes one letter per argument: `S` a `Scalar`, `V` a `Vec`, `G` a `Vec` or a shape, `H` a shape. The last letter repeats for the remaining arguments of a variadic function, so `needs("V")` checks every argument of `polygon(p1, p2, ...)`.
 3. Add any check the types cannot express, with `error(c.path, first_column(*a.args[i]), ...)` so the message points at the faulty argument. `vertex()` requires a constant integer index and `visible_fraction()` a segment or polyline target; both show the pattern.
 4. Build the node with `mk(Op::YourOp, {x[0], x[1]}, col, c)`, or `mkv(Op::YourOp, x, col, c)` for a variable number of arguments. An integer parameter fixed at compile time, such as the index of `vertex()`, goes in the `aux` argument.
@@ -90,7 +90,7 @@ Helpers shared by several cases (vector arithmetic on `V2<T>`, `dist_point_segme
 
 ## 5. Test it
 
-`tests/engine/test_builtins.cpp` holds the builtin tests. Add your function to each of them:
+`tests/engine/test_builtins.cpp` holds the builtin tests. "builtins: builtin_functions() lists every name the compiler accepts" checks your table entry by itself: a call with the minimum number of arguments must reach your dispatch, and one argument too few or too many must get the arity error. Add your function to each of the other tests:
 
 1. **Values.** Add a `Case` to the matching `check_cases` list: the expression and the expected numbers. `check_cases` evaluates every case twice, once with constant arguments (folded at compile time) and once with design variables (evaluated at run time), and both must match to 10⁻¹².
 2. **Derivatives.** Add an expression to the list of "builtins: derivatives of every scalar builtin match finite differences". The test compares the exact Jacobian with Richardson-extrapolated central differences and requires a relative error below 10⁻⁷. For a `Vec` result, test `.x` and `.y`.
@@ -104,8 +104,8 @@ build/test_engine -tc="builtins*"
 ```
 
 ```text title="Output (last lines)"
-[doctest] test cases:   6 |   6 passed | 0 failed | 82 skipped
-[doctest] assertions: 964 | 964 passed | 0 failed |
+[doctest] test cases:    7 |    7 passed | 0 failed | 114 skipped
+[doctest] assertions: 1357 | 1357 passed | 0 failed |
 [doctest] Status: SUCCESS!
 ```
 
@@ -125,7 +125,7 @@ The `doc` target of the Makefile serves the site locally. Before you open a pull
 
 ## Checklist
 
-- Name and arity in `sigs`, dispatch with `needs()` in `Compiler::call`
+- Name and arity in the table of `builtins.cpp`, dispatch with `needs()` in `Compiler::call`
 - `Op` value in `program.hpp`; type and size in `Builder::infer` unless it is a `Scalar`
 - `exec_instr` case in `exec.hpp`: `ad::` functions, choices on values, identical operations, a convention at every kink
 - Value, derivative and kink tests in `test_builtins.cpp`; a bit-identity test if the TV instance does not use it

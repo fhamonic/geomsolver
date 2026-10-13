@@ -1,0 +1,5 @@
+# A failed compile: the last good model stays.
+open tests/data/tv_corner_ref.json
+set design.c.domain=boxx(-W/2, -bracket_depth, W/2, 0)
+wait 29
+shot

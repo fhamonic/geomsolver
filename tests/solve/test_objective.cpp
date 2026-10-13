@@ -72,14 +72,16 @@ TEST_CASE("multistart: a maximised objective ranks the largest value first") {
 
 TEST_CASE("cluster: bounds slack in both designs do not split variants") {
     Json d = Json::object();
-    d["format"] = "geomsolver-instance/1";
+    d["format"] = "geomsolver-instance/2";
     d["design"] = Json{
         {"s", Json{{"type", "scalar"}, {"min", 0}, {"max", 1}, {"value", 0}}}};
     d["criteria"] = Json::parse(R"J([
         {"name": "o", "expr": "s", "role": "minimize"},
         {"name": "a", "expr": "s", "role": "max", "bound": 1},
         {"name": "b", "expr": "s", "role": "max", "bound": 1},
-        {"name": "r", "expr": "s", "role": "report"}])J");
+        {"name": "r", "expr": "s", "role": "report"},
+        {"name": "z", "expr": "s", "role": "max", "bound": 0,
+         "enabled": false}])J");
     auto m = model_from(d);
     const double nan = std::nan("");
     auto run = [&](int i, double x0, double a, double b, double r) {
@@ -92,6 +94,7 @@ TEST_CASE("cluster: bounds slack in both designs do not split variants") {
         rr.criteria = {{.value = 1.0, .violation = nan},
                        {.value = a, .violation = a - 1.0},
                        {.value = b, .violation = b - 1.0},
+                       {.value = r, .violation = nan},
                        {.value = r, .violation = nan}};
         return rr;
     };
@@ -107,7 +110,8 @@ TEST_CASE("cluster: bounds slack in both designs do not split variants") {
     CHECK(sol[0].variants.size() == 2);
     CHECK(sol[1].members == std::vector<int>{2, 3});
     CHECK(sol[1].variants.size() == 2);
-    // Without the model the report criterion counts too: 0 and 1 differ.
+    // Without the model the report and disabled criteria count too: 0 and 1
+    // differ.
     CHECK(cluster(runs, SolverSettings{}).size() == 3);
 }
 
@@ -190,8 +194,8 @@ TEST_CASE("solve: a failed phase-2 solve at a feasible point is retried") {
     SolverSettings s = settings_from_model(*m);
     const std::vector<Start> starts = seeded_starts(*m, 937, 77);
     Evaluator ev(*m);
-    const RunResult r =
-        solve_from(*m, ev, starts[936].x, s, {}, starts[936].seed);
+    const RunResult r = solve_from(*m, ev, starts[936].x, s, {},
+                                   starts[936].seed, nullptr, starts[936].kind);
     REQUIRE(r.solves.size() >= 3);
     // The path under test: the first phase-2 solve fails while feasible.
     CHECK(r.solves[0].mode == NlpMode::Phase1);
@@ -199,6 +203,41 @@ TEST_CASE("solve: a failed phase-2 solve at a feasible point is retried") {
     CHECK(r.feasible);
     CHECK(r.exchange == ExchangeStatus::Converged);
     CHECK(r.objective == doctest::Approx(0.9058654625).epsilon(1e-8));
+}
+
+TEST_CASE("report: a disabled criterion shows its value and \"disabled\"") {
+    Json d = Json::object();
+    d["format"] = "geomsolver-instance/2";
+    d["design"] = Json{
+        {"s", Json{{"type", "scalar"}, {"min", 0}, {"max", 4}, {"value", 2}}}};
+    d["criteria"] = Json::parse(R"J([
+        {"name": "o", "expr": "s", "role": "minimize"},
+        {"name": "b", "expr": "s", "role": "max", "bound": 1, "unit": "cm",
+         "enabled": false},
+        {"name": "k", "expr": "s", "role": "min", "bound": 1}])J");
+    auto m = model_from(d);
+    Evaluator ev(*m);
+    const Check c = check(ev, m->initial_x(), verify_settings(11), {});
+    CHECK_MESSAGE(c.feasible(1e-7), "b would be violated by 1");
+    CHECK(c.v.max_violation == -1.0);
+    const std::string text = format_check(*m, c, 1e-7);
+    CHECK(text.find("  b                max       200 cm             "
+                    "disabled\n") != std::string::npos);
+    CHECK(text.find("b:bound") == std::string::npos);
+
+    RunResult r;
+    r.x = m->initial_x();
+    r.criteria = c.v.criteria;
+    r.groups = c.v.groups;
+    const Json j = run_json(*m, r);
+    const Json & b = j["criteria"]["b"];
+    CHECK(b["enabled"] == false);
+    CHECK(b["value"] == 2.0);
+    CHECK(b["display"] == 200.0);
+    CHECK_FALSE(b.contains("violation"));
+    CHECK_FALSE(b.contains("bound"));
+    CHECK(j["criteria"]["k"]["enabled"] == true);
+    CHECK(j["criteria"]["k"]["violation"] == -1.0);
 }
 
 TEST_CASE("settings: MMA and CCSAQ are replaced by SLSQP with a warning") {

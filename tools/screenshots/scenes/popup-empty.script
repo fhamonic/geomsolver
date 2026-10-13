@@ -1,0 +1,7 @@
+# Add constraint with nothing selected: the formula pop-up, empty, its
+# formula field with the keyboard.
+open tests/data/tv_corner_ref.json
+wait 16
+action formula.add_constraint
+wait 8
+shot

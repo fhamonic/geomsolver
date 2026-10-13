@@ -32,6 +32,13 @@ inline std::filesystem::path tv_file() {
 inline constexpr double kOptimum = 1.0437292638;
 inline constexpr double kDeg = 0.017453292519943295;
 
+// Default settings with a verification grid of `n` samples per sweep.
+inline SolverSettings verify_settings(int n) {
+    SolverSettings s;
+    s.verify_samples = n;
+    return s;
+}
+
 inline std::shared_ptr<Instance> tv_instance() {
     LoadResult r = Instance::load(tv_file());
     INFO(to_string(r.diagnostics));

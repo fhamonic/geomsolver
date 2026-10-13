@@ -1,6 +1,6 @@
 # Installation
 
-geomsolver is built from source, with conan 2 and GCC 15. Every library comes from conan: Dear ImGui, ImPlot, GLFW and GLEW for the window, nlohmann_json and json-schema-validator for the instance files, oneTBB for the threads, NLopt for the optimisation and doctest for the tests. The build produces two programs, the GUI `geomsolver` and the headless `geomsolver-cli`.
+geomsolver is built from source, with conan 2 and GCC 15. Every library comes from conan: Dear ImGui, ImPlot, GLFW and GLEW for the window, nlohmann_json and json-schema-validator for the instance files, NLopt for the optimisation and doctest for the tests. The build produces two programs, the GUI `geomsolver` and the headless `geomsolver-cli`.
 
 ## Prerequisites
 
@@ -34,7 +34,7 @@ CXX=/opt/gcc-15/bin/g++
 Adapt `CC` and `CXX` if your GCC 15 lives elsewhere. Check that conan resolves every dependency with it, from the repository root:
 
 ```bash
-conan graph info . -pr=gcc15_c++26 -c 'libpq/*:tools.build:cflags=["-std=gnu17"]' -s 'mesa-glu/*:compiler.cppstd=23'
+conan graph info . -pr=gcc15_c++26 -c 'libpq/*:tools.build:cflags=["-std=gnu17"]' -c 'implot/*:tools.info.package_id:confs=["user.geomsolver:imgui"]' -c 'implot/*:user.geomsolver:imgui=docking' -s 'mesa-glu/*:compiler.cppstd=23'
 ```
 
 The command lists the packages it would use, and stops with an error if a recipe cannot be resolved for this profile.
@@ -48,13 +48,16 @@ The command lists the packages it would use, and stops with an error if a recipe
 make build
 ```
 
-This runs `conan build` into `build/`, with the profile and two per-package settings:
+This runs `conan build` into `build/`, with the profile and four per-package settings:
 
 ```bash
-conan build . -of=build -b=missing -pr=gcc15_c++26 -c 'libpq/*:tools.build:cflags=["-std=gnu17"]' -s mesa-glu/*:compiler.cppstd=23
+conan build . -of=build -b=missing -pr=gcc15_c++26 -c 'libpq/*:tools.build:cflags=["-std=gnu17"]' -c 'implot/*:tools.info.package_id:confs=["user.geomsolver:imgui"]' -c 'implot/*:user.geomsolver:imgui=docking' -s mesa-glu/*:compiler.cppstd=23
 ```
 
-`-b=missing` builds from source the dependencies that conan has no binary for, so the first build takes longer. Conan also copies the Dear ImGui backends and fonts into `imgui_backends/` and `imgui_fonts/` at the repository root. `make clean` removes `build/` and `imgui_backends/`.
+`-b=missing` builds from source the dependencies that conan has no binary for, so the first build takes longer. It downloads the sources of Dear ImGui's docking branch from GitHub, so it needs network access; the binary then stays in the conan cache. Conan also copies the Dear ImGui backends and fonts into `imgui_backends/` and `imgui_fonts/` at the repository root. `make clean` removes `build/` and `imgui_backends/`.
+
+!!! warning "Keep the two `implot/*` settings"
+    geomsolver uses Dear ImGui's docking branch, `imgui/1.92.5-docking`. ImPlot's package id records only the minor version of Dear ImGui, so conan would otherwise reuse an ImPlot binary built against the regular `imgui/1.92.5`, whose internal structures have another layout. The two `implot/*` settings give ImPlot a package id of its own, and `-b=missing` builds it against the docking branch. Without them, conan stops with `Invalid: implot must be built against imgui's docking branch`.
 
 The build produces:
 
@@ -62,7 +65,7 @@ The build produces:
 | --- | --- |
 | **`build/geomsolver`** | the GUI, described in [The GUI](gui.md) |
 | **`build/geomsolver-cli`** | the headless solver, described in [The command line](cli.md) |
-| **`build/test_engine`**, **`build/test_solve`** | the unit tests |
+| **`build/test_engine`**, **`build/test_solve`**, **`build/test_app`** | the unit tests |
 
 ## 3. Run the tests
 
@@ -76,13 +79,17 @@ make test
 cd build && ctest --output-on-failure
 ```
 
-The suite has six tests:
+The suite has nine tests:
 
 | Test | What it checks |
 | --- | --- |
 | **`test_engine`** | parser, compiler, evaluator, geometry and instance files |
 | **`test_solve`** | the NLP, local runs, multistart and Pareto jobs, and the background service |
-| **`geomsolver_selftest`** | the GUI logic, headless: `geomsolver --selftest tests/data/tv_corner_ref.json` |
+| **`test_app`** | the GUI logic, headless: document edits and undo, renames, selection and deletion, the scene, the canvas's picking, clicks, drags, pan, zoom and what it draws, the solver session, the menu and keyboard actions, the dialogs' flows, change notifications, and what the panels show and do (the lists, Properties, Document, Solver, Margins, Messages, sweep bar), every section of the TV example edited from them, with a list model and a property grid as a retained toolkit would keep them |
+| **`geomsolver_selftest`** | the ImGui front-end, headless: a canvas drag and keyboard shortcuts through `geomsolver --selftest tests/data/tv_corner_ref.json` |
+| **`gui_scripts`** | the scripts of `tests/gui`, played with `geomsolver --headless` (a box selection, a context menu's Delete, a pan, F2, a constraint added through the formula pop-up...), each checked through its `--dump`, with an empty `XDG_CONFIG_HOME` that must stay empty (`tests/gui/gui_scripts.cmake`) |
+| **`gs_app_toolkit_free`** | `gs_app`, the GUI logic under the front-end, includes no GUI toolkit header (`tests/app/toolkit_free.cmake`) |
+| **`docs_screenshots`** | every screenshot a page of `docs/` shows is made by `tools/screenshots/docs.sh`, which makes no other, and `docs/assets/screenshots` holds nothing else (`docs.sh --check`) |
 | **`geomsolver_cli`** | the CLI end to end (`tests/cli/cli_checks.cmake`) |
 | **`live_instance`** | `data/tv_corner.json` loads, compiles and reaches a feasible design in an 8-start multistart |
 | **`docs_instances`** | every instance of the documentation, `docs/instances/*.json`, evaluates without a warning; the files named `*-broken.json`, wrong on purpose, are still diagnosed (`tests/docs/docs_instances.cmake`) |
@@ -107,7 +114,7 @@ Without an argument, the GUI opens `./data/tv_corner.json`. Check and solve an i
 The first command evaluates the hand-made design written in the file: it is infeasible, with a protrusion of 107.4117 cm. The second solves; the best design found protrudes 104.3729 cm.
 
 !!! note "Binaries and libstdc++"
-    A binary built with GCC 15 needs the C++ runtime of GCC 15, newer than the one of many distributions: Ubuntu 22.04's `libstdc++` stops at `GLIBCXX_3.4.30`, and the binaries ask for `GLIBCXX_3.4.32`. The build records the directory of GCC 15's `libstdc++` in the binaries (their `RUNPATH`), together with the conan directories of the shared libraries they use, such as oneTBB. The binaries therefore run in place without any environment variable, but only on a machine with the same GCC 15 and conan cache. Check what they load with:
+    A binary built with GCC 15 needs the C++ runtime of GCC 15, newer than the one of many distributions: Ubuntu 22.04's `libstdc++` stops at `GLIBCXX_3.4.30`, and the binaries ask for `GLIBCXX_3.4.32`. The build records the directory of GCC 15's `libstdc++` in the binaries (their `RUNPATH`), together with the conan directories of the shared libraries they use, such as libglvnd's `libGL` for the GUI. The binaries therefore run in place without any environment variable, but only on a machine with the same GCC 15 and conan cache. Check what they load with:
 
     ```bash
     ldd build/geomsolver-cli
@@ -144,7 +151,7 @@ The `xorg/system` recipe checks that the X11 development packages are installed.
 GLFW error 65550: X11: The DISPLAY environment variable is missing
 ```
 
-The GUI needs a display, also for `--screenshot`. Run it in a graphical session, or use `geomsolver-cli`, which needs none.
+The GUI needs a display, also for `--screenshot` and `--script`. Run it in a graphical session, or use `geomsolver-cli`, which needs none.
 
 ### `live_instance` fails
 

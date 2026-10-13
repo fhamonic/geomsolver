@@ -31,8 +31,10 @@ struct LocalSummary {
 enum class ExchangeStatus : std::uint8_t {
     Converged,            // fine-grid feasible and objective resolved
     InfeasibleOnSamples,  // the solve could not satisfy its own samples
-    // The fine-grid argmax samples are already used, or every warm re-solve
-    // of a feasible point failed (nlopt ROUNDOFF_LIMITED / FAILURE).
+    // The fine-grid argmax samples are already used, every warm re-solve of
+    // a feasible point failed (nlopt ROUNDOFF_LIMITED / FAILURE) or ran out
+    // of maxeval / maxtime, or the run keeps a feasible iterate although
+    // later solves on more samples ended infeasible.
     Stalled,
     IterationLimit,
     Stopped,
@@ -50,7 +52,9 @@ struct RunResult {
     std::string origin;  // "current", "uniform 12", "previous best", ...
     std::uint64_t seed = 0;
     // x is the best verified exchange iterate (feasible first, then best
-    // objective), usually the last one.
+    // objective), usually the last one. It need not come from x0: phase 1
+    // of a StartKind::Random start may restart from other points (one
+    // Phase1 entry in `solves` per attempt).
     std::vector<double> x0, x;
     std::vector<double> values;  // Model::values_from_x(x), SI
     // Verified on settings.verify_samples with the run's bound overrides.
@@ -60,16 +64,31 @@ struct RunResult {
     double objective = std::numeric_limits<double>::quiet_NaN();
     double max_violation = std::numeric_limits<double>::quiet_NaN();
     int worst_group = -1;
+    // Verification::max_between and worst_between_group: the worst miss
+    // between the samples of a fixed sweep, which `feasible` ignores.
+    double between_violation = std::numeric_limits<double>::quiet_NaN();
+    int between_group = -1;
     std::vector<CriterionCheck> criteria;  // aligned with Model::criteria()
     std::vector<GroupCheck> groups;        // aligned with Model::groups()
-    std::vector<LocalSummary> solves;      // phase 1 (if run), then phase 2s
+    std::vector<LocalSummary> solves;      // phase-1 attempts, then phase 2s
     ExchangeStatus exchange = ExchangeStatus::Error;
     int exchange_iterations = 0;
-    std::vector<std::vector<double>> samples;  // final normalised t per sweep
+    // Final normalised t per sweep; a fixed sweep keeps its initial ones.
+    std::vector<std::vector<double>> samples;
     long evaluations = 0, gradient_evaluations = 0, nonfinite = 0;
     bool stopped = false;
     std::string error;
     double wall_seconds = 0.0;
+};
+
+// How far phase 1 may look for a feasible point when it stops infeasible.
+enum class StartKind : std::uint8_t {
+    // A design someone chose (the current design, a previous Pareto point):
+    // retries are small kicks around it, never a restart elsewhere, or
+    // polishing it could return an unrelated design.
+    Local,
+    // A seeded uniform start: retries restart from fresh uniform points.
+    Random,
 };
 
 // One run; `ev` must be an Evaluator of `m`. Never throws for a problem
@@ -78,16 +97,19 @@ struct RunResult {
 RunResult solve_from(const Model & m, Evaluator & ev,
                      std::span<const double> x0, const SolverSettings & s,
                      std::span<const BoundOverride> bounds, std::uint64_t seed,
-                     const std::atomic<bool> * stop = nullptr);
+                     const std::atomic<bool> * stop = nullptr,
+                     StartKind kind = StartKind::Local);
 
 struct Start {
     std::vector<double> x;
     std::string origin;
     std::uint64_t seed = 0;  // nlopt::srand seed of the run
+    StartKind kind = StartKind::Local;
 };
 
-// Uniform starts in [0,1]^n. Start k depends only on (seed, k, n), so a list
-// is a prefix of any longer list with the same seed.
+// Uniform starts in [0,1]^n, of kind StartKind::Random. Start k depends only
+// on (seed, k, n), so a list is a prefix of any longer list with the same
+// seed.
 std::vector<Start> seeded_starts(const Model & m, int count,
                                  std::uint64_t seed);
 // Seed of a run that does not come from seeded_starts (current design,
@@ -141,6 +163,14 @@ MultistartResult run_starts(const Model & m, const SolverSettings & s,
 // followed by s.starts seeded starts.
 std::vector<Start> multistart_starts(const Model & m, const SolverSettings & s,
                                      std::span<const double> current_x);
+
+// The starts of Pareto point `point`: the previous point's best design (when
+// not empty), the current design (when s.include_current and current_x is
+// not empty), then `count` seeded starts of the point's own seed.
+std::vector<Start> pareto_starts(const Model & m, const SolverSettings & s,
+                                 std::span<const double> previous,
+                                 std::span<const double> current_x,
+                                 std::size_t point, int count);
 
 MultistartResult multistart(const Model & m, const SolverSettings & s,
                             std::span<const double> current_x,

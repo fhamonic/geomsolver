@@ -1,0 +1,7 @@
+# The Ranges panel with tau selected: the problem's size under the rows, and
+# the sheet of tau with its position and Play.
+open tests/data/tv_corner_ref.json
+panel ranges
+select sweep tau
+wait 16
+shot

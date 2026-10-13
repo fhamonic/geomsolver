@@ -1,0 +1,16 @@
+# Ctrl+Z in the formula pop-up, once its text field has lost the keyboard,
+# changes neither the document nor the formula typed.
+open tests/data/tv_corner_ref.json
+set params.clr=0.03
+select constraint couch
+wait 16
+action formula.edit
+wait 6
+key End
+text " + 0.1"
+wait 2
+# The status line takes the keyboard away from the field.
+click L 550 524
+wait 2
+key Z ctrl
+wait 4

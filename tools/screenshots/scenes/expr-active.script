@@ -1,0 +1,9 @@
+# couch's Edit formula... in Properties, clicked: the formula pop-up, the
+# field with the keyboard, the formula's value now and its margin.
+open tests/data/tv_corner_ref.json
+panel constraints
+select constraint couch
+wait 16
+click L 715 854
+wait 8
+shot

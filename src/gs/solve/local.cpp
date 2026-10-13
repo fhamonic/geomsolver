@@ -120,6 +120,34 @@ void merge_near_equal(double * v, std::size_t count,
     }
 }
 
+// SLSQP linearises every inequality row with no tolerance. A row that is
+// identically on its bound arrives as rounding noise: a link whose joint is
+// held at exactly link_gap from the TV that carries it has a clearance of
+// link_gap wherever the joint is the nearest feature, so its row reads about
+// +-1e-17 with a gradient of about 1e-16 in a random direction. Its
+// linearisation is then inconsistent, or a random half-space through x, and
+// SLSQP's subproblem puts a multiplier near 1e20 on it, which swamps the merit
+// function and the BFGS update: the solve stops "roundoff limited" at its
+// start, and a re-solve diverges along the unbounded epigraph variable. Such
+// a row is passed as what it is in exact arithmetic, 0 with a zero gradient.
+// Zeroing the gradient alone is not enough: a value of +1e-17 with a zero
+// gradient is still inconsistent. Only an evaluation with gradients can tell
+// these rows apart; the line search's evaluations keep the raw value, which
+// costs nothing once the row's multiplier is 0. Rows with an auxiliary column
+// (phase 1, epigraph pieces) have a -1 there and are never touched.
+constexpr double kFlatRowTol = 1e-12;
+
+void zero_flat_rows(double * v, double * jac, std::size_t count,
+                    std::size_t n) {
+    const auto flat = [](double d) { return std::fabs(d) <= kFlatRowTol; };
+    for(std::size_t i = 0; i < count; ++i) {
+        double * row = jac + i * n;
+        if(!flat(v[i]) || !std::all_of(row, row + n, flat)) continue;
+        v[i] = 0.0;
+        std::fill(row, row + n, 0.0);
+    }
+}
+
 // Evaluates the problem once per point for the objective and constraint
 // callbacks (nlopt asks for both at the same x).
 struct Driver {
@@ -174,6 +202,8 @@ struct Driver {
             bad |= replace_nonfinite(dh.data(), dh.size(), 0.0);
         }
         if(bad) ++nonfinite;
+        if(grad && opt.algorithm == Algorithm::SLSQP)
+            zero_flat_rows(g.data(), dg.data(), mi, n);
         if(opt.algorithm == Algorithm::COBYLA) {
             merge_near_equal(g.data(), mi, order);
             merge_near_equal(h.data(), me, order);

@@ -253,7 +253,8 @@ class Diagnosis:
             nxt = (f"fragile: confirm with python3 {me} {gc.shell_quote(self.args.instance)} --solve --starts {max(4 * n, 1024)} "
                    f"{flags}".rstrip() + " (or --polish) before trusting the optimum.")
         else:
-            bound_rows = [d for d in act if d["kind"] == "criterion bound" and d.get("bound") is not None]
+            bound_rows = [d for d in act if d["kind"] == "criterion bound" and d.get("role") in ("max", "min")
+                          and d.get("bound") is not None]
             if bound_rows and obj:
                 d = bound_rows[0]
                 b = d["bound"]
@@ -348,12 +349,15 @@ class Diagnosis:
             elif c["kind"] == "membership":
                 explain.append(f"  {c['name']}: the design point leaves its (non-parallelogram) domain. Enlarge the "
                                f"domain, or relax what pushes the point out.")
+            elif c.get("role") == "range":
+                explain.append(f"  {c['name']}: a range criterion, which --bound cannot move. Widen its \"bound\": "
+                               f"[lo, hi] (or the params it names), or split it into a max and a min criterion.")
         if explain:
             self.out += ["EXPLAIN (rows no flag can relax)"] + explain
 
         # candidate knobs
         order = sorted(cands.values(), key=lambda c: (-c["count"], c["first"], -c["viol_si"]))
-        probes_todo = [c for c in order if c["kind"] in ("criterion bound", "constraint")]
+        probes_todo = [c for c in order if c["kind"] in ("criterion bound", "constraint") and c.get("role") != "range"]
         knob_lines = []
         for c in probes_todo:
             if c["kind"] == "criterion bound":

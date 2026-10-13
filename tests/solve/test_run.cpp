@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
+#include "gs/solve/report.hpp"
 #include "helpers.hpp"
 
 namespace gs::test {
@@ -54,7 +56,7 @@ TEST_CASE("exchange: a run from the hand design is fine-grid feasible") {
     CHECK(samples < 40);
     CHECK(std::fabs(r.objective - kOptimum) < 1e-6);
     // A grid the exchange never saw: 8001 samples, offset from the 2001 grid.
-    const Check dense = check(ev, r.x, 8001, {}, false, true);
+    const Check dense = check(ev, r.x, verify_settings(8001), {}, false, true);
     MESSAGE("same design on 8001 samples: max violation "
             << dense.v.max_violation);
     CHECK(dense.finite);
@@ -67,6 +69,130 @@ TEST_CASE("exchange: a run from the hand design is fine-grid feasible") {
             << once.max_violation);
     CHECK_FALSE(once.feasible);
     CHECK(once.max_violation > 1e-4);
+}
+
+namespace {
+
+int phase1_solves(const RunResult & r) {
+    return static_cast<int>(std::ranges::count_if(
+        r.solves,
+        [](const LocalSummary & l) { return l.mode == NlpMode::Phase1; }));
+}
+
+}  // namespace
+
+namespace {
+
+std::shared_ptr<const Model> tv_sampled(int samples, const char * sampling) {
+    auto inst = tv_instance();
+    REQUIRE(inst->set("sweeps.tau.samples", samples));
+    REQUIRE(inst->set("sweeps.tau.sampling", sampling));
+    return compile_ok(*inst);
+}
+
+int group(const Model & m, const char * name) {
+    for(std::size_t g = 0; g < m.groups().size(); ++g)
+        if(m.groups()[g].name == name) return static_cast<int>(g);
+    FAIL("no group " << name);
+    return -1;
+}
+
+}  // namespace
+
+TEST_CASE("sampling: a fixed sweep keeps its samples and is judged on them") {
+    auto m = tv_sampled(17, "fixed");
+    const SolverSettings s = tv_settings(*m);
+    Evaluator ev(*m);
+    const RunResult r = solve_from(*m, ev, m->initial_x(), s, {}, 1);
+    MESSAGE("tau fixed at 17: objective "
+            << r.objective << ", " << exchange_name(r.exchange) << " after "
+            << r.exchange_iterations << " iterations, between samples "
+            << r.between_violation);
+    REQUIRE(r.samples.size() == 1);
+    CHECK(r.samples[0] == SampleSets::uniform(*m, 17).t[0]);
+    for(const LocalSummary & l : r.solves) CHECK(l.samples == 17);
+    CHECK(r.exchange == ExchangeStatus::Converged);
+    // Feasible on its samples while the link angle dips 0.002 deg below its
+    // bound between two of them: the miss is reported, not held against it.
+    CHECK(r.feasible);
+    const int link = group(*m, "link_angle:bound");
+    CHECK(r.between_group == link);
+    CHECK(r.between_violation > 1e-5);
+    CHECK(r.between_violation < 1e-4);
+    const GroupCheck & g = r.groups[static_cast<std::size_t>(link)];
+    CHECK(g.violation <= s.feas_tol);
+    REQUIRE(g.between);
+    CHECK(g.between->value == r.between_violation);
+    CHECK(g.between->sweep_value == doctest::Approx(0.693));
+    CHECK_FALSE(
+        r.groups[static_cast<std::size_t>(group(*m, "pivot_spacing"))].between);
+    const std::size_t angle =
+        static_cast<std::size_t>(criterion(*m, "link_angle"));
+    REQUIRE(r.criteria[angle].between);
+    CHECK(r.criteria[angle].between->value < r.criteria[angle].value);
+    CHECK_FALSE(
+        r.criteria[static_cast<std::size_t>(criterion(*m, "link_1"))].between);
+
+    // A bound override moves the between figure with the verdict.
+    const double bound = 14.9 * kDeg;
+    const BoundOverride loose{criterion(*m, "link_angle"), bound};
+    const Check c = check(ev, r.x, s, std::span(&loose, 1));
+    const double shift = bound_shift(*m, loose.criterion, bound);
+    CHECK(c.v.groups[static_cast<std::size_t>(link)].between->value ==
+          doctest::Approx(r.between_violation + shift));
+    CHECK(c.v.max_between < 0.0);
+
+    // Under adaptive sampling the same design fails the fine grid by exactly
+    // the miss reported above.
+    auto a = tv_model();
+    Evaluator ea(*a);
+    const Check fine = check(ea, r.x, tv_settings(*a), {});
+    CHECK_FALSE(fine.feasible(s.feas_tol));
+    CHECK(fine.v.max_violation == doctest::Approx(r.between_violation));
+
+    // Reports: the sweep's mode and count, the between figures apart.
+    CHECK(format_sweeps(*m, s) == "sweeps: tau fixed, 17 samples\n");
+    CHECK(format_sweeps(*a, s).empty());
+    const Json sj = sweeps_json(*m, s);
+    CHECK(sj["tau"]["sampling"] == "fixed");
+    CHECK(sj["tau"]["samples"] == 17);
+    const Json rj = run_json(*m, r);
+    CHECK(rj["between_samples"]["worst"] == "link_angle:bound");
+    CHECK(rj["between_samples"]["worst_at"] == "tau=0.693");
+    CHECK(rj["criteria"]["link_angle"].contains("between"));
+    CHECK_FALSE(rj["criteria"]["link_1"].contains("between"));
+    CHECK(rj["verification"][static_cast<std::size_t>(link)]["between"]
+            ["violation"] == r.between_violation);
+    const std::string text =
+        format_check(*m, check(ev, r.x, s, {}), s.feas_tol);
+    MESSAGE(text);
+    CHECK(text.find("criteria (2001 samples per sweep; tau on its 17 "
+                    "samples)") != std::string::npos);
+    CHECK(text.find("missed     tau=0.693") != std::string::npos);
+    CHECK(text.find("between samples: max violation 3.4") != std::string::npos);
+    CHECK(text.find("summary: feasible yes") != std::string::npos);
+}
+
+TEST_CASE("sampling: a sweep's own initial count wins over initial_samples") {
+    auto m = tv_sampled(9, "adaptive");
+    SolverSettings s = tv_settings(*m);
+    s.initial_samples = 3;
+    Evaluator ev(*m);
+    const RunResult r = solve_from(*m, ev, m->initial_x(), s, {}, 1);
+    REQUIRE_FALSE(r.solves.empty());
+    CHECK(r.solves.front().samples == 9);
+    CHECK(r.feasible);
+    CHECK(r.between_group == -1);
+    CHECK_FALSE(run_json(*m, r).contains("between_samples"));
+    // The exchange still adds samples to an adaptive sweep.
+    CHECK(r.samples[0].size() > 9);
+
+    auto d = tv_model();
+    Evaluator ed(*d);
+    const RunResult q = solve_from(*d, ed, d->initial_x(), s, {}, 1);
+    REQUIRE_FALSE(q.solves.empty());
+    CHECK(q.solves.front().samples == 3);
+    CHECK(format_sweeps(*m, s) == "sweeps: tau adaptive from 9 samples\n");
 }
 
 TEST_CASE("multistart: same seed gives the same results on 1 and 8 threads") {
@@ -98,6 +224,9 @@ TEST_CASE("multistart: same seed gives the same results on 1 and 8 threads") {
         CHECK(a.solutions[k].run == b.solutions[k].run);
         CHECK(a.solutions[k].members == b.solutions[k].members);
     }
+    // The comparison covers phase-1 restarts only if some run made them.
+    CHECK(std::ranges::any_of(
+        a.runs, [](const RunResult & r) { return phase1_solves(r) > 3; }));
     // Start k does not depend on how many starts were drawn.
     const std::vector<Start> few = seeded_starts(*m, 3, 1);
     const std::vector<Start> many = seeded_starts(*m, 30, 1);
@@ -106,6 +235,92 @@ TEST_CASE("multistart: same seed gives the same results on 1 and 8 threads") {
         CHECK(few[k].seed == many[k].seed);
     }
     CHECK(seeded_starts(*m, 1, 2)[0].x != few[0].x);
+}
+
+// Seeded starts 8 and 30 of the fixture stop phase 1 on a flat row: the
+// screen fully hidden behind the fridge (kitchen_visible 0) at the first, a
+// linkage that does not assemble at the second.
+TEST_CASE(
+    "phase 1: a random start restarts off a plateau, a local one does not") {
+    auto m = tv_model();
+    const SolverSettings s = tv_settings(*m);
+    const std::vector<Start> starts = seeded_starts(*m, 31, s.seed);
+    Evaluator ev(*m);
+    for(const std::size_t k : {8u, 30u}) {
+        CAPTURE(k);
+        const Start & st = starts[k];
+        REQUIRE(st.kind == StartKind::Random);
+        const RunResult local = solve_from(*m, ev, st.x, s, {}, st.seed);
+        const RunResult random = solve_from(*m, ev, st.x, s, {}, st.seed,
+                                            nullptr, StartKind::Random);
+        CHECK_FALSE(local.feasible);
+        CHECK(phase1_solves(local) == 3);
+        CHECK(random.feasible);
+        CHECK(std::fabs(random.objective - kOptimum) < 1e-6);
+    }
+    // The kind travels with the start through run_starts; the current
+    // design and polish are local starts.
+    const MultistartResult ms = run_starts(*m, s, {starts[8]}, {});
+    CHECK(ms.runs.front().feasible);
+    SolverSettings current_only = s;
+    current_only.starts = 0;
+    const MultistartResult cur = multistart(*m, current_only, starts[8].x);
+    REQUIRE(cur.runs.size() == 1);
+    const MultistartResult pol = polish(*m, s, starts[8].x);
+    CHECK(phase1_solves(cur.runs.front()) == 3);
+    CHECK(phase1_solves(pol.runs.front()) == 3);
+    // A random start can also stop after 3 attempts, by succeeding at the
+    // third; only a local one ends infeasible here.
+    CHECK_FALSE(cur.runs.front().feasible);
+    CHECK_FALSE(pol.runs.front().feasible);
+}
+
+TEST_CASE("starts: chosen designs are local, seeded starts random") {
+    auto m = tv_model();
+    const SolverSettings s = tv_settings(*m);
+    const std::vector<double> x = m->initial_x();
+    const std::vector<Start> ms = multistart_starts(*m, s, x);
+    REQUIRE(ms.size() == static_cast<std::size_t>(s.starts) + 1);
+    CHECK(ms[0].origin == "current");
+    CHECK(ms[0].kind == StartKind::Local);
+    const std::vector<double> previous(x.size(), 0.5);
+    const std::vector<Start> ps = pareto_starts(*m, s, previous, x, 3, 4);
+    REQUIRE(ps.size() == 6);
+    CHECK(ps[0].origin == "previous best");
+    CHECK(ps[1].origin == "current");
+    CHECK(ps[0].kind == StartKind::Local);
+    CHECK(ps[1].kind == StartKind::Local);
+    CHECK(ps[0].seed != ps[1].seed);
+    for(const std::vector<Start> * list : {&ms, &ps})
+        for(const Start & st : *list)
+            if(st.origin.starts_with("uniform")) {
+                CHECK(st.kind == StartKind::Random);
+                CHECK(st.seed != ps[0].seed);
+                CHECK(st.seed != ps[1].seed);
+            }
+}
+
+// sqrt(s - 0.5) is NaN below s = 0.5: phase 1 from s = 0.2 ends where its
+// only row is NaN, and kicks of 0.05 cannot reach s > 0.5.
+TEST_CASE("phase 1: a restart replaces an attempt that ended on a NaN row") {
+    Json d = Json::object();
+    d["format"] = "geomsolver-instance/1";
+    d["design"] = Json{
+        {"s",
+         Json{{"type", "scalar"}, {"min", 0}, {"max", 1}, {"value", 0.2}}}};
+    d["constraints"] =
+        Json::array({Json{{"name", "root"}, {"expr", "sqrt(s - 0.5) >= 0.2"}}});
+    d["criteria"] =
+        Json::array({Json{{"name", "o"}, {"expr", "s"}, {"role", "minimize"}}});
+    auto m = model_from(d);
+    Evaluator ev(*m);
+    const SolverSettings s;
+    const RunResult local = solve_from(*m, ev, m->initial_x(), s, {}, 1);
+    const RunResult random = solve_from(*m, ev, m->initial_x(), s, {}, 1,
+                                        nullptr, StartKind::Random);
+    CHECK_FALSE(local.feasible);
+    CHECK(random.feasible);
+    CHECK(random.objective == doctest::Approx(0.54).epsilon(1e-6));
 }
 
 TEST_CASE("cluster: solutions sorted feasible first, members grouped") {

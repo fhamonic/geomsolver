@@ -1,8 +1,9 @@
-.vscode
-/build
+.cache/
+.vscode/
+build/
+imgui_backends/
+site/
 *.log
 *.data
-/imgui_backends
 imgui.ini
-.cache/
-site/
+__pycache__/

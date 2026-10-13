@@ -1,4 +1,5 @@
 from conan import ConanFile
+from conan.errors import ConanInvalidConfiguration
 from conan.tools.cmake import CMake
 from conan.tools.files import copy
 
@@ -12,14 +13,29 @@ class Recipe(ConanFile):
     default_options = {"nlopt/*:enable_luksan": False}
 
     def requirements(self):
-        self.requires("imgui/1.92.5")
+        # force: implot's own imgui/1.92.5 requirement resolves to the
+        # docking branch too.
+        self.requires("imgui/1.92.5-docking", force=True)
         self.requires("implot/0.17")
         self.requires("glfw/3.4")
         self.requires("glew/2.2.0")
         self.requires("nlohmann_json/3.11.3", override=True)
         self.requires("json-schema-validator/2.3.0")
-        self.requires("onetbb/2021.12.0")
         self.requires("nlopt/2.11.0")
+
+    def validate(self):
+        # implot's package_id records only imgui's minor version: without the
+        # two implot/* confs of the Makefile, conan links a cached implot
+        # built against the regular imgui_internal.h, whose ImGuiWindow and
+        # ImGuiContext have another layout than the docking branch's.
+        implot = self.dependencies["implot"].info.conf
+        if implot.get("user.geomsolver:imgui") != "docking":
+            raise ConanInvalidConfiguration(
+                "implot must be built against imgui's docking branch: pass "
+                "-c 'implot/*:tools.info.package_id:confs="
+                "[\"user.geomsolver:imgui\"]' "
+                "-c 'implot/*:user.geomsolver:imgui=docking' (see the Makefile)"
+            )
 
     def build_requirements(self):
         self.tool_requires("cmake/3.27.1")

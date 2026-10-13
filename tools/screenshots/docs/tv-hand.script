@@ -1,0 +1,7 @@
+# The corner TV example as it loads, the hand-made design: the canvas, its
+# sweep bar and the Margins plot, Properties closed so that the plot takes
+# the width of the canvas.
+open tests/data/tv_corner_ref.json
+action view.panel.properties
+wait 29
+shot hand.ppm

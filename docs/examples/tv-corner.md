@@ -116,7 +116,7 @@ The four obstacles are pure relations, written as constraints. `"forall": "tau"`
 - **`kitchen_visible`** is `visible_fraction`: the share of the screen face that `kitchen_view` sees past the fridge, in the kitchen pose. Its unit `%` shows 0.86 as 86 %.
 - **`link_angle`** is the smallest angle between the two links over the motion. `asin(abs(sin_between(...)))` ignores the links' direction, so the value is between 0° and 90°, and the bound keeps the links from getting close to parallel.
 - **`wall_x`** and **`wall_y`** keep the TV and the moving joints `C` and `D` off the walls. Writing them as `min` criteria rather than constraints shows the gap in centimetres and lets a study move the bound.
-- **`link_1`** to **`link_2_min`** bound each length from both sides. A two-sided bound takes two criteria.
+- **`link_1`** to **`link_2_min`** bound each length from both sides, with a `max` and a `min` criterion each, so that `--bound` and a Pareto study can move either limit. One `range` criterion per link states the same limits and gives the same optimum (see [A two-sided bound](../guide/criteria.md#a-two-sided-bound)).
 - **`centred_offset`**, **`centred_angle`** and **`centre_setback`** describe the centred pose, all at the same witness `tstar`: the body's centre within 1 cm of the middle of the cabinet's front edge, the TV within 1° of parallel to that edge, and the centre at least `edge_margin` (10 cm) behind it.
 
 ### Display and solver settings
@@ -162,7 +162,7 @@ summary: feasible NO (tol 1e-07)  max violation 0.136646 (link_angle:bound at ta
 
 `--eval` exits with status 0 whatever the verdict. The GUI shows the same verdict: the canvas gets a red frame with the rows violated at the slider's position, and the margins plot below has curves under zero.
 
-![The geomsolver window on the hand design at tau = 0. The canvas has a red frame; its top-left box lists the rows violated at this position: view_couch:bound 0.131, kitchen_visible:bound 0.00195 and wall_y:bound 0.0880, in natural units. The top-right corner reads "max violation 0.137 (link_angle:bound) on 2001 samples" and "minimize protrusion = 107.4117 cm". The room is drawn in grey, the TV and its links are small in the corner at the bottom left. The margins plot below shows the link_angle curve dipping to about -0.14 around tau = 0.6, the wall_y curve below zero from tau = 0 to about 0.2 and the wall_x curve below zero around tau = 0.3 to 0.45.](../assets/screenshots/example-tv-hand.png)
+![The canvas, its sweep bar and the Margins tab on the hand design at tau = 0. The canvas has a red frame; its top-left box lists the rows violated at this position: view_couch:bound 0.131 and kitchen_visible:bound 0.00195, both at every position, and wall_y:bound 0.0880, in natural units. The top-right corner reads "max violation 0.137 (link_angle:bound) on 2001 samples" and "minimize protrusion = 107.4117 cm". The room is drawn in grey, the TV and its links are small in the corner at the bottom left. The margins plot below shows the link_angle:bound curve dipping to about -0.13 around tau = 0.6, the wall_y:bound curve below zero from tau = 0 to about 0.25 and the wall_x:bound curve slightly below zero around tau = 0.25 to 0.45.](../assets/screenshots/example-tv-hand.png)
 
 ## Solve
 
@@ -172,18 +172,17 @@ build/geomsolver-cli tests/data/tv_corner_ref.json
 
 ```text title="Output (head)"
 instance tests/data/tv_corner_ref.json  (n = 13, 23 row groups, SLSQP)
-65 of 65 runs finished, 51 feasible, 15 distinct solutions, 0.08 s on 16 threads
+65 of 65 runs finished, 65 feasible, 1 distinct solutions, 0.09 s on 16 threads
   #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
-  1    104.3729 cm        yes       8.61e-15     51    2         25 (uniform 24)    converged (4, 9)
-  2    153.0314 cm        no        0.262        1     1         12 (uniform 11)    infeasible on its samples (1, 5)
+  1    104.3729 cm        yes       8.61e-15     65    2         25 (uniform 24)    converged (4, 9)
 ```
 
-The multistart runs the instance's own design plus 64 seeded random starts. 51 of the 65 runs reach the same feasible optimum, 104.3729 cm: 3.04 cm less than the infeasible hand design. The best run needed 4 exchange iterations and ended with 9 samples of `tau`; its rows were verified on 2001.
+The multistart runs the instance's own design plus 64 seeded random starts. All 65 runs reach the same feasible optimum, 104.3729 cm: 3.04 cm less than the infeasible hand design. The best run needed 4 exchange iterations and ended with 9 samples of `tau`; its rows were verified on 2001.
 
-"2 variants" means the 51 runs ended at two different design points with the same objective and the same active bounds. The second one is listed under the table:
+"2 variants" means the 65 runs ended at two different design points with the same objective and the same active bounds. The second one is listed under the table:
 
 ```text
-  #1 run 52 (uniform 51), 22 hits: A (0.3501042, 1.059914e-05) m, B (0.04124141, 0.3038836) m, c (0.1121174, -0.08347213) m, d (-0.1616944, 0) m
+  #1 run 52 (uniform 51), 31 hits: A (0.3501042, 1.059914e-05) m, B (0.04124141, 0.3038836) m, c (0.1121174, -0.08347213) m, d (-0.1616944, 0) m
 ```
 
 It is the same linkage with links 1 and 2 swapped: `A` and `c` of one variant are `B` and `d` of the other. The labels of a four-bar are interchangeable, and the solver reaches both labellings from different starts.
@@ -217,7 +216,7 @@ Eight bounds are active: almost every requirement pushes on the protrusion. The 
 
 In the GUI, **Solve** on the Solver tab runs the same multistart and lists the same solutions; click a row to load its design. Started with `--solve`, as for this image, the GUI loads the best one by itself. The margins plot then shows the active rows touching zero:
 
-![The geomsolver window after a solve, Solver tab open. The progress bar reads 65/65 runs, the status "done | best feasible 104.37293 cm". The Solutions table lists 15 solutions; the first, 104.37293 cm, is feasible with 51 hits and a "51 (2 variants)" button, the others are infeasible. The canvas shows the solved linkage in the couch pose, with "feasible on 2001 samples" and "minimize protrusion = 104.3729 cm" in its top-right corner. In the margins plot the link_angle curve touches zero near tau = 0.69 and the wall_y curve at tau = 0.](../assets/screenshots/example-tv-solved.png)
+![The geomsolver window after a solve, Solver tab open. The progress bar reads 65/65 runs, the status "done | best feasible 104.37293 cm", then "loaded a solution (8 variables)". The Solutions table, "multistart, 1 distinct solution(s)", has one row: 104.37293 cm, feasible, worst on centred_offset:bound, with a "65 (2 variants)" button in its hits column. Elements lists the solved design points, such as A at (0.04124, 0.3039) m. The canvas shows the solved linkage in the couch pose, with "feasible on 2001 samples" and "minimize protrusion = 104.3729 cm" in its top-right corner. In the margins plot the link_angle:bound curve touches zero near tau = 0.69 and the wall_y:bound curve at tau = 0.](../assets/screenshots/example-tv-solved.png)
 
 ## The three poses
 
@@ -229,7 +228,7 @@ The images are crops of the canvas around the corner, with the ghosts turned off
 
 === "Centred pose, tau = tstar"
 
-    ![The corner at tau = 0.5617, the slider position closest to tstar = 0.5615695. The TV lies parallel to the cabinet's sloping front edge, inside the cabinet outline and centred along it, its screen normal pointing up and to the right. Link 1 (blue) goes from A on the left wall to the TV's left half, link 2 (red) from B on the bottom wall to its right half.](../assets/screenshots/example-tv-centred.png)
+    ![The corner at tau = tstar = 0.5615695. The TV lies parallel to the cabinet's sloping front edge, inside the cabinet outline and centred along it, its screen normal pointing up and to the right. Link 1 (blue) goes from A on the left wall to the TV's left half, link 2 (red) from B on the bottom wall to its right half.](../assets/screenshots/example-tv-centred.png)
 
 === "Kitchen pose, tau = 1"
 
@@ -237,24 +236,17 @@ The images are crops of the canvas around the corner, with the ghosts turned off
 
 ??? note "How these images were made"
 
-    The GUI renders a hidden window with `--screenshot`, and `--drag` moves the `tau` slider before the capture. At `--size 3200x2000`, dragging the slider's handle from (97, 1595) to x = 1344 sets `tau` to 0.5617 and to x = 2400 sets it to 1; the two clicks open the View menu and untick Ghosts:
+    `tools/screenshots/docs.sh` makes them with this script, which the GUI plays in a hidden 3200x2000 window. `action view.ghosts` unticks Ghosts as the View menu does; a <kbd>Ctrl</kbd>-click on the `tau` slider turns it into a field, where the script types the value. Each of the three images is the part of its shot from (640, 620) to (1440, 1560). The script's first shot gives the close-up of the [display guide](../guide/display.md#items-that-move), its last one the [evolved snapshot](#keeping-the-hand-made-wall-pivots) below.
 
-    ```bash
-    build/geomsolver tests/data/tv_corner_ref.json --solve --size 3200x2000 \
-        --click 58,10 --click 70,173 --screenshot couch.ppm
-    build/geomsolver tests/data/tv_corner_ref.json --solve --size 3200x2000 \
-        --drag 97,1595,1344,1595 --click 58,10 --click 70,173 --screenshot centred.ppm
-    build/geomsolver tests/data/tv_corner_ref.json --solve --size 3200x2000 \
-        --drag 97,1595,2400,1595 --click 58,10 --click 70,173 --screenshot kitchen.ppm
+    ```text title="tools/screenshots/docs/tv-corner.script"
+    --8<-- "tools/screenshots/docs/tv-corner.script"
     ```
-
-    The crops cover pixels (640, 640) to (1440, 1580) of each capture.
 
 ## What the requirements cost
 
 ### Visibility against protrusion
 
-`kitchen_visible` trades directly against the protrusion. A Pareto study bounds it at a list of values and minimises the protrusion at each one. The table below uses 64 starts per point; the default 8, which the GUI uses, gives the same optima from 78 % to 90 %.
+`kitchen_visible` trades directly against the protrusion. A Pareto study bounds it at a list of values and minimises the protrusion at each one. The table below uses 64 starts per point; the default 8, which the GUI uses, gives the same optima and the same two infeasible points.
 
 ```bash
 build/geomsolver-cli tests/data/tv_corner_ref.json --set solver.pareto_starts=64 \
@@ -264,28 +256,28 @@ build/geomsolver-cli tests/data/tv_corner_ref.json --set solver.pareto_starts=64
 | `min_visible` | Protrusion | Runs at the optimum | Cost of the last step |
 | --- | --- | --- | --- |
 | **0 %** | 97.90595 cm | 34 / 65 | |
-| **78 %** | 97.90595 cm | 27 / 66 | the unconstrained optimum already sees 78.05259 % |
-| **80 %** | 98.63135 cm | 59 / 66 | 0.36 cm per % |
-| **82 %** | 100.3329 cm | 53 / 66 | 0.85 cm per % |
-| **84 %** | 102.2104 cm | 52 / 66 | 0.94 cm per % |
-| **85 %** | 103.1457 cm | 58 / 66 | 0.94 cm per % |
-| **86 %** | 104.3729 cm | 56 / 66 | 1.23 cm per %, the default bound |
-| **88 %** | 108.2699 cm | 49 / 66 | 1.95 cm per % |
-| **90 %** | 113.2159 cm | 51 / 66 | 2.47 cm per % |
-| **90.5865 %** | 118.0077 cm | 45 / 66 | 8.17 cm per % |
+| **78 %** | 97.90595 cm | 29 / 66 | the unconstrained optimum already sees 78.05259 % |
+| **80 %** | 98.63135 cm | 66 / 66 | 0.36 cm per % |
+| **82 %** | 100.3329 cm | 66 / 66 | 0.85 cm per % |
+| **84 %** | 102.2104 cm | 66 / 66 | 0.94 cm per % |
+| **85 %** | 103.1457 cm | 66 / 66 | 0.94 cm per % |
+| **86 %** | 104.3729 cm | 66 / 66 | 1.23 cm per %, the default bound |
+| **88 %** | 108.2699 cm | 66 / 66 | 1.95 cm per % |
+| **90 %** | 113.2159 cm | 66 / 66 | 2.47 cm per % |
+| **90.5865 %** | 118.0077 cm | 64 / 66 | 8.17 cm per % |
 | **95 %**, **100 %** | infeasible | | |
 
 From the second point on, each point also starts from the previous point's best design, hence 66 runs.
 
 - **The default is the knee.** Scale both axes to [0, 1] between the unconstrained optimum (78.05259 %, 97.90595 cm) and the most visible design (90.58655 %, 118.0077 cm). The 86 % point is the farthest below the chord joining them: 0.2209, against 0.2076 at 85 % and 0.1966 at 88 %.
-- **The most visible design** sees 90.58655 % of the screen. It comes from making `kitchen_visible` the objective, with the protrusion only reported: 249 of 257 runs reach it with `--starts 256`, at a protrusion of 118.0084 cm.
+- **The most visible design** sees 90.58655 % of the screen. It comes from making `kitchen_visible` the objective, with the protrusion only reported: all 257 runs reach it with `--starts 256`, at a protrusion of 118.0084 cm.
 
     ```bash
     build/geomsolver-cli tests/data/tv_corner_ref.json --set 'criteria[0].role=report' \
         --set 'criteria[3].role=maximize' --set 'criteria[3].bound=null' --starts 256
     ```
 
-- **The setback caps visibility.** As the visibility bound rises, the centred pose moves forward: `centre_setback` is 11.82968 cm at 85 %, 10.56666 cm at 85.5 % and reaches its 10 cm bound at 86 %. Below 85 % the setback is slack and has no single value: `--bound kitchen_visible=84` ends at 102.2104 cm with 11 variants, which differ in the witness `tstar` (and in the labelling of the links) and have setbacks from 12.70107 to 13.00995 cm. Turning the setback into a reported value removes the cap: a fully visible screen is then feasible at 128.4783 cm.
+- **The setback caps visibility.** As the visibility bound rises, the centred pose moves forward: `centre_setback` is 11.82968 cm at 85 %, 10.56666 cm at 85.5 % and reaches its 10 cm bound at 86 %. Below 85 % the setback is slack and has no single value: `--bound kitchen_visible=84` ends at 102.2104 cm with 10 variants, which differ in the witness `tstar` (and in the labelling of the links) and have setbacks from 12.70107 to 13.00995 cm. Turning the setback into a reported value removes the cap: a fully visible screen is then feasible at 128.4783 cm.
 
     ```bash
     build/geomsolver-cli tests/data/tv_corner_ref.json --set 'criteria[13].role=report' \
@@ -334,7 +326,7 @@ build/geomsolver-cli tests/data/tv_corner_ref.json --fix A,B
 ```text title="Output (excerpt)"
 warning: constraints[4].expr: does not depend on any design variable: it is always satisfied or always violated
 instance tests/data/tv_corner_ref.json  (n = 9, 23 row groups, SLSQP)
-65 of 65 runs finished, 0 feasible, 34 distinct solutions, 0.05 s on 16 threads
+65 of 65 runs finished, 0 feasible, 15 distinct solutions, 0.10 s on 16 threads
 summary: feasible NO (tol 1e-07)  max violation 0.0185046 (link_angle:bound at tau=0.524)  objective 126.3692 cm
 ```
 
@@ -344,7 +336,7 @@ The warning is expected: with `A` and `B` fixed, `pivot_spacing` is a constant. 
 
 ### Why the reference is frozen
 
-`data/tv_corner.json` and `data/example_room.json` are the files you open and edit. The tests that pin numbers read the frozen copies in `tests/data` instead: the engine and solver suites, the GUI self-test (`geomsolver --selftest tests/data/tv_corner_ref.json`) and the command line checks in `tests/cli/cli_checks.cmake`. Editing the working copy therefore never breaks a test. The only test that reads `data/tv_corner.json` is `live_instance`, which asks for no particular number: the file must load, compile and reach a feasible design in an 8-start multistart.
+`data/tv_corner.json` and `data/example_room.json` are the files you open and edit. The tests that pin numbers read the frozen copies in `tests/data` instead: the engine, solver and GUI logic suites, the GUI self-test (`geomsolver --selftest tests/data/tv_corner_ref.json`) and the command line checks in `tests/cli/cli_checks.cmake`. Editing the working copy therefore never breaks a test. The only test that reads `data/tv_corner.json` is `live_instance`, which asks for no particular number: the file must load, compile and reach a feasible design in an 8-start multistart.
 
 This page follows the same rule. Its numbers come from the frozen copy, and from frozen snapshots under `docs/instances/`, so they stay true while the working copy moves on.
 
@@ -376,9 +368,9 @@ build/geomsolver-cli docs/instances/example-tv-evolved.json
 
 ```text title="Output (head)"
 instance docs/instances/example-tv-evolved.json  (n = 13, 28 row groups, SLSQP)
-65 of 65 runs finished, 46 feasible, 20 distinct solutions, 0.12 s on 16 threads
+65 of 65 runs finished, 65 feasible, 1 distinct solutions, 0.13 s on 16 threads
   #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
-  1    109.6583 cm        yes       8.98e-09     46    2         62 (uniform 61)    converged (4, 8)
+  1    109.6583 cm        yes       8.98e-09     65    2         62 (uniform 61)    converged (4, 8)
 ```
 
 ![The corner of the evolved snapshot after a solve, at tau = 0, ghosts off. The pivot zone is now a triangle along the two walls, drawn with a dashed outline. Pivot B sits on its left leg, against the wall x = 0, and pivot A on its bottom leg, near the wall y = 0; the line between them slopes down at -35 degrees. Link 2 (red) rises from B to the upper half of the TV, link 1 (blue) from A to its lower half. The TV stands steeply in the couch pose, its yellow screen normal pointing right.](../assets/screenshots/example-tv-evolved.png)
@@ -421,16 +413,16 @@ build/geomsolver-cli docs/instances/example-tv-evolved.json --set params.edge_ma
 
 | Row | Value at the best point | Bound |
 | --- | --- | --- |
-| **`link_angle`** | 14.52992° | ≥ 15° |
-| **`kitchen_visible`** | 85.54109 % | ≥ 86 % |
-| **`view_couch`**, **`view_kitchen`** | 2.167938°, 2.134434° | ≤ 2° |
-| **`centred_offset`**, **`centred_angle`** | 1.04836 cm, 1.115997° | ≤ 1 cm, ≤ 1° |
-| **`centre_setback`** | 11.83087 cm | ≥ 12 cm |
-| **`wall_y`** | 1.695688 cm | ≥ 2 cm |
-| **`link1_tv`**, **`link2_tv`** | margins −0.2561681 cm, −0.2411665 cm | ≥ 0 |
-| **`pivot_axis`** | margin −0.002523716 | = 0 |
+| **`link_angle`** | 14.56509° | ≥ 15° |
+| **`kitchen_visible`** | 85.53864 % | ≥ 86 % |
+| **`view_couch`**, **`view_kitchen`** | 2.223148°, 2.066153° | ≤ 2° |
+| **`centred_offset`**, **`centred_angle`** | 1.134447 cm, 1.033291° | ≤ 1 cm, ≤ 1° |
+| **`centre_setback`** | 11.747 cm | ≥ 12 cm |
+| **`wall_y`** | 1.858766 cm | ≥ 2 cm |
+| **`link1_tv`**, **`link2_tv`** | margins −0.2331366 cm, −0.2276277 cm | ≥ 0 |
+| **`pivot_axis`** | margin −0.002514188 | = 0 |
 
-More effort does not change the verdict: 1024 starts with `--maxeval 20000 --initial-samples 33` give 0 feasible runs, the best one still 0.00305 rad short on the link angle. A looser tolerance does change it, for the wrong reason: `--feas-tol 0.01` reports a "feasible" design at 109.0733 cm, below the true 10 cm optimum, because it accepts a link angle 0.0088 rad (0.5°) under its bound.
+More effort does not change the verdict: 1024 starts with `--maxeval 20000 --initial-samples 33` give 0 feasible runs, the best one still 0.00304 m short on the setback (11.69614 cm). A looser tolerance does change it, for the wrong reason: with `--feas-tol 0.01`, the 256-start command reports a "feasible" design at 110.0307 cm. That is less than the 111.109 cm optimum at a 10.6 cm setback, which no design with a 12 cm setback can beat, and it comes from accepting a link angle 0.0088 rad (0.5°) under its bound.
 
 Relax one requirement instead, chosen on purpose. With the 12 cm setback kept and 256 starts per point:
 

@@ -41,10 +41,18 @@ using Clock = std::chrono::steady_clock;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 // Phase 1 ends once every row holds with this margin (solver units).
 constexpr double kPhase1Target = -1e-4;
-// Extra phase-1 solves from a perturbed point when phase 1 stops infeasible:
-// a non-split abs(e) >= b row has a kink at e = 0 where SLSQP stalls.
+// Extra phase-1 solves when phase 1 stops infeasible, each kept only if it
+// ends less violated. Phase 1 stops at stationary points of the largest
+// violation, often where that row is flat (a screen fully hidden behind an
+// obstacle, a linkage that does not assemble), and a kick of kPhase1Kick
+// mostly stays on such a plateau. A local start is still only kicked that
+// far, around the best point so far: restarting it elsewhere would let
+// polishing a slightly infeasible design return an unrelated one.
 constexpr int kPhase1Retries = 2;
 constexpr double kPhase1Kick = 0.05;  // normalised coordinates
+// A random start restarts from fresh uniform points instead. A clamped kick
+// large enough to leave a plateau would pile its restarts onto the box faces.
+constexpr int kPhase1Restarts = 10;
 // A phase-2 solve that misses its own samples by less than this (solver
 // units) is only slightly off: the exchange goes on and the fine-grid check
 // decides. Giving up there instead loses SLSQP runs that end feasible.
@@ -103,6 +111,14 @@ std::vector<int> sweeps_of(const Model & m, int sweep, double t,
         if(m.sweeps()[k].value(t) == sweep_value)
             out.push_back(static_cast<int>(k));
     return out;
+}
+
+// The exchange's only way to change a sweep's samples. A fixed sweep keeps
+// its initial samples: they are the problem the user chose.
+bool add_sample(const Model & m, SampleSets & S, int sweep, double t) {
+    if(sweep < 0 || m.sweeps()[uz(sweep)].sampling == Sampling::Fixed)
+        return false;
+    return insert_sample(S.t[uz(sweep)], t);
 }
 
 LocalOptions local_options(const SolverSettings & s, const NlpProblem & P,
@@ -168,6 +184,8 @@ void fill_from_check(RunResult & r, const Model & m, const Check & c,
     r.objective = c.finite ? c.v.objective : kNaN;
     r.max_violation = c.v.max_violation;
     r.worst_group = c.v.worst_group;
+    r.between_violation = c.v.max_between;
+    r.between_group = c.v.worst_between_group;
     r.criteria = c.v.criteria;
     r.groups = c.v.groups;
 }
@@ -177,7 +195,7 @@ void fill_from_check(RunResult & r, const Model & m, const Check & c,
 RunResult solve_from(const Model & m, Evaluator & ev,
                      std::span<const double> x0, const SolverSettings & s,
                      std::span<const BoundOverride> bounds, std::uint64_t seed,
-                     const std::atomic<bool> * stop) {
+                     const std::atomic<bool> * stop, StartKind kind) {
     const auto t0 = Clock::now();
     RunResult r;
     r.seed = seed;
@@ -192,7 +210,7 @@ RunResult solve_from(const Model & m, Evaluator & ev,
     }
     for(double & v : r.x0) v = std::isfinite(v) ? std::clamp(v, 0.0, 1.0) : 0.5;
     std::vector<double> x = r.x0;
-    SampleSets S = SampleSets::uniform(m, s.initial_samples);
+    SampleSets S = SampleSets::initial(m, s.initial_samples);
 
     auto account = [&](const LocalResult & lr, NlpMode mode) {
         r.solves.push_back(summary(lr, mode, S));
@@ -214,7 +232,9 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                 NlpProblem P1(ev, S, NlpMode::Phase1, bounds);
                 double worst = P1.m_ineq() > 0 ? P1.max_row(x) : -1.0;
                 std::uint64_t kick_state = hash2(seed, 0x9ba5e1ULL);
-                for(int attempt = 0; attempt <= kPhase1Retries &&
+                const bool restart = kind == StartKind::Random;
+                const int retries = restart ? kPhase1Restarts : kPhase1Retries;
+                for(int attempt = 0; attempt <= retries &&
                                      !(worst <= s.constraint_tol) && !r.stopped;
                     ++attempt) {
                     std::vector<double> x1 = x;
@@ -223,8 +243,10 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                             const double u = static_cast<double>(
                                                  splitmix64(kick_state) >> 11) *
                                              0x1.0p-53;
-                            v = std::clamp(v + kPhase1Kick * (2.0 * u - 1.0),
-                                           0.0, 1.0);
+                            v = restart ? u
+                                        : std::clamp(
+                                              v + kPhase1Kick * (2.0 * u - 1.0),
+                                              0.0, 1.0);
                         }
                     const std::vector<double> xa = P1.start(x1);
                     LocalOptions o = local_options(s, P1, xa, seed, stop);
@@ -236,7 +258,10 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                         lr.x.begin(),
                         lr.x.begin() + static_cast<std::ptrdiff_t>(nm));
                     const double w = P1.max_row(xr);
-                    if(attempt == 0 || w < worst) {
+                    // NaN loses, as in better(): a first attempt ending on a
+                    // NaN row must not shut out every restart.
+                    if(attempt == 0 || w < worst ||
+                       (std::isnan(worst) && !std::isnan(w))) {
                         x = xr;
                         worst = w;
                     }
@@ -262,7 +287,7 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                 r.exchange_iterations = it;
                 if(lr.status == LocalStatus::Stopped) r.stopped = true;
 
-                const Check c = check(ev, x, s.verify_samples, bounds);
+                const Check c = check(ev, x, s, bounds);
                 if(!c.finite) {
                     r.exchange = ExchangeStatus::NonFinite;
                     break;
@@ -289,8 +314,12 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                 const bool may_resolve =
                     resolves < kMaxResolves &&
                     stuck_evals < kResolveBudget * s.maxeval;
+                const bool budget = lr.status == LocalStatus::MaxevalReached ||
+                                    lr.status == LocalStatus::MaxtimeReached;
                 if(feasible && add.empty()) {
-                    if(!solve_failed(lr.status)) {
+                    // A solve cut short by maxeval / maxtime has not
+                    // converged either, even at a feasible point.
+                    if(!solve_failed(lr.status) && !budget) {
                         r.exchange = ExchangeStatus::Converged;
                         break;
                     }
@@ -299,22 +328,27 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                         break;
                     }
                     ++resolves;
-                    for(double & v : x) {
-                        const double u = static_cast<double>(
-                                             splitmix64(resolve_kick) >> 11) *
-                                         0x1.0p-53;
-                        v = std::clamp(v + kResolveKick * (2.0 * u - 1.0), 0.0,
-                                       1.0);
-                    }
+                    // nlopt returns the best point it found, which after a
+                    // budget stop may be its start. Re-solving that point
+                    // would repeat the solve exactly, as it would after a
+                    // failure; a budget stop that moved resumes from there.
+                    const bool unmoved =
+                        std::equal(x.begin(), x.end(), xa.begin());
+                    if(solve_failed(lr.status) || unmoved)
+                        for(double & v : x) {
+                            const double u =
+                                static_cast<double>(splitmix64(resolve_kick) >>
+                                                    11) *
+                                0x1.0p-53;
+                            v = std::clamp(v + kResolveKick * (2.0 * u - 1.0),
+                                           0.0, 1.0);
+                        }
                     continue;
                 }
                 const double own = P2.max_row(x);
                 const bool own_ok =
                     own <= std::max(s.feas_tol, s.constraint_tol);
                 if(!own_ok) {
-                    const bool budget =
-                        lr.status == LocalStatus::MaxevalReached ||
-                        lr.status == LocalStatus::MaxtimeReached;
                     if(budget && may_resolve) {
                         ++resolves;
                         continue;
@@ -332,8 +366,7 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                         add.emplace_back(k, gc.t);
                 }
                 bool added = false;
-                for(const auto & [k, t] : add)
-                    if(k >= 0) added |= insert_sample(S.t[uz(k)], t);
+                for(const auto & [k, t] : add) added |= add_sample(m, S, k, t);
                 if(added) {
                     resolves = 0;
                     stuck_evals = 0;
@@ -346,6 +379,11 @@ RunResult solve_from(const Model & m, Evaluator & ev,
                 }
             }
             if(best) {
+                // A run that keeps a feasible iterate did not end infeasible,
+                // whatever later solves on more samples did.
+                if(r.exchange == ExchangeStatus::InfeasibleOnSamples &&
+                   best->check.feasible(s.feas_tol))
+                    r.exchange = ExchangeStatus::Stalled;
                 x = best->x;
                 verified = std::move(best->check);
             }
@@ -353,11 +391,10 @@ RunResult solve_from(const Model & m, Evaluator & ev,
         r.x = x;
         r.samples = S.t;
         if(verified) {
-            if(verified->finite)
-                verified->finite = rows_finite(ev, r.x, s.verify_samples);
+            if(verified->finite) verified->finite = rows_finite(ev, r.x, s);
             if(!verified->finite) verified->v.max_violation = kNaN;
         } else {
-            verified = check(ev, r.x, s.verify_samples, bounds, false, true);
+            verified = check(ev, r.x, s, bounds, false, true);
         }
         fill_from_check(r, m, *verified, s.feas_tol);
     } catch(const std::exception & e) {
@@ -383,6 +420,7 @@ std::vector<Start> seeded_starts(const Model & m, int count,
         for(double & v : st.x)
             v = static_cast<double>(splitmix64(state) >> 11) * 0x1.0p-53;
         st.origin = std::format("uniform {}", k);
+        st.kind = StartKind::Random;
         st.seed =
             hash2(seed ^ 0x5eed5eed5eed5eedULL, static_cast<std::uint64_t>(k));
         out.push_back(std::move(st));
@@ -405,8 +443,8 @@ bool close(double a, double b, double tol) {
     return std::fabs(a - b) <= tol * std::max(1.0, std::fabs(b));
 }
 
-// Same objective and same value of every criterion that enters the NLP,
-// except report criteria and bounds that are slack in both designs: a
+// Same objective and same value of every criterion that enters the NLP
+// (not a report or disabled one), except bounds slack in both designs: a
 // relabelled mirror image (A <-> B) swaps the values of "link_1" and
 // "link_2" without being another design. Comparing slack bounds too lists
 // that mirror as a second solution.
@@ -416,7 +454,8 @@ bool same_criteria(const RunResult & a, const RunResult & b, const Model * m,
     if(a.criteria.size() != b.criteria.size()) return false;
     for(uz c = 0; c < a.criteria.size(); ++c) {
         if(m && c < m->criteria().size() &&
-           m->criteria()[c].role == CriterionRole::Report)
+           (m->criteria()[c].role == CriterionRole::Report ||
+            !m->criteria()[c].enabled))
             continue;
         if(a.criteria[c].violation < -tol && b.criteria[c].violation < -tol)
             continue;
@@ -527,7 +566,7 @@ MultistartResult run_starts(const Model & m, const SolverSettings & s,
             RunResult r;
             try {
                 r = solve_from(m, ev, starts[k].x, s, bounds, starts[k].seed,
-                               stop);
+                               stop, starts[k].kind);
             } catch(const std::exception & e) {
                 r.error = e.what();
                 r.x0 = starts[k].x;
@@ -575,6 +614,24 @@ std::vector<Start> multistart_starts(const Model & m, const SolverSettings & s,
     return starts;
 }
 
+std::vector<Start> pareto_starts(const Model & m, const SolverSettings & s,
+                                 std::span<const double> previous,
+                                 std::span<const double> current_x,
+                                 std::size_t point, int count) {
+    std::vector<Start> starts;
+    if(!previous.empty())
+        starts.push_back(Start{{previous.begin(), previous.end()},
+                               "previous best",
+                               extra_seed(s.seed, 2 * point + 1)});
+    if(s.include_current && !current_x.empty())
+        starts.push_back(Start{{current_x.begin(), current_x.end()},
+                               "current",
+                               extra_seed(s.seed, 2 * point + 2)});
+    for(Start & st : seeded_starts(m, count, hash2(s.seed, 0x9a7e70ULL + point)))
+        starts.push_back(std::move(st));
+    return starts;
+}
+
 MultistartResult multistart(const Model & m, const SolverSettings & s,
                             std::span<const double> current_x,
                             std::span<const BoundOverride> bounds,
@@ -608,13 +665,21 @@ ParetoResult pareto(const Model & m, const SolverSettings & s,
             throw std::invalid_argument(
                 "pareto: criterion '" + m.criteria()[uz(c)].name +
                 "' has no bound (role max or min with a bound is required)");
+        if(m.criteria()[uz(c)].role == CriterionRole::Range)
+            throw std::invalid_argument(
+                "pareto: " + range_override_message(m.criteria()[uz(c)].name));
     }
-    for(const BoundOverride & b : spec.fixed_bounds)
+    for(const BoundOverride & b : spec.fixed_bounds) {
         if(b.criterion < 0 ||
            b.criterion >= static_cast<int>(m.criteria().size()) ||
            m.criteria()[uz(b.criterion)].group < 0)
             throw std::invalid_argument(
                 "pareto: bound override of a criterion without a bound");
+        if(m.criteria()[uz(b.criterion)].role == CriterionRole::Range)
+            throw std::invalid_argument(
+                "pareto: " +
+                range_override_message(m.criteria()[uz(b.criterion)].name));
+    }
     ParetoResult R;
     R.criteria = spec.criteria;
     const int per = spec.starts >= 0 ? spec.starts : s.pareto_starts;
@@ -631,18 +696,9 @@ ParetoResult pareto(const Model & m, const SolverSettings & s,
                 overrides.push_back(b);
         for(const int c : spec.criteria)
             overrides.push_back({c, spec.bounds[k]});
-        std::vector<Start> starts;
-        if(!previous.empty())
-            starts.push_back(Start{previous, "previous best",
-                                   extra_seed(s.seed, 2 * k + 1)});
-        if(s.include_current && !current_x.empty())
-            starts.push_back(Start{{current_x.begin(), current_x.end()},
-                                   "current",
-                                   extra_seed(s.seed, 2 * k + 2)});
-        for(Start & st : seeded_starts(m, per, hash2(s.seed, 0x9a7e70ULL + k)))
-            starts.push_back(std::move(st));
         MultistartResult ms =
-            run_starts(m, s, std::move(starts), overrides, stop, on_run);
+            run_starts(m, s, pareto_starts(m, s, previous, current_x, k, per),
+                       overrides, stop, on_run);
         ParetoPoint P;
         P.bound = spec.bounds[k];
         P.runs = static_cast<int>(ms.runs.size());

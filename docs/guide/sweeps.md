@@ -1,6 +1,6 @@
 # Sweeps and motion
 
-Many design requirements are about motion: a door must clear a cabinet at every opening angle, a TV must stay off the wall during its whole swing. A **sweep** is a named motion parameter, and a requirement can hold for all of its values, at its worst value, or at one chosen value. This page explains each form, the witness pattern for "somewhere along the motion", and how the solver samples a motion it cannot check continuously.
+Many design requirements are about motion: a door must clear a cabinet at every opening angle, a TV must stay off the wall during its whole swing. A **sweep** is a named motion parameter, and a requirement can hold for all of its values, at its worst value, or at one chosen value. This page explains each form, the witness pattern for "somewhere along the motion", and how the solver samples a motion it cannot check continuously, adaptively or at values you fix.
 
 The running example is a swing-arm wall lamp, seen from above. The arm turns about a pivot `H` on the wall from 20° to 160°. It must clear a plant at every angle, be over the book at *some* angle, and fold within 35 cm of the wall at rest. The objective is a shallow swing: the arm's furthest reach into the room over the motion.
 
@@ -31,7 +31,7 @@ constraints (margin = -violation, natural units; VIOLATED when the violation exc
 summary: feasible yes (tol 1e-07)  max violation 1.56582e-08 (plant at a=0.535991)  objective 83.96382 cm
 ```
 
-![The solved lamp in the GUI. Seen from above, a translucent blue arm is drawn at eight angles fanning out from the pivot H on the wall, with the arc traced by its tip. A yellow arm points at the book marker. The plant is a circle to the right, just beyond the arc traced by the tip. Below the canvas, the Margins plot shows the plant margin falling to zero near a = 0.54 and rising after. The Inspector marks the plant and over_book constraints active.](../assets/screenshots/guide-a-lamp.png)
+![The solved lamp in the GUI. On the canvas, seen from above, a translucent blue arm is drawn at eight angles fanning out from the pivot H on the wall, with the arc traced by its tip; a yellow arm, labelled "over the book", points at the book marker; the plant is a grey circle at the right edge, just beyond the arc. The top right reads "feasible on 2001 samples" and "minimize depth = 83.96382 cm", and the sweep bar shows the slider a at 0.3491, its minimum. On the right, the Variables tab lists H on its segment, L at 83.94 cm and w at 64.09 deg; below it, the Constraints tab lists plant and over_book, both active in yellow. Under the canvas, the Margins plot shows the plant margin falling to zero near a = 0.54 and rising after.](../assets/screenshots/guide-a-lamp.png)
 
 The plant constraint is active at a = 0.535991 rad (30.71°), where the arm's tip passes 3 cm from the plant. The witness `w` ends at 64.09°, where the arm reaches over the book.
 
@@ -41,7 +41,7 @@ The plant constraint is active at a = 0.535991 rad (30.71°), where the arm's ti
 --8<-- "docs/instances/guide-a-lamp.json:19:21"
 ```
 
-A sweep has a `min` and a `max`, numbers in SI units or constant expressions; `max` must be at least `min`. In expressions the sweep's name stands for its **value**, here an angle in radians from 0.349066 (20°) to 2.792527 (160°).
+A sweep has a `min` and a `max`, numbers in SI units or constant expressions; `max` must be at least `min`. In expressions the sweep's name stands for its **value**, here an angle in radians from 0.349066 (20°) to 2.792527 (160°). Two optional keys, `samples` and `sampling`, set how the solver samples it: see [fixed sampling](#fixed).
 
 Internally the solver samples every sweep in **normalised t** ∈ [0, 1], with value = min + t · (max − min). You meet t only in results files (the `t` of a criterion or row, the exchange samples). Everything you type and read in the CLI and GUI is the value:
 
@@ -128,9 +128,12 @@ Which forms are allowed depends on the direction. The rule: an aggregate may onl
 | **criterion, role `report`**, any aggregate | shown only | allowed |
 | **`max_over(s, f) >= b`**, **`min_over(s, f) <= b`**, any `==` with a plain side `b` | "somewhere along the motion" | error: use a [witness](#witnesses) |
 | **criterion, role `max` on `min_over`**, **role `min` on `max_over`** | the same, as a bound | error: use a witness |
+| **criterion, role `range`**, on either aggregate | one of its two bounds "somewhere" | error: use a witness |
 | **any other pair of aggregates**, such as `max_over(s, f) <= max_over(s, g)`, `min_over(s, f) >= min_over(s, g)` or an `==` between two aggregates | at least one side asks for "somewhere" | compiles **without a warning**, but that side is evaluated on the solver's samples only, which are never refined for it; use a witness |
 
-The last row is a trap: `max_over(a, max_y(arm)) <= max_over(a, max_x(arm))`, added to the lamp, compiles silently. Its right side is the largest value of `max_x(arm)` over the current samples, five at first, not over the motion. Write "somewhere" with a witness, `max_over(a, max_y(arm)) <= at(a = v, max_x(arm))`, so that the solver moves the pose `v` instead.
+In a [two-sided relation](constraints.md#two-sided-relations), each of the two comparisons follows the table: `max_over(s, f) <= m <= hi` is allowed, `lo <= max_over(s, f) <= hi` is the "somewhere" error.
+
+The last row of the table is a trap: `max_over(a, max_y(arm)) <= max_over(a, max_x(arm))`, added to the lamp, compiles silently. Its right side is the largest value of `max_x(arm)` over the current samples, five at first, not over the motion. Write "somewhere" with a witness, `max_over(a, max_y(arm)) <= at(a = v, max_x(arm))`, so that the solver moves the pose `v` instead.
 
 Writing the plant constraint as `min_over(a, clearance(arm, plant)) >= gap`, without `forall`, gives the same rows and the same result (83.96382 cm, 65 of 65 runs).
 
@@ -185,7 +188,7 @@ Rules for witnesses:
 
 The solver cannot check a requirement at infinitely many poses. It works with samples, and adds them where they matter:
 
-1. Each local solve sees every for-all row and worst-case objective at the **samples** of its sweep. There are `initial_samples` of them at first (5, evenly spaced: t = 0, 0.25, 0.5, 0.75, 1).
+1. Each local solve sees every for-all row and worst-case objective at the **samples** of its sweep. There are `initial_samples` of them at first (5, evenly spaced: t = 0, 0.25, 0.5, 0.75, 1), or the sweep's own [`samples`](#fixed).
 2. The result is checked on the **fine grid**: `verify_samples` evenly spaced positions (2001).
 3. For every row group violated on the fine grid by more than `feas_tol`, and for a worst-case objective that is worse on the grid than on the samples by more than `feas_tol`, the worst grid position is added to the samples.
 4. The solve restarts from where it stopped, until the fine grid finds nothing (`converged`) or `max_exchange_iterations` (40) is reached.
@@ -197,12 +200,12 @@ Without the exchange, the solver would trust its five samples. One exchange iter
 ```text title="geomsolver-cli docs/instances/guide-a-lamp.json --set solver.max_exchange_iterations=1 (excerpt)"
 65 of 65 runs finished, 0 feasible, 1 distinct solutions, 0.00 s on 16 threads
   #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
-  1    75.57984 cm        no        0.159        65    1         41 (uniform 40)    iteration limit (1, 7)
+  1    75.57984 cm        no        0.159        65    1         27 (uniform 26)    iteration limit (1, 7)
 ...
   plant                          -0.1591749         VIOLATED   a=0.672824
 ```
 
-Every run ends with the arm passing 12.9 cm into the plant at 38.55°, between the samples at 20° and 55°. More evenly spaced samples help only slowly. Trying 9, 17, 33 and so on up to 2001 samples (`--initial-samples N` with one iteration), 513 still leave the best design 2.9 µm too close to the plant, above `feas_tol`; 1025 is the first count for which a run passes the check, and the best such run is 85.44702 cm. The exchange gets 83.96382 cm with 10.
+Every run ends with the arm passing 12.9 cm into the plant at 38.55°, between the samples at 20° and 55°. More evenly spaced samples help only slowly. Trying 9, 17, 33 and so on up to 2001 samples (`--initial-samples N` with one iteration), 513 and 1025 still leave the best design 2.9 µm too close to the plant, above `feas_tol`; no run passes the check before 2001, where the samples are the fine grid itself (83.96383 cm). The exchange gets 83.96382 cm with 10.
 
 What this means for you:
 
@@ -216,11 +219,63 @@ Read the **exchange** column of the solutions table before you trust a solution.
 | Status | What happened | What to do |
 | --- | --- | --- |
 | **`converged`** | The local solve converged and the fine grid found nothing to add. | Nothing: the result is checked. |
-| **`infeasible on its samples`** | The local solve could not satisfy its rows even at its own samples. | Nothing for that run: the start was in a bad region. If every run ends this way, see [troubleshooting](troubleshooting.md#no-feasible-design-the-over-constraint-signature). |
-| **`stalled`** | Either the design is feasible on the fine grid but the local solver kept stopping without reporting convergence, or the grid's worst pose is already a sample, so the exchange cannot add it. | Look at the `feasible` column. A feasible stalled solution is a valid design whose objective may not be fully converged: trust it when other runs reach the same value, or load it in the GUI and click **Polish**. An infeasible one is not a design. |
+| **`infeasible on its samples`** | The local solve could not satisfy its rows even at its own samples, and no earlier iterate of the run was feasible. | Nothing for that run: the start was in a bad region. If every run ends this way, see [troubleshooting](troubleshooting.md#no-feasible-design-the-over-constraint-signature). |
+| **`stalled`** | The design is feasible on the fine grid, but the local solve and every warm re-solve stopped without converging (a failure, or the `maxeval` or `maxtime` budget); or the grid's worst pose is already a sample, so the exchange cannot add it; or a later solve on more samples ended infeasible, and the run kept its best feasible iterate. | Look at the `feasible` column. A feasible stalled solution is a valid design whose objective may not be fully converged: trust it when other runs reach the same value, or load it in the GUI and click **Polish**. An infeasible one is not a design. |
 | **`iteration limit`** | `max_exchange_iterations` (40) was reached while samples were still being added. | Check the worst row on the Margins plot before trusting it. |
 
 The [CLI reference](../reference/cli.md#output) lists the rarer statuses: `stopped`, `non-finite`, `no variables` and `error`.
+
+### Fixed sampling {#fixed}
+
+Two keys of a sweep change how the solver samples it:
+
+| Key | Values | Default | Effect |
+| --- | --- | --- | --- |
+| **`samples`** | integer, 1 to 1000000 | `solver.initial_samples` | The sweep's initial samples, evenly spaced. It wins over `initial_samples` and `--initial-samples`. |
+| **`sampling`** | `"adaptive"` or `"fixed"` | `"adaptive"` | `adaptive`: the exchange above adds samples. `fixed`: the samples are the problem. |
+
+They need `"format": "geomsolver-instance/2"`. The GUI (the sheet of a range in Properties) and the CLI's `--set` raise the format for you, with a note; see [format versions](../reference/instance.md#format). In the GUI, choosing `adaptive` removes `sampling`, the default, and the Document panel offers to go back to `/1` once no key needs `/2`.
+
+With `"sampling": "fixed"`, the sweep keeps exactly its `samples` for the whole solve, and the exchange never adds one. Every requirement over that sweep is judged on those values only. That covers a `forall` row, a bound on a `max_over` or `min_over`, and a worst-case objective. The fine grid is still evaluated, but only to report what happens between the samples, never to decide feasibility. The lamp with 17 fixed angles, one every 8.75°:
+
+```text title="geomsolver-cli docs/instances/guide-a-lamp.json --set sweeps.a.samples=17 --set sweeps.a.sampling=fixed"
+note: --set sweeps.a.samples: "format" raised to "geomsolver-instance/2", which sweeps.a.samples requires
+instance docs/instances/guide-a-lamp.json  (n = 3, 3 row groups, SLSQP)
+sweeps: a fixed, 17 samples
+65 of 65 runs finished, 65 feasible, 1 distinct solutions, 0.00 s on 16 threads
+  #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
+  1    83.92222 cm        yes       1.65e-10     65    1         56 (uniform 55)    converged (1, 17)
+
+best solution (run 56, uniform 55)
+design
+  H          (1.111778, 0) m
+  L          83.92222 cm
+  w          64.11375 deg
+criteria (2001 samples per sweep; a on its 17 samples)
+  name             role      value              bound / where
+  depth            minimize  83.92222 cm        at a=1.5708  between samples 83.94604 cm at a=1.54636
+  rest_depth       max       30.58248 cm        <= 35 cm  ok
+constraints (margin = -violation, natural units; VIOLATED when the violation exceeds 1e-07)
+  name                           margin             status     worst at
+  plant                          3.053113e-16       ok         a=0.501782
+  over_book                      -1.647938e-10      ok         
+  rest_depth:bound               4.417523 cm        ok         
+between the samples of fixed sweeps (2001 samples per sweep; reported only, feasibility is judged on the samples)
+  name                           margin             status     worst at
+  plant                          -0.0001767252      missed     a=0.488343
+summary: feasible yes (tol 1e-07)  max violation 1.64794e-10 (over_book)  objective 83.92222 cm
+between samples: max violation 0.000176725 (plant at a=0.488343)
+```
+
+How to read it:
+
+- **`converged (1, 17)`**: one local solve, on the 17 samples it started with.
+- **The plant is active at the sample 28.75°** (a = 0.501782). Between that sample and the one at 20°, at 27.98°, the arm passes 0.18 mm into its 3 cm clearance. That is the `missed` row and the last line. It does not make the design infeasible: you asked for 17 angles.
+- **The objective is the sampled one.** `depth` is the deepest reach at the 17 angles. Between them, at 88.6°, the arm reaches 83.94604 cm. With the default adaptive sampling, the same instance gives 83.96382 cm, and nothing is missed on the fine grid.
+
+Use fixed sampling when the motion really stops only at evenly spaced values: a hinge with detents, a shelf with a row of holes. Use it also to see what a coarse sampling would accept. Otherwise keep the default: the exchange is what makes a result hold between the samples. A fixed sweep's own `samples` set the problem, so raising `verify_samples` changes only the report.
+
+In the GUI, the Margins plot draws a fixed sweep's curves through its samples only, with a marker on each. A criterion over the sweep shows its value between the samples next to its value. A constraint's status adds the miss when it exceeds `feas_tol` ("missed ... between samples"). The [CLI reference](../reference/cli.md#output) lists the `between` fields of the results file.
 
 ## Several sweeps {#several}
 

@@ -147,7 +147,7 @@ TEST_CASE("compile: keys with no effect warn, \"weight\" is an error") {
                       "ignored for role \"minimize\""));
     CHECK(has_warning(r.diagnostics, "criteria[1].weigth",
                       "unknown key 'weigth' (ignored); a criterion has the "
-                      "keys bound, expr, name, note, role, unit"));
+                      "keys bound, enabled, expr, name, note, role, unit"));
     CHECK(has_warning(r.diagnostics, "criteria[1].bound",
                       "ignored for role \"report\""));
 
@@ -296,6 +296,74 @@ TEST_CASE("compile: one objective, minimize or maximize") {
     auto none = compile_ok(*instance_from(rules_doc()));
     CHECK(none->objective() == -1);
     CHECK(none->objective_sign() == 1.0);
+}
+
+TEST_CASE(
+    "compile: a disabled criterion is evaluated, never bounded or "
+    "optimised") {
+    Json d = with_criteria(R"J([
+        {"name": "o", "expr": "s", "role": "minimize", "enabled": false},
+        {"name": "w", "expr": "-s", "role": "maximize"},
+        {"name": "b", "expr": "s", "role": "max", "bound": 1, "enabled": false},
+        {"name": "g", "expr": "max_over(tau, s * tau)", "role": "max",
+         "bound": 1, "enabled": false},
+        {"name": "k", "expr": "s", "role": "min", "bound": 1}])J");
+    d["format"] = "geomsolver-instance/2";
+    const CompileResult r = compile(*instance_from(d));
+    CHECK_MESSAGE(r.diagnostics.empty(), to_string(r.diagnostics));
+    REQUIRE(r.ok());
+    const Model & m = *r.model;
+    CHECK_MESSAGE(m.objective() == 1,
+                  "a second objective is legal while the first is disabled");
+    CHECK(m.nlp_layout(SampleSets::uniform(m, 5)).objective.size() == 1);
+    for(const CriterionInfo * c :
+        {&m.criteria()[0], &m.criteria()[2], &m.criteria()[3]}) {
+        CAPTURE(c->name);
+        CHECK_FALSE(c->enabled);
+        CHECK(c->group == -1);
+    }
+    REQUIRE(m.groups().size() == 1);
+    CHECK(m.groups()[0].name == "k:bound");
+
+    // s = 2: b would be violated by 1, g (4 at tau = 2) by 3.
+    Evaluator ev(m);
+    const Verification V = ev.verify(m.initial_x(), 5);
+    CHECK(V.criteria[2].value == 2.0);
+    CHECK(V.criteria[3].value == 4.0);
+    CHECK(V.criteria[3].sweep_value == 2.0);
+    CHECK(std::isnan(V.criteria[2].violation));
+    CHECK(std::isnan(V.criteria[3].violation));
+    CHECK(V.criteria[4].violation == -1.0);
+    CHECK(V.max_violation == -1.0);
+    CHECK(V.feasible(1e-7));
+    CHECK(V.objective == -2.0);
+    const std::vector<CriterionCheck> cc =
+        ev.criteria(m.initial_x(), SampleSets::uniform(m, 5));
+    CHECK(cc[3].value == 4.0);
+    CHECK(std::isnan(cc[3].violation));
+
+    // The other order, and the disabled objective alone.
+    std::swap(d["criteria"][0], d["criteria"][1]);
+    CHECK(compile_ok(*instance_from(d))->objective() == 0);
+    d["criteria"] = Json::array({d["criteria"][1]});
+    auto none = compile_ok(*instance_from(d));
+    CHECK(none->objective() == -1);
+    CHECK(none->nlp_layout(SampleSets::uniform(*none, 5)).objective.empty());
+    CHECK(Evaluator(*none).verify(none->initial_x(), 5).objective == 0.0);
+}
+
+TEST_CASE(
+    "compile: a disabled criterion reports the errors of an enabled one") {
+    Json d = with_criteria(R"J([
+        {"name": "b", "expr": "nope", "role": "max", "bound": 1,
+         "enabled": false},
+        {"name": "a", "expr": "min_over(tau, s * tau)", "role": "max",
+         "bound": 1, "enabled": false}])J");
+    d["format"] = "geomsolver-instance/2";
+    const std::vector<Diagnostic> ds = compile_errors(d);
+    CHECK(has_error(ds, "criteria[0].expr", "unknown name 'nope'"));
+    CHECK(has_error(ds, "criteria[1].expr",
+                    "with role \"max\", min_over(tau, f) <= b only asks"));
 }
 
 TEST_CASE(

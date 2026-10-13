@@ -1,0 +1,8 @@
+# The door of the CLI reference, solved, as `--solve --tab solver --size
+# 1400x850 --screenshot` shows it.
+size 1400 850
+open docs/instances/ref-door.json
+solve
+panel solver
+wait 29
+shot door.ppm

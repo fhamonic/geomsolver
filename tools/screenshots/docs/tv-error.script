@@ -1,0 +1,15 @@
+# The couch constraint with an unknown name in its formula: Messages, the
+# status bar, the constraint excluded in its row, and its sheet with the
+# error, in a taller bottom row: the canvas fits the design again.
+open tests/data/tv_corner_ref.json
+set constraints[0].expr=clearance(tv, couh) >= clr
+select constraint couch
+panel messages
+# The border between the canvas and the panels under it, dragged up; the
+# pointer then leaves it, which would stay highlighted.
+drag L 300 691 300 600
+move 1590 10
+wait 4
+action view.fit_design
+wait 25
+shot error.ppm

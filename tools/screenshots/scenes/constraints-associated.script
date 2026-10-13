@@ -1,0 +1,10 @@
+# Constraints with Associated on, after a click on A: pivot_spacing uses A
+# directly; the clearances, faded, use it through lets.
+open tests/data/tv_corner_ref.json
+panel constraints
+select design A
+wait 16
+click L 1162 559
+move 800 10
+wait 4
+shot

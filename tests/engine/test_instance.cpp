@@ -82,7 +82,7 @@ TEST_CASE("instance: load with include") {
 
 TEST_CASE("instance: schema errors are reported with JSON paths") {
     Json d = base_doc();
-    d["format"] = "geomsolver-instance/2";
+    d["format"] = "geomsolver-instance/3";
     d["params"] = Json::object({{"W", true}});
     d["design"] = Json::parse(R"J({
         "A": {"type": "point"},
@@ -101,8 +101,8 @@ TEST_CASE("instance: schema errors are reported with JSON paths") {
     for(const Diagnostic & x : ds) MESSAGE(x.to_string());
     // A wrong constant or type names what was expected and what was given.
     CHECK(has_error(ds, "format",
-                    "expected \"geomsolver-instance/1\", got "
-                    "\"geomsolver-instance/2\""));
+                    "expected one of geomsolver-instance/1, "
+                    "geomsolver-instance/2"));
     CHECK(has_error(ds, "params.W",
                     "expected a number or a string, got a boolean"));
     CHECK(has_error(ds, "design.A", "required property 'domain' not found"));
@@ -129,7 +129,8 @@ TEST_CASE("instance: schema errors are reported with JSON paths") {
     const LoadResult er = Instance::from_json(e, "mem.json");
     for(const Diagnostic & x : er.diagnostics) MESSAGE(x.to_string());
     CHECK(has_error(er.diagnostics, "criteria[0].role",
-                    "expected one of minimize, maximize, max, min, report"));
+                    "expected one of minimize, maximize, max, min, range, "
+                    "report"));
     CHECK(has_error(er.diagnostics, "design.s.unit",
                     "expected one of deg, rad, m, cm, mm, %"));
     CHECK(has_error(er.diagnostics, "geometry.g.type",
@@ -144,8 +145,140 @@ TEST_CASE("instance: schema errors are reported with JSON paths") {
         has_error(tr.diagnostics, "let.k", "expected a string, got a number"));
 }
 
+TEST_CASE("instance: keys new in format /2 need it, and writers raise it") {
+    Json d = base_doc();
+    d["format"] = "geomsolver-instance/2";
+    d["sweeps"]["tau"]["samples"] = 9;
+    d["sweeps"]["tau"]["sampling"] = "fixed";
+    CHECK(compile_ok(*instance_from(d))->sweeps().size() == 1);
+
+    // The schema accepts the keys in either format; compile() refuses them
+    // in a /1 document.
+    d["format"] = "geomsolver-instance/1";
+    const std::vector<Diagnostic> c1 = compile(*instance_from(d)).diagnostics;
+    for(const Diagnostic & x : c1) MESSAGE(x.to_string());
+    CHECK(has_error(c1, "sweeps.tau.samples",
+                    "\"samples\" requires \"format\": "
+                    "\"geomsolver-instance/2\""));
+    CHECK(has_error(c1, "sweeps.tau.sampling",
+                    "\"sampling\" requires \"format\": "
+                    "\"geomsolver-instance/2\""));
+
+    Json bad = base_doc();
+    bad["format"] = "geomsolver-instance/2";
+    bad["sweeps"]["tau"]["samples"] = 0;
+    bad["sweeps"]["tau"]["sampling"] = "uniform";
+    const LoadResult rb = Instance::from_json(bad, "mem.json");
+    for(const Diagnostic & x : rb.diagnostics) MESSAGE(x.to_string());
+    CHECK(has_error(rb.diagnostics, "sweeps.tau.samples", ""));
+    CHECK(has_error(rb.diagnostics, "sweeps.tau.sampling",
+                    "expected one of adaptive, fixed"));
+    bad["sweeps"]["tau"]["samples"] = 2.5;
+    CHECK(has_error(Instance::from_json(bad, "mem.json").diagnostics,
+                    "sweeps.tau.samples", "expected an integer"));
+
+    const std::shared_ptr<Instance> w = instance_from(base_doc());
+    Instance & inst = *w;
+    std::string err, note = "stale";
+    REQUIRE(inst.set("sweeps.tau.max", 2, &err, &note));
+    CHECK(note.empty());
+    CHECK(inst.doc()["format"] == "geomsolver-instance/1");
+    CHECK(format2_keys(inst.doc()).empty());
+    REQUIRE(inst.set(".sweeps.tau.samples", 9, &err, &note));
+    CHECK(inst.doc()["format"] == "geomsolver-instance/2");
+    CHECK(note.find("sweeps.tau.samples") != std::string::npos);
+    CHECK(format2_keys(inst.doc()) ==
+          std::vector<std::string>{"sweeps.tau.samples"});
+    CHECK(compile(inst).ok());
+    // A whole entry written at once carries its new keys with it.
+    REQUIRE(inst.set("format", "geomsolver-instance/1"));
+    REQUIRE(inst.erase("sweeps.tau.samples"));
+    REQUIRE(
+        inst.set("sweeps.tau",
+                 Json::object({{"min", 0}, {"max", 1}, {"sampling", "fixed"}}),
+                 &err, &note));
+    CHECK(inst.doc()["format"] == "geomsolver-instance/2");
+    CHECK(note.find("sweeps.tau.sampling") != std::string::npos);
+    // Setting "format" itself is taken as written, even when the document
+    // then no longer compiles.
+    REQUIRE(inst.set("format", "geomsolver-instance/1", &err, &note));
+    CHECK(note.empty());
+    CHECK(inst.doc()["format"] == "geomsolver-instance/1");
+    CHECK_FALSE(compile(inst).ok());
+}
+
+TEST_CASE("instance: a display item's \"visible\" needs no format /2") {
+    Json d = base_doc();
+    d["display"] = Json::parse(R"J([
+        {"expr": "vec(0, 0)", "visible": false},
+        {"expr": "vec(1, 0)"}
+    ])J");
+    const std::shared_ptr<Instance> inst = instance_from(d);
+    const CompileResult r = compile(*inst);
+    CHECK_MESSAGE(r.diagnostics.empty(), to_string(r.diagnostics));
+    REQUIRE(r.ok());
+    CHECK_FALSE(r.model->display()[0].visible);
+    CHECK(r.model->display()[1].visible);
+
+    // Listed by the schema, so the CLI's --set does not warn about it.
+    CHECK(schema_lists_key("display[1].visible"));
+    std::string err, note = "stale";
+    REQUIRE(inst->set("display[1].visible", false, &err, &note));
+    CHECK(note.empty());
+    CHECK(inst->doc()["format"] == "geomsolver-instance/1");
+
+    d["display"][0]["visible"] = 0;
+    CHECK(has_error(Instance::from_json(d, "mem.json").diagnostics,
+                    "display[0].visible", "expected true or false"));
+}
+
+TEST_CASE("instance: a criterion's \"enabled\": false needs format /2") {
+    Json d = base_doc();
+    d["criteria"] = Json::parse(R"J([
+        {"name": "k", "expr": "2", "role": "max", "bound": 3, "enabled": true}
+    ])J");
+    const CompileResult on = compile(*instance_from(d));
+    CHECK_MESSAGE(on.diagnostics.empty(), to_string(on.diagnostics));
+    CHECK(on.ok());
+
+    d["criteria"][0]["enabled"] = false;
+    CHECK(has_error(compile(*instance_from(d)).diagnostics,
+                    "criteria[0].enabled",
+                    "\"enabled\" requires \"format\": "
+                    "\"geomsolver-instance/2\""));
+    d["format"] = "geomsolver-instance/2";
+    const CompileResult off = compile(*instance_from(d));
+    CHECK_MESSAGE(off.diagnostics.empty(), to_string(off.diagnostics));
+    REQUIRE(off.ok());
+    CHECK_FALSE(off.model->criteria()[0].enabled);
+
+    CHECK(schema_lists_key("criteria[0].enabled"));
+    d["format"] = "geomsolver-instance/1";
+    d["criteria"][0].erase("enabled");
+    const std::shared_ptr<Instance> inst = instance_from(d);
+    std::string err, note = "stale";
+    REQUIRE(inst->set("criteria[0].enabled", true, &err, &note));
+    CHECK(note.empty());
+    CHECK(inst->doc()["format"] == "geomsolver-instance/1");
+    REQUIRE(inst->set("criteria[0].enabled", false, &err, &note));
+    CHECK(inst->doc()["format"] == "geomsolver-instance/2");
+    CHECK(note.find("criteria[0].enabled") != std::string::npos);
+    CHECK(compile(*inst).ok());
+    REQUIRE(inst->set("format", "geomsolver-instance/1"));
+    const Json entry = *inst->get("criteria[0]");
+    REQUIRE(inst->set("criteria[0]", entry, &err, &note));
+    CHECK_MESSAGE(inst->doc()["format"] == "geomsolver-instance/2",
+                  "a whole entry written at once carries its new keys");
+
+    d["criteria"][0]["enabled"] = "no";
+    CHECK(has_error(Instance::from_json(d, "mem.json").diagnostics,
+                    "criteria[0].enabled", "expected true or false"));
+}
+
 TEST_CASE("instance: schema_lists_key tells a listed key from a new one") {
     CHECK(schema_lists_key("design.A.fixed"));
+    CHECK(schema_lists_key("sweeps.tau.samples"));
+    CHECK(schema_lists_key("sweeps.tau.sampling"));
     CHECK(schema_lists_key("criteria[3].bound"));
     CHECK(schema_lists_key("criteria[3]"));
     CHECK(schema_lists_key("solver.pareto_starts"));
@@ -256,6 +389,40 @@ TEST_CASE("instance: edit, recompile, keep the last good model") {
     REQUIRE(inst->erase("let.extra"));
     CHECK(inst->get("let.extra") == nullptr);
     CHECK_FALSE(inst->erase("let.extra"));
+}
+
+TEST_CASE("instance: restore puts back an earlier document") {
+    TempDir tmp;
+    const std::filesystem::path room = room_file().filename();
+    std::filesystem::copy_file(tv_file(), tmp.path / "tv_corner.json");
+    std::filesystem::copy_file(room_file(), tmp.path / room);
+    LoadResult r = Instance::load(tmp.path / "tv_corner.json");
+    REQUIRE(r.ok());
+    auto inst = r.instance;
+    const Json original = inst->doc();
+    REQUIRE(inst->includes().size() == 1);
+
+    REQUIRE(inst->set("params.clr", 0.05));
+    REQUIRE(inst->set("constraints[0].enabled", false));
+    inst->restore(original, false);
+    CHECK(inst->doc() == original);
+    CHECK_FALSE(inst->dirty());
+    CHECK(inst->path() == tmp.path / "tv_corner.json");
+    inst->restore(original, true);
+    CHECK(inst->dirty());
+
+    // With the room file gone, only a restore that changes "include" sees it.
+    std::filesystem::remove(tmp.path / room);
+    inst->restore(original, false);
+    CHECK(inst->includes().size() == 1);
+    CHECK(inst->include_diagnostics().empty());
+    compile_ok(*inst);
+    REQUIRE(inst->set("include", Json::array()));
+    CHECK(inst->includes().empty());
+    inst->restore(original, false);
+    CHECK(inst->includes().empty());
+    REQUIRE(inst->include_diagnostics().size() == 1);
+    CHECK(inst->include_diagnostics()[0].message.starts_with("cannot open"));
 }
 
 TEST_CASE(

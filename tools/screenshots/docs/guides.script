@@ -1,0 +1,55 @@
+# The instances of the guides, each solved but the domains: one shot each.
+open docs/instances/guide-a-domains.json
+panel variables
+select design P_nook
+wait 16
+action view.fit_all
+wait 13
+shot domains.ppm
+open docs/instances/guide-a-lamp.json
+solve
+panel constraints
+wait 29
+shot lamp.ppm
+open docs/instances/guide-a-include.json
+solve
+wait 16
+action view.fit_all
+wait 13
+shot kitchen.ppm
+open docs/instances/guide-a-chain.json
+solve
+wait 16
+# The th slider, Ctrl-clicked to type its value; the pointer then leaves
+# it, which would stay highlighted.
+click L 400 671 ctrl
+wait 2
+text "2.75"
+key Enter
+move 1590 10
+wait 16
+shot chain.ppm
+open docs/instances/guide-a-flap.json
+solve
+wait 16
+click L 400 671 ctrl
+wait 2
+text "0.62"
+key Enter
+move 1590 10
+wait 16
+shot flap.ppm
+open docs/instances/guide-b-study.json
+solve
+wait 29
+shot study.ppm
+# The naive rows, solved from the file's own design, as the CLI does.
+open docs/instances/guide-b-study.json
+set constraints[0].expr=clearance(desk, room) <= -gap
+set constraints[1].enabled=false
+set constraints[2].enabled=false
+set constraints[3].enabled=false
+set constraints[4].expr=clearance(chair, room) <= -gap
+solve
+wait 29
+shot study-naive.ppm

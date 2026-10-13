@@ -45,7 +45,7 @@ constexpr const char * kInstance = R"JSON({
   "type": "object",
   "required": ["format"],
   "properties": {
-    "format": {"const": "geomsolver-instance/1"},
+    "format": {"enum": ["geomsolver-instance/1", "geomsolver-instance/2"]},
     "description": {"type": "string"},
     "include": {"type": "array", "items": {"type": "string"}},
     "params": {"type": "object", "patternProperties": {"": {"$ref": "#/definitions/number_or_expr"}}},
@@ -80,7 +80,9 @@ constexpr const char * kInstance = R"JSON({
         "required": ["min", "max"],
         "properties": {
           "min": {"$ref": "#/definitions/number_or_expr"},
-          "max": {"$ref": "#/definitions/number_or_expr"}
+          "max": {"$ref": "#/definitions/number_or_expr"},
+          "samples": {"type": "integer", "minimum": 1, "maximum": 1000000},
+          "sampling": {"enum": ["adaptive", "fixed"]}
         }
       }}
     },
@@ -107,12 +109,15 @@ constexpr const char * kInstance = R"JSON({
         "properties": {
           "name": {"type": "string"},
           "expr": {"type": "string"},
-          "role": {"enum": ["minimize", "maximize", "max", "min", "report"]},
-          "bound": {"$ref": "#/definitions/number_or_expr"},
+          "role": {"enum": ["minimize", "maximize", "max", "min", "range", "report"]},
+          "bound": {"anyOf": [{"$ref": "#/definitions/number_or_expr"},
+                              {"type": "array", "items": {"$ref": "#/definitions/number_or_expr"},
+                               "minItems": 2, "maxItems": 2}]},
           "unit": {"$ref": "#/definitions/unit"},
+          "enabled": {"type": "boolean"},
           "note": {"type": "string"}
         },
-        "allOf": [{"if": {"properties": {"role": {"enum": ["max", "min"]}}}, "then": {"required": ["bound"]}}]
+        "allOf": [{"if": {"properties": {"role": {"enum": ["max", "min", "range"]}}}, "then": {"required": ["bound"]}}]
       }
     },
     "display": {
@@ -127,7 +132,8 @@ constexpr const char * kInstance = R"JSON({
           "width": {"type": "number", "minimum": 0},
           "label": {"type": "string"},
           "ghosts": {"type": "integer", "minimum": 0, "maximum": 1000},
-          "trace": {"type": "boolean"}
+          "trace": {"type": "boolean"},
+          "visible": {"type": "boolean"}
         }
       }
     },
@@ -363,6 +369,26 @@ bool schema_lists_key(const std::string & parent_pointer,
         return true;
     return !node->contains("properties") &&
            !node->contains("patternProperties");
+}
+
+std::vector<std::string> format2_keys(const nlohmann::ordered_json & doc) {
+    std::vector<std::string> out;
+    if(!doc.is_object()) return out;
+    if(doc.contains("sweeps") && doc["sweeps"].is_object())
+        for(const auto & [name, s] : doc["sweeps"].items()) {
+            if(!s.is_object()) continue;
+            for(const char * key : {"samples", "sampling"})
+                if(s.contains(key))
+                    out.push_back(std::format("sweeps.{}.{}", name, key));
+        }
+    if(doc.contains("criteria") && doc["criteria"].is_array())
+        for(std::size_t i = 0; i < doc["criteria"].size(); ++i) {
+            const nlohmann::ordered_json & c = doc["criteria"][i];
+            if(c.is_object() && c.contains("enabled") &&
+               c["enabled"].is_boolean() && !c["enabled"].get<bool>())
+                out.push_back(std::format("criteria[{}].enabled", i));
+        }
+    return out;
 }
 
 std::vector<Diagnostic> validate_instance_schema(

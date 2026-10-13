@@ -235,7 +235,7 @@ TEST_CASE("service: a result loads into the edited instance") {
     REQUIRE(inst->set("params.clr", 0.02));
     auto loaded = compile_ok(*inst);
     Evaluator ev(*loaded);
-    const Check c = check(ev, loaded->initial_x(), 2001, {});
+    const Check c = check(ev, loaded->initial_x(), verify_settings(2001), {});
     CHECK(c.feasible(1e-7));
     CHECK(c.v.objective == doctest::Approx(best->objective).epsilon(1e-12));
 }

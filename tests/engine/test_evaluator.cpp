@@ -149,6 +149,114 @@ TEST_CASE("evaluator: Jacobian of a model wider than one dual pass (n = 40)") {
     CHECK(r0.g_jac.empty());
 }
 
+namespace {
+
+// tau fixed at t = 0, 0.5, 1, where sin(4 pi tau) is 0 and
+// sqrt(abs(tau - 0.25) - 0.1) is defined; in between the sine reaches 1 at
+// tau = 0.125 and the root is NaN around 0.25. u is adaptive.
+Json fixed_doc() {
+    Json d = base_doc();
+    d["format"] = "geomsolver-instance/2";
+    d["sweeps"]["tau"]["samples"] = 3;
+    d["sweeps"]["tau"]["sampling"] = "fixed";
+    d["sweeps"]["u"] = Json{{"min", 0}, {"max", 1}};
+    d["design"] = Json::parse(
+        R"J({"s": {"type": "scalar", "min": 0, "max": 1, "value": 0.5}})J");
+    d["constraints"] = Json::parse(R"J([
+        {"name": "bump", "forall": "tau", "expr": "sin(4 * pi * tau) <= s"},
+        {"name": "pair",
+         "expr": "max_over(tau, sin(4 * pi * tau)) <= min_over(u, s + u)"},
+        {"name": "free", "forall": "u", "expr": "u <= s + 1"},
+        {"name": "hole", "forall": "tau",
+         "expr": "sqrt(abs(tau - 0.25) - 0.1) >= -s"}
+    ])J");
+    d["criteria"] = Json::parse(R"J([
+        {"name": "peak", "expr": "max_over(tau, sin(4 * pi * tau))",
+         "role": "report"},
+        {"name": "top", "expr": "max_over(u, u * s)", "role": "report"}
+    ])J");
+    return d;
+}
+
+// A verify() call with two counts, written for the verdict, would bind the
+// uniform check with curves = true and judge a fixed sweep on the uniform
+// grid.
+template <class E>
+concept verify_takes_two_counts =
+    requires(E & e, std::span<const double> x) { e.verify(x, 2001, 9); };
+static_assert(!verify_takes_two_counts<Evaluator>);
+
+}  // namespace
+
+TEST_CASE("evaluator: a fixed sweep is judged on its samples only") {
+    auto m = compile_ok(*instance_from(fixed_doc()));
+    Evaluator ev(*m);
+    const std::vector<double> x = m->initial_x();
+    const Verification V = ev.verdict(x, 2001, 9, true);
+    REQUIRE(V.t.size() == 2);
+    CHECK(V.t[0] == std::vector<double>{0.0, 0.5, 1.0});
+    CHECK(V.t[1].size() == 2001);
+    const GroupCheck & bump = V.groups[0];
+    CHECK(bump.curve.size() == 3);
+    CHECK(bump.violation == doctest::Approx(-0.5));
+    REQUIRE(bump.between);
+    CHECK(bump.between->value == doctest::Approx(0.5));
+    CHECK(bump.between->sweep_value == doctest::Approx(0.125));
+    // An aggregate row has no sweep of its own: its max_over of tau makes it
+    // a fixed-sweep group all the same.
+    const GroupCheck & pair = V.groups[1];
+    CHECK(pair.violation == doctest::Approx(-0.5));
+    REQUIRE(pair.between);
+    CHECK(pair.between->value == doctest::Approx(0.5));
+    CHECK_FALSE(V.groups[2].between);
+    CHECK(V.groups[2].curve.size() == 2001);
+    // NaN between the samples is reported, not hidden by the max.
+    CHECK(std::isfinite(V.groups[3].violation));
+    REQUIRE(V.groups[3].between);
+    CHECK(std::isnan(V.groups[3].between->value));
+    CHECK(std::isnan(V.max_between));
+    CHECK(V.worst_between_group == 3);
+    REQUIRE(V.criteria[0].between);
+    CHECK(V.criteria[0].value == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(V.criteria[0].between->value == doctest::Approx(1.0));
+    CHECK_FALSE(V.criteria[1].between);
+
+    // The plain uniform verification ignores the sweep's sampling.
+    const Verification U = ev.verify(x, 2001, true);
+    CHECK(U.t[0].size() == 2001);
+    CHECK_FALSE(U.groups[0].between);
+    CHECK(U.groups[0].violation == doctest::Approx(0.5));
+    CHECK(U.worst_between_group == -1);
+
+    // Without a sampling key the count comes from the caller: the solver's
+    // initial_samples.
+    Json d = fixed_doc();
+    d["sweeps"]["tau"].erase("samples");
+    auto m2 = compile_ok(*instance_from(d));
+    CHECK(SampleSets::verdict(*m2, 2001, 9).t[0].size() == 9);
+    CHECK(SampleSets::verdict(*m2, 2001, 9).t[1].size() == 2001);
+    CHECK(SampleSets::initial(*m2, 9).t[1].size() == 9);
+    CHECK(SampleSets::initial(*m, 9).t[0].size() == 3);
+}
+
+TEST_CASE("evaluator: without a fixed sweep the verdict is the uniform check") {
+    auto m = compile_ok(*tv_instance());
+    Evaluator ev(*m);
+    const std::vector<double> x = m->initial_x();
+    const Verification a = ev.verify(x, 401, true);
+    const Verification b = ev.verdict(x, 401, 7, true);
+    CHECK(SampleSets::initial(*m, 7).t == SampleSets::uniform(*m, 7).t);
+    CHECK(SampleSets::verdict(*m, 401, 7).t == SampleSets::uniform(*m, 401).t);
+    CHECK(a.max_violation == b.max_violation);
+    CHECK(a.worst_group == b.worst_group);
+    REQUIRE(a.groups.size() == b.groups.size());
+    for(std::size_t g = 0; g < a.groups.size(); ++g) {
+        CHECK(a.groups[g].curve == b.groups[g].curve);
+        CHECK_FALSE(b.groups[g].between);
+    }
+    CHECK(b.worst_between_group == -1);
+}
+
 TEST_CASE("compile: warnings do not block compilation") {
     Json d = base_doc();
     d["design"] = Json::parse(

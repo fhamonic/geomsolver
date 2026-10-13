@@ -32,7 +32,7 @@
     {"name": "desk_height", "expr": "abs(H.y - desk_top) <= desk_tol", "note": "top of the open desk between 72 and 76 cm"},
     {"name": "chain", "expr": "dist(E, at(a = 0, front)) == chain_len", "note": "the chain is taut when the desk is open"},
     {"name": "reach", "expr": "max_over(a, max_y(board)) >= 1.3"},
-    {"name": "height_range", "expr": "72cm <= H.y <= 76cm"}
+    {"name": "height_range", "expr": "H.y >= 72cm <= 76cm"}
   ],
   "criteria": [
     {"name": "depth", "expr": "w", "role": "maximize", "unit": "cm"},

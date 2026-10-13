@@ -36,8 +36,10 @@ One JSON object. Only `format` is required; section order does not matter.
 
 ## 2. Sections and keys
 
-Top level: `format` (exactly `"geomsolver-instance/1"`), `description`, `include`, `params`, `geometry`,
-`design`, `sweeps`, `let`, `constraints`, `criteria`, `display`, `solver`. Any other top-level key is kept
+Top level: `format`, `description`, `include`, `params`, `geometry`, `design`, `sweeps`, `let`, `constraints`,
+`criteria`, `display`, `solver`. `format` is `"geomsolver-instance/1"`, or `"geomsolver-instance/2"` when a sweep
+uses `samples` or `sampling` or a criterion has `"enabled": false` (a `/1` file with one of these does not
+compile; `--set` raises the format itself and prints a `note:`). Any other top-level key is kept
 and ignored, with no warning: a misspelt `"constraint"` silently drops every constraint. Unknown keys in
 `design`, `sweeps` and `geometry` entries (`"fix"`, `"units"`, `"radius"`) are dropped silently too; check the
 spelling against the tables below (`scripts/check.py` lists them under LINT).
@@ -81,13 +83,23 @@ flags the implausible cases under LINT.
 | --- | --- | --- |
 | `box(...)`, `rect(...)`, `rect` geometry, any parallelogram | 2 | none (exact) |
 | `segment(p, q)` or a 2-point open polyline | 1 | none (exact) |
+| a parallelogram with exactly ONE side of zero length (`box(-0.35, -0.02, -0.05, -0.02)`), a polygon flat along x or y | 1 (a segment) | none (exact) |
+| a single point (`box(1, 1, 1, 1)`, `segment(p, p)`, `circle(c, 0)`) | 0: the variable is fixed at that point | none |
 | other polygon (triangle, non-convex) or circle | 2 (bounding box) | `<name> in domain` |
 
-A polyline of 3+ points (open) and a point are NOT domains. Domains are constant: no design variable inside.
+Zero length means within 1e-12, relative. A 1-coordinate point is printed `P (x, y)` like any point; `--out`
+names its coordinate `P` instead of `P.u`, `P.v`. `data/tv_corner.json` holds its TV-side joints `c`, `d` on
+zero-height boxes: n = 11, not 13. A polyline of 3+ points (open) and a lone point (`vec(...)`) are NOT
+domains. Domains are constant: no design variable inside.
 
 **sweeps**: `name -> {"min": ..., "max": ...}`, both required, number or constant expr, max >= min.
 A sweep is a motion parameter; reports print its value (`a=0.535991`). Choose `[0, 1]` when the motion has
-no natural parameter. `note` is accepted.
+no natural parameter. `note` is accepted. Two optional keys need `"format": "geomsolver-instance/2"`:
+`samples` (integer >= 1, the sweep's initial samples; wins over `solver.initial_samples`) and `sampling`
+(`"adaptive"`, the default, or `"fixed"`). A fixed sweep keeps exactly its samples: every requirement over it
+is judged on them only, and a miss between them is reported (`between samples:` line, `missed` rows, JSON
+`between`) but never makes the design infeasible. Use it only when the motion really stops at those evenly
+spaced values (detents); otherwise leave the default.
 
 **let**: `name -> "expression string"` (never a bare number: write `"0.5"`). Any type. May use every
 name, other lets in any order, design variables, and at most ONE free sweep. No cycles.
@@ -97,7 +109,7 @@ name, other lets in any order, design variables, and at most ONE free sweep. No 
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | unique among constraints |
-| `expr` | yes | relation `a <= b`, `a >= b` or `a == b`; both sides Scalar |
+| `expr` | yes | relation `a <= b`, `a >= b`, `a == b`, or two-sided `lo <= e <= hi`; every side Scalar |
 | `forall` | no | one sweep name: the relation holds at every value of it |
 | `enabled` | no | `false` = compiled but adds no row (default true) |
 | `note` | no | free text |
@@ -110,16 +122,19 @@ Any other key (`unit`, `weight`, `for_all`) gets a warning and is ignored.
 | --- | --- | --- |
 | `name` | yes | unique among criteria; used by `--bound`, `--pareto` |
 | `expr` | yes | Scalar expression, NO comparison; may be a whole `max_over`/`min_over` |
-| `role` | yes | `minimize`, `maximize`, `max`, `min`, `report` |
-| `bound` | for `max`, `min` | a param name or a string with the unit (`"75cm"`, `"86%"`); a bare number is SI |
+| `role` | yes | `minimize`, `maximize`, `max`, `min`, `range`, `report` |
+| `bound` | for `max`, `min`, `range` | a param name or a string with the unit (`"75cm"`, `"86%"`); a bare number is SI. `range`: `["L_min", "L_max"]` |
 | `unit` | no | display unit of value and bound (`deg rad m cm mm %`) |
+| `enabled` | no | `false` = compiled and reported (`disabled`), but no bound row and never the objective (default true); needs format `/2` |
 | `note` | no | free text |
 
+At most one ENABLED criterion has role `minimize` or `maximize`: a disabled second objective is legal.
+
 **display** (GUI only, does not affect the solve): list of `{expr (required), color "#RRGGBB" or
-"#RRGGBBAA" (default "#3b6fb6"), fill (false), width (1), label, ghosts (0..1000), trace (false)}`.
+"#RRGGBBAA" (default "#3b6fb6"), fill (false), width (1), label, ghosts (0..1000), trace (false), visible (true)}`.
 
 **solver** (defaults): `algorithm "SLSQP"` (or `"COBYLA"`), `starts 64`, `seed 1`, `threads 0` (all cores),
-`phase1 true`, `initial_samples 5`, `verify_samples 2001`, `max_exchange_iterations 40`,
+`phase1 true`, `initial_samples 5` (a sweep's own `samples` wins), `verify_samples 2001`, `max_exchange_iterations 40`,
 `feas_tol 1e-07`, `maxeval 3000`, `maxtime 0`, `xtol_rel 1e-07`, `constraint_tol 1e-08`,
 `include_current true`, `cluster_x_tol 0.001`, `cluster_f_tol 1e-06`, `pareto_starts 8`.
 An unknown key or bad value is skipped with a warning. Never raise `feas_tol`.
@@ -153,7 +168,7 @@ Types: **Scalar**, **Vec** (point or vector), **Polygon** (closed, 3+ vertices, 
 
 | Precedence (low to high) | Operators |
 | --- | --- |
-| 1 | `<=`, `>=`, `==` (`<` means `<=`, `>` means `>=`): one, at the top of a constraint only |
+| 1 | `<=`, `>=`, `==` (`<` means `<=`, `>` means `>=`): at the top of a constraint only; one, or two the same way (`lo <= e <= hi`) |
 | 2 | `+`, `-` (left to right) |
 | 3 | `*`, `/` (left to right) |
 | 4 | unary `-` (looser than `^`: `-2^2` = `-4`) |
@@ -245,7 +260,7 @@ An expression that depends on a sweep must say which values of the sweep it mean
 | criterion role `max` on `max_over`, role `min` on `min_over` | bounded worst case | OK |
 | criterion `minimize max_over(...)`, `maximize min_over(...)` | optimise the worst case | OK |
 | `max_over(s, f) >= b`, `min_over(s, f) <= b`, any `== b` | "at some s" | COMPILE ERROR: use a witness |
-| criterion role `max` on `min_over`, `min` on `max_over` | "at some s" | COMPILE ERROR: use a witness |
+| criterion role `max` on `min_over`, `min` on `max_over`, `range` on either | "at some s" | COMPILE ERROR: use a witness |
 | `2 * max_over(...)`, `max_over` inside `abs()` | aggregate inside an expression | COMPILE ERROR |
 | `max_over` together with `"forall"` | | COMPILE ERROR |
 
@@ -264,6 +279,7 @@ narrower) and write `at(s = w, f) <= b`. Conditions that must hold at the SAME m
 | `minimize` / `maximize` | THE objective; at most one per instance (none = find any feasible design) | none |
 | `max` | `expr <= bound` | `<name>:bound` |
 | `min` | `expr >= bound` | `<name>:bound` |
+| `range` | `lo <= expr <= hi`, `"bound": [lo, hi]`; refused by `--bound` and `--pareto` | `<name>:bound`, rows `(lo)`, `(hi)` |
 | `report` | shown only | none |
 
 - A constraint `a <= b` becomes the row g = a - b <= 0; the printed **margin** is -g (positive = room to
@@ -271,12 +287,18 @@ narrower) and write `at(s = w, f) <= b`. Conditions that must hold at the SAME m
   units (m, rad, or none). Constraint margins print in SI; `:bound` margins in the criterion's unit.
 - `abs(e) <= b` (or `b >= abs(e)`, or role `max` on `abs(e)`) at the top is split into the two smooth rows
   `e <= b` and `-e <= b`. `abs(e) >= b`, `abs(e) == b` and role `min` on `abs` are not split.
-- One comparison only: `72cm <= H.y <= 76cm` is an error. Write `abs(H.y - 74cm) <= 2cm` or two rows.
+- Two-sided: `72cm <= H.y <= 76cm` (or `76cm >= H.y >= 72cm`) is ONE constraint, one group with the rows
+  `(lo)` and `(hi)`; its margin is the worse side's. Both comparisons point the same way, `==` is never
+  chained. A `max_over` side must be bounded from above only (`max_over(s, f) <= m <= hi` is OK,
+  `lo <= max_over(s, f) <= hi` is the "at some s" error), a `min_over` side from below only.
 - `==` is an equality row: use only for real physics (a taut chain, two points on one axis).
 - Implicit rows (you cannot disable them): `assembly of <let>` for every `dyad` used by a constraint,
   bound or objective (`assembly #k` when not held by a let; ` at tau=...` copies for each `at()`), and
-  `<name> in domain` for a point whose domain is not a parallelogram or segment.
+  `<name> in domain` for a point whose domain is not a parallelogram or segment (nor flat, see section 2).
 - A constraint that depends on no design variable gets the warning "always satisfied or always violated".
+  As an equality it also stops every SLSQP solve (its row has no gradient): the warning then ends with
+  "and as an equality it stops every SLSQP solve; disable it". Disable it (`"enabled": false`) or unfix
+  a variable it uses.
 
 ## 8. Where the details are
 

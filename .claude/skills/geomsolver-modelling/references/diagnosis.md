@@ -41,8 +41,13 @@ Fix LINT items first. The raw commands are given too, so every step can be run b
    - ONE or two rows violated by a LARGE amount: either that requirement is impossible (check its
      geometry with `--probe`), or the starts miss the feasible region: try `--starts 512`, narrower
      domains, or `--eval` on a hand-made design that you believe is feasible.
-   - EVERY run ends with the same violation of the same row: that row has no slope from the starts
-     (a body stuck through an obstacle). Narrow the domains/ranges or give a feasible `value`.
+   - EVERY run ends with the same violation of the same row: phase 1 (which minimises the largest
+     violation) stops where that row is flat, e.g. a screen fully hidden behind an obstacle
+     (`visible_fraction` is 0 all around) or a linkage that does not assemble. A seeded start that
+     ends there already restarts phase 1 from up to 10 fresh uniform points, so a flat region that
+     catches every run covers most of the domains: narrow the domains/ranges or give a feasible
+     `value`. The run from the written design and `--polish` only retry twice, moved by up to 0.05
+     (they must stay near that design): from a design on such a plateau, run a multistart instead.
 
 ## 2. Commands
 
@@ -77,8 +82,10 @@ All messages below were printed by the CLI for broken copies of `assets/template
 | Message (as printed) | Meaning | Fix |
 | --- | --- | --- |
 | `parse error at line 14, column 18: syntax error while parsing object key - unexpected ','` | invalid JSON | fix the comma, quote or bracket at that line/column |
-| `criteria[0].role: expected one of minimize, maximize, max, min, report` | misspelt value (`maximise`) | use a listed value |
-| `criteria[1]: required property 'bound' not found in object` | role `max`/`min` without `bound` | add `"bound"` or change the role |
+| `criteria[0].role: expected one of minimize, maximize, max, min, range, report` | misspelt value (`maximise`) | use a listed value |
+| `criteria[1]: required property 'bound' not found in object` | role `max`/`min`/`range` without `bound` | add `"bound"` or change the role |
+| `criteria[1].bound: role "range" takes two bounds: "bound": [lo, hi]` | one bound for `range` | `"bound": ["L_min", "L_max"]`, or role `max`/`min` |
+| `criteria[1].bound: role "max" takes one bound; a pair [lo, hi] is for role "range"` | a pair for `max`/`min` | role `range`, or one bound |
 | `design.L.value: no subschema has succeeded, but one of them is required to validate` | `value` with a unit (`"60cm"`) | plain SI number: `0.6` |
 | `design.H.value: unexpected instance type` | point value is not `[x, y]` | write `[x, y]` |
 | `let.k: expected a string, got a number` | a let must be a string | `"k": "0.5"`, or make it a param |
@@ -89,8 +96,10 @@ All messages below were printed by the CLI for broken copies of `assets/template
 | `depends on sweep 'a': wrap it in max_over(a, ...) / min_over(a, ...) or fix the sweep with at()` | criterion uses the motion | `max_over`/`min_over` around the WHOLE expression, or `at()` |
 | `max_over(a, f) >= b only asks for f >= b at one of the solver's samples` | "at some point" written with an aggregate | witness: design scalar `w` (sweep's range), `at(a = w, f) >= b` |
 | `with role "min", max_over(a, f) >= b only asks for` | same, as a criterion | witness, or role `max` on `max_over` |
-| `only one comparison is allowed` | `a <= x <= b` | `abs(x - mid) <= half`, or two rows |
-| `a second objective (the first is criteria[0])` | two `minimize`/`maximize` | keep one; the others role `max`/`min` (bound) or `report` |
+| `the two comparisons of a chain must point the same way` | `a <= x >= b` | `a <= x <= b` (lowest first) or `b >= x >= a` |
+| `'==' cannot be chained`, `at most two comparisons are allowed` | `a == x <= b`, `a <= x <= b <= c` | one two-sided relation per constraint |
+| `the two comparisons of this chain run over different sweeps` (or `... between two max_over/min_over sides ...`) | a chain whose sides repeat differently | two constraints |
+| `a second objective (the first is criteria[0])` | two enabled `minimize`/`maximize` | keep one; the others role `max`/`min` (bound), `report`, or `"enabled": false` |
 | `"weight" is no longer supported` | weighted objective | bound the secondary goal; trade off with `--pareto` |
 | `unknown name 'plnt'` | typo or undefined name (case-sensitive) | fix the name or define it |
 | `unknown function 'distance'` | not a builtin | see `references/language.md` section 5 (`dist`) |
@@ -116,13 +125,16 @@ All messages below were printed by the CLI for broken copies of `assets/template
 | `warning: constraints[0].for_all: unknown key 'for_all' (ignored)` | misspelt key: the requirement is LOST | fix the key (`forall`) |
 | `"forall" has no effect` | relation does not use that sweep | remove `forall`, or fix the expression |
 | `does not depend on any design variable: it is always satisfied or always violated` | all its variables are fixed (or none used) | unfix, or delete the row |
+| `this comparison does not depend on any design variable: it is always satisfied or always violated` | one comparison of a chain is between two constants (`clearance(arm, plant) >= gap >= 0`, at the column of the second `>=`) | drop that comparison, or put the expression that varies in the middle |
+| `does not depend on any design variable: it is always satisfied or always violated, and as an equality it stops every SLSQP solve; disable it` | the same on an `==` constraint: its row has no gradient, so every SLSQP solve stops where it started (`minimal.json` plus `pi == pi`: 54 distinct solutions instead of 5, every feasible run `stalled`) | `"enabled": false`, or unfix a variable it uses |
 | `the witness 'w' ranges over [0, 3.14159]` | witness range exceeds the sweep | give `w` the sweep's `min`/`max` |
 | `lies 0.175 above the range [0.349066, 2.79253] of 'a': the body is extrapolated beyond the motion` | constant `at()` pose outside the sweep | use a value inside the range |
-| `warning: criteria[0].bound: ignored for role "maximize"` | bound on an objective/report | remove it, or role `max`/`min` |
+| `warning: criteria[0].bound: ignored for role "maximize"` | bound on an objective/report | remove it, or role `max`/`min`/`range` |
 | `warning: constraints[0].unit: ignored` | constraints have no unit | make it a criterion (role `max`/`min`, `unit`) |
 | `the branch of dyad() depends on sweep 'tau'` | branch may flip during the motion | `branch_of(at(tau = 0, K1), at(tau = 0, K2), p0)` |
 | `warning: solver.start: unknown setting (ignored)` | misspelt solver key | see language.md section 2 |
 | `geomsolver-cli: criterion 'length' has no bound (role max or min)` | `--bound`/`--pareto` on an objective | use a `max`/`min` criterion |
+| `geomsolver-cli: criterion 'len' has two bounds (role range)` | `--bound`/`--pareto` on a `range` | write it as a `max` and a `min` criterion to move one limit |
 | `warning: --set params.gapp: the instance had no such key, so it was added (check the spelling)` | `--set` path typo: nothing changed | fix the path |
 | `--set constraints[5].expr: 'constraints[5].expr': index 5 out of range` | index past the end | count entries (append = length) |
 | `--write-instance: no feasible solution to write` | nothing feasible (exit 1) | diagnose first (section 5) |
@@ -131,27 +143,34 @@ All messages below were printed by the CLI for broken copies of `assets/template
 
 ```text
 instance minimal.json  (n = 2, 2 row groups, SLSQP)
-65 of 65 runs finished, 29 feasible, 11 distinct solutions, 0.01 s on 16 threads
+65 of 65 runs finished, 61 feasible, 5 distinct solutions, 0.01 s on 16 threads
   #    objective          feasible  max viol     hits  variants  best run           exchange (iterations, samples)
-  1    98.59876 cm        yes       2.82e-14     22    1         2 (uniform 1)      converged (4, 9)
+  1    98.59876 cm        yes       3.42e-14     47    1         55 (uniform 54)    converged (3, 8)
 ```
 
 - `n` = solver coordinates; `row groups` = constraints + `:bound` groups + implicit rows.
-- `29 feasible` of 65 runs; `hits` = runs that ended at this solution. Feasible solutions come first, best first.
+- `61 feasible` of 65 runs; `hits` = runs that ended at this solution. Feasible solutions come first, best first.
 - `variants` > 1: same objective, different design: a relabelled linkage (A<->B, c<->d), a variable the
   optimum leaves free, or another design. `--out` lists them under `variant_designs`.
 - Then the best solution: `design` (display units), `criteria` (value, bound, `ok`/`VIOLATED`, where),
   `constraints` (margin = minus violation: positive = room, about 0 = ACTIVE, negative = violated), `summary`.
 - Margins of constraints and implicit rows are SI (m, rad); margins of `name:bound` rows are in the
   criterion's unit. `-1e-16` is rounding: `ok`. Feasible means no violation above 1e-7 in SI.
+- A row that sits exactly on its bound by construction prints such a margin: in `data/tv_corner.json`
+  the joints `c`, `d` are held at exactly `link_gap` behind the TV, so `link1_tv` and `link2_tv` print
+  about `-1.8e-16`, active, at every feasible design. That is harmless: SLSQP gets an inequality row whose
+  value and every derivative are within 1e-12 of 0 as exactly 0, with a zero gradient (as rounding
+  noise, such a row would stop the solve where it started). Equalities are not covered: an equality
+  that depends on no design variable gets the warning "... as an equality it stops every SLSQP
+  solve" (section 3).
 - `[N evaluations with non-finite values or derivatives]` after the exchange column: NaN appeared
   (e.g. `normalize` of a zero vector, a dyad near a dead centre). Harmless if the run converged.
 
 | Exchange status | Meaning | Do |
 | --- | --- | --- |
 | `converged` | feasible on the 2001-sample grid, objective resolved | trust it |
-| `infeasible on its samples` | that run could not satisfy its rows | nothing, unless every run says it (go to 5) |
-| `stalled` | stopped without convergence, or worst pose already sampled | trust only if `feasible yes` and other runs agree; try `--polish` |
+| `infeasible on its samples` | that run never had a feasible iterate | nothing, unless every run says it (go to 5) |
+| `stalled` | a feasible point that re-solves did not turn into a converged one (NLopt failure, or `maxeval`/`maxtime` hit), worst pose already sampled, or a feasible iterate kept while later solves ended infeasible | trust only if `feasible yes` and other runs agree; try `--polish` |
 | `iteration limit` | 40 exchange iterations used up | check the worst row; more starts |
 | `non-finite` | the design evaluates to NaN/inf | find the NaN: `--probe` the pieces |
 | `no variables` | every variable fixed | verification only |
@@ -164,12 +183,12 @@ looser bound can then look WORSE than a tighter one. Confirm with `--starts 512`
 ## 5. No feasible design: the over-constraint signature
 
 `docs/instances/guide-b-tv-links.json --set params.edge_margin=0.12`: 0 of 65 runs feasible. The best
-run (109.6468 cm) misses 9 row groups, all by tiny amounts: `link_angle` 14.90006 deg >= 15,
-`centre_setback` 11.99243 cm >= 12, `centred_angle` 1.005142 deg <= 1, `centred_offset` 1.003496 cm <= 1,
-`view_kitchen` 2.001752 deg <= 2, `view_couch` 2.000114 deg <= 2, `wall_y` 1.99949 cm >= 2, and
-`link1_tv`, `link2_tv` short by 2.5e-7 m. The solver spreads an impossible demand over every row that
-competes for it. With `--starts 256`: still 0 of 257. That is the signature: MANY rows, SMALL misses,
-more starts do not help. Do not loosen tolerances; relax ONE requirement (section 6).
+run (109.677 cm) misses 5 row groups, all by tiny amounts: `link_angle` 14.91364 deg >= 15,
+`kitchen_visible` 85.97375 % >= 86, `centre_setback` 11.97926 cm >= 12, `wall_y` 1.997178 cm >= 2 and
+`centred_angle` 1.000904 deg <= 1; `link1_tv` and `link2_tv` hold with margins of 3e-7 and 5e-7 m. The
+solver spreads an impossible demand over every row that competes for it. With `--starts 256`: still 0
+of 257. That is the signature: MANY rows, SMALL misses, more starts do not help. Do not loosen
+tolerances; relax ONE requirement (section 6).
 
 A feasible-but-hard problem looks different: one or two rows miss, often by a lot, and other runs end elsewhere.
 
@@ -183,9 +202,9 @@ A feasible-but-hard problem looks different: one or two rows miss, often by a lo
 
 | Relaxation (all with `--bound centre_setback=12`) | Feasible runs | Objective |
 | --- | --- | --- |
-| `--bound link_angle=14.5` | 51 of 65 | 108.2698 cm |
-| `--bound kitchen_visible=85.5` | 55 of 65 | 107.7463 cm |
-| `--set params.link_gap=0.02` | 55 of 65 | 108.1814 cm |
+| `--bound link_angle=14.5` | 65 of 65 | 108.2698 cm |
+| `--bound kitchen_visible=85.5` | 65 of 65 | 107.7463 cm |
+| `--set params.link_gap=0.02` | 65 of 65 | 108.1814 cm |
 
 4. Show the table to the user: which requirement to give up is THEIR decision. Mark numbers from
    fragile runs as "best found".
@@ -204,8 +223,10 @@ A feasible-but-hard problem looks different: one or two rows miss, often by a lo
    optimum does not move and `variants` drops from 2 to 1, the solver dodged it by relabelling.
 5. "At some point of the motion": add a witness scalar (the sweep's `min`/`max`); conditions of the
    same moment share it. "During the whole motion": `"forall"` or a `max_over`/`min_over` bound.
-6. To switch a row off without deleting it: `"enabled": false` (constraint), `"role": "report"` (criterion).
-7. Changing the objective: the old one becomes `report` or a bound; exactly one `minimize`/`maximize` remains.
+6. To switch a row off without deleting it: `"enabled": false` on the constraint or the criterion (a criterion's
+   needs format `/2`, which `--set` raises); a disabled criterion keeps its role and bound.
+7. Changing the objective: the old one becomes `report`, a bound, or disabled; exactly one enabled
+   `minimize`/`maximize` remains.
 8. A design variable becomes a constant: `"fixed": true` (keeps its domain; `value` in SI), or a param.
    A constant becomes a design variable: DELETE it from `params` (one namespace) and add a design scalar
    with the same name, so every expression still works. Try it first:
@@ -215,8 +236,9 @@ A feasible-but-hard problem looks different: one or two rows miss, often by a lo
 
 ## 8. Never do this
 
-1. Never loosen `feas_tol` (`--feas-tol`, `solver.feas_tol`): with `--feas-tol 1e-3` the case of section 5
-   reports a "feasible" run that still misses `link_angle` by 0.000764 rad.
+1. Never loosen `feas_tol` (`--feas-tol`, `solver.feas_tol`): with `--feas-tol 2e-3` the case of section 5
+   reports 34 "feasible" runs, the best (109.6223 cm) with `link_angle` at 14.88698 deg, 0.00197 rad
+   short of its 15 deg bound, and marked `ok`.
 2. Never write a weighted sum of different goals as the objective, nor a `weight` key: weights miss
    concave trade-offs. One objective + bounds + `--pareto`.
 3. Never constrain only one of an interchangeable pair (link 1 and link 2, A and B): write both.

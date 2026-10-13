@@ -35,7 +35,7 @@ This is the default object, as `geomsolver-cli --out` writes it in the results:
 | **`seed`** | integer ≥ 0 | 1 | `--seed` | yes |
 | **`threads`** | integer ≥ 0; 0 = all cores | 0 | `--threads` | yes |
 | **`phase1`** | boolean | `true` | `--no-phase1` | yes |
-| **`initial_samples`** | integer ≥ 1 | 5 | `--initial-samples` | yes |
+| **`initial_samples`** | integer ≥ 1; a sweep's own `samples` wins | 5 | `--initial-samples` | yes |
 | **`verify_samples`** | integer ≥ 2 | 2001 | `--verify-samples` | yes |
 | **`max_exchange_iterations`** | integer ≥ 1 | 40 | `--set` | yes |
 | **`feas_tol`** | number ≥ 0 | 1e-7 | `--feas-tol` | yes |
@@ -83,10 +83,10 @@ Integer keys in the instance also have an upper limit of 1000000000: `"starts": 
 
 A multistart runs the current design (`include_current`) and `starts` seeded starts, on `threads` workers. Each run goes through these steps:
 
-1. **Phase 1** (`phase1`). When the start violates a row on the initial samples, minimise the largest violation first. Phase 1 stops once every row holds with a margin of 1e-4 (in solver units). When it ends infeasible, it is retried twice from a point moved by up to 0.05 in each normalised coordinate, and the best result is kept.
+1. **Phase 1** (`phase1`). When the start violates a row on the initial samples, minimise the largest violation first. Phase 1 stops once every row holds with a margin of 1e-4 (in solver units). When it ends infeasible, it is tried again and the least violated attempt is kept; an attempt that ends on a NaN row loses to a finite one. A seeded start (`uniform k`) restarts from up to 10 fresh uniform points, drawn from the run's seed: phase 1 stalls where the largest violation is flat, such as a screen fully hidden behind an obstacle or a linkage that does not assemble, and a small move stays on such a plateau. A seeded run that never reaches a feasible point makes all 11 phase-1 solves, which is most of the cost of a solve where few starts can. The current design, a `--polish` start and a Pareto point's previous best are only retried twice, from the best point so far moved by up to 0.05 in each normalised coordinate, so that polishing a design never returns an unrelated one.
 2. **Phase 2** (`algorithm`). Minimise the objective subject to every row, on the current samples, within `maxeval`, `maxtime`, `xtol_rel` and `constraint_tol`.
 3. **Verification and exchange** (`verify_samples`, `feas_tol`, `max_exchange_iterations`). Check the design on the fine grid. For every row group violated by more than `feas_tol`, add its worst sample to the samples, then solve again from the current point. Stop when the design is feasible on the fine grid, or after `max_exchange_iterations` solves.
-4. **Result.** The run keeps its best verified iterate: feasible before infeasible, then the best objective.
+4. **Result.** The run keeps its best verified iterate: feasible before infeasible, then the best objective. A run that keeps a feasible iterate is never reported `infeasible on its samples`: when a later solve, on more samples, ends infeasible, the run ends `stalled`.
 
 The finished runs are then clustered into distinct solutions (`cluster_x_tol`, `cluster_f_tol`). [Formulation](../design-rationale/index.md) explains why the problem is set up this way.
 
@@ -94,19 +94,19 @@ The finished runs are then clustered into distinct solutions (`cluster_x_tol`, `
 
 ### `starts`
 
-The number of seeded starts, drawn uniformly in the solver's unit box. With `--starts 0` only the current design runs; on the TV fixture that single run, from the hand design, reaches the optimum, 104.3729 cm. With the default 64 starts, 51 of the 65 runs reach it.
+The number of seeded starts, drawn uniformly in the solver's unit box. With `--starts 0` only the current design runs; on the TV fixture that single run, from the hand design, reaches the optimum, 104.3729 cm. With the default 64 starts, all 65 runs reach it.
 
 ### `seed`
 
-The seed of the starts. Start k depends only on the seed, k and the number of coordinates, so the starts of a shorter run are the first starts of a longer one with the same seed. `--seed 2` gives other starts: 56 of 65 runs reach the same optimum.
+The seed of the starts. Start k depends only on the seed, k and the number of coordinates, so the starts of a shorter run are the first starts of a longer one with the same seed. `--seed 2` gives other starts, and all 65 runs reach the same optimum.
 
 ### `threads`
 
-Worker threads; 0 uses every core. The results do not depend on the thread count: on the TV fixture, 16 threads and `--threads 1` print the same solutions, run for run, in 0.08 s and 0.68 s.
+Worker threads; 0 uses every core. The results do not depend on the thread count: on the TV fixture, 16 threads and `--threads 1` print the same solutions, run for run, in 0.09 s and 0.71 s.
 
 ### `include_current`
 
-Adds the instance's design values as one more start, run first and named `current` in the reports. `--no-current` removes it: 64 runs, 50 of them at the optimum.
+Adds the instance's design values as one more start, run first and named `current` in the reports. `--no-current` removes it: 64 runs, all of them at the optimum.
 
 ## Algorithm
 
@@ -125,21 +125,21 @@ warning: solver.algorithm: MMA is no longer offered (it solves a dual problem pe
 
 | TV fixture, 65 runs | Feasible runs | Runs at 104.3729 cm | Distinct solutions | Wall time |
 | --- | --- | --- | --- | --- |
-| **SLSQP** | 51 | 51 | 15 | 0.08 s |
-| **COBYLA** | 36 | 21 | 40 | 1.58 s |
+| **SLSQP** | 65 | 65 | 1 | 0.09 s |
+| **COBYLA** | 37 | 21 | 38 | 1.39 s |
 
-The wall times were measured on 16 threads and depend on the machine. COBYLA uses no derivatives: on this fixture it is about 20 times slower than SLSQP and reaches the optimum from fewer starts.
+The wall times were measured on 16 threads and depend on the machine. COBYLA uses no derivatives: on this fixture it is about 15 times slower than SLSQP and reaches the optimum from fewer starts.
 
 !!! note "COBYLA and near-equal rows"
     NLopt's COBYLA solves a linear subproblem between two evaluations, with no iteration limit of its own, and Stop, `maxeval` and `maxtime` only act at evaluations. That subproblem can cycle when constraint rows agree only up to rounding, such as a for-all row whose value does not change along the sweep. Rows whose values are within 1e-12 · max(1, \|v\|) of each other are therefore given one value, the largest, before COBYLA sees them. [Numerics and limits](../design-rationale/numerics.md) has the details.
 
 ### `phase1`
 
-Minimise the largest violation before optimising. Without it, phase 2 starts from an infeasible point and has to find feasibility and optimality at once. `--no-phase1` on the TV fixture: 11 of 65 runs feasible, instead of 51.
+Minimise the largest violation before optimising. Without it, phase 2 starts from an infeasible point and has to find feasibility and optimality at once. `--no-phase1` on the TV fixture: 11 of 65 runs feasible, instead of 65.
 
 ### `maxeval`
 
-The evaluation budget of each NLopt solve, phase 1 and phase 2 alike. A solve that runs out while infeasible is solved again, warm, on the same samples, at most 3 times in a row and while those samples have cost less than twice `maxeval`. With `--maxeval 50` on the TV fixture, 50 of 65 runs still reach the optimum.
+The evaluation budget of each NLopt solve, phase 1 and phase 2 alike. A phase-2 solve that runs out is solved again, warm, on the same samples, at most 3 times in a row and while those samples have cost less than twice `maxeval`. This holds whether it ran out infeasible or at a feasible point with no sample to add: a solve cut short never counts as converged. A re-solve resumes from where the solve stopped; when a feasible solve stopped where it started, that point is first moved by 1e-5. A feasible run whose re-solves are used up ends `stalled`. With `--maxeval 50` on the TV fixture, all 65 runs still reach the optimum; with `--maxeval 20`, 61 do, and with `--maxeval 10`, 23.
 
 ### `maxtime`
 
@@ -159,19 +159,21 @@ NLopt's tolerance on each row, in solver units. It only decides which iterate SL
 
 The number of samples per sweep at the start of each run, uniform in normalised t: t = i / (n - 1) for i = 0 … n - 1, or t = 0 alone when n = 1. The exchange adds samples where they are needed, so a few are enough.
 
+A sweep's own [`samples`](instance.md#sweeps) wins over this setting and over `--initial-samples`; the setting is the count of every sweep without one. For a sweep with `"sampling": "fixed"`, that count is the whole problem: the run keeps those samples and is judged on them (see [fixed sampling](../guide/sweeps.md#fixed)).
+
 | `initial_samples` | Runs at 104.3729 cm (of 65) |
 | --- | --- |
-| **1** | 28 |
-| **2** | 54 |
-| **5** (default) | 51 |
+| **1** | 39 |
+| **2** | 65 |
+| **5** (default) | 65 |
 
 ### `verify_samples`
 
-The size of the fine grid on which every run is verified, per sweep, uniform in t. A design is only as feasible as this grid can tell. With `--verify-samples 101` the TV fixture's best design reaches 104.3719 cm, but evaluated on the default grid of 2001 samples it violates `link_angle` by 0.0005914236° at τ = 0.693.
+The size of the fine grid on which every run is verified, per sweep, uniform in t. A design is only as feasible as this grid can tell. A fixed sweep is verified on its own samples instead; this grid then only measures what happens between them, which the reports show apart. With `--verify-samples 101` the TV fixture's best design reaches 104.3719 cm, but evaluated on the default grid of 2001 samples it violates `link_angle` by 0.0005914236° at τ = 0.693.
 
 ### `max_exchange_iterations`
 
-The number of solves in the exchange loop of one run. When it is reached, the run ends with the status `iteration limit`. With `--set solver.max_exchange_iterations=1` no run of the TV fixture is feasible: 51 of the 65 runs stop at 103.6074 cm with a violation of 0.013, before the exchange has added the samples it needs.
+The number of solves in the exchange loop of one run. When it is reached, the run ends with the status `iteration limit`. With `--set solver.max_exchange_iterations=1` no run of the TV fixture is feasible: all 65 runs stop at 103.6074 cm with a violation of 0.013, before the exchange has added the samples it needs.
 
 ### `feas_tol`
 
@@ -186,11 +188,11 @@ Runs that end at the same point are one solution. Two runs belong together when 
 
 ### `cluster_x_tol`
 
-Distance in normalised coordinates, from 0 to 1 along each coordinate. On the TV fixture, 0 splits the 51 runs at the optimum into 51 variants of one solution; the default 1e-3 and 0.1 both give 2 variants, the design and its relabelled copy.
+Distance in normalised coordinates, from 0 to 1 along each coordinate. On the TV fixture, 0 splits the 65 runs at the optimum into 65 variants of one solution; the default 1e-3 and 0.1 both give 2 variants, the design and its relabelled copy.
 
 ### `cluster_f_tol`
 
-Relative tolerance on the objective and on the bounded criteria. With 0, the 51 runs at 104.3729 cm become separate solutions: 64 distinct solutions instead of 15.
+Relative tolerance on the objective and on the bounded criteria. With 0, the 65 runs at 104.3729 cm no longer merge when their objectives differ by rounding: 60 distinct solutions instead of 1.
 
 ## Pareto studies
 
@@ -200,7 +202,7 @@ The seeded starts of each point of a Pareto study. Each point also runs the prev
 
 | TV fixture, `--pareto kitchen_visible --bounds 84,86` | 84 % | 86 % |
 | --- | --- | --- |
-| **`pareto_starts` 8** (default) | 102.2104 cm, 9 of 9 runs | 104.3729 cm, 7 of 10 runs |
+| **`pareto_starts` 8** (default) | 102.2104 cm, 9 of 9 runs | 104.3729 cm, 10 of 10 runs |
 | **`pareto_starts` 2** | 102.2104 cm, 3 of 3 runs | 104.3729 cm, 4 of 4 runs |
 
 The study's own `starts` is not used: a Pareto point solves a problem close to its neighbour's, from that neighbour's design.
@@ -212,9 +214,11 @@ These values are fixed in `src/gs/solve/run.cpp` and `src/gs/solve/local.cpp`, n
 | Constant | Value | Role |
 | --- | --- | --- |
 | **phase-1 target** | margin 1e-4 | phase 1 stops once every row holds by this much |
-| **phase-1 retries** | 2, moved by up to 0.05 | restarts of a phase 1 that ends infeasible |
+| **phase-1 restarts** | 10, from fresh uniform points | further attempts of a seeded start's phase 1 that ends infeasible |
+| **phase-1 retries** | 2, moved by up to 0.05 | further attempts of a local start's phase 1 that ends infeasible: the current design, `--polish`, a Pareto point's previous best |
 | **near-feasible** | 1e-4 | a phase-2 solve that misses its own samples by less goes on to the exchange |
-| **warm re-solves** | 3 in a row, budget 2 × `maxeval` | after a budget stop, a failed solve, or a near-feasible solve that adds no sample |
-| **failed-solve move** | 1e-5 | a feasible solve that NLopt reports as failed is solved again from a point this far away |
+| **warm re-solves** | 3 in a row, budget 2 × `maxeval` | after a budget stop (feasible or not), a failed solve, or a near-feasible solve that adds no sample |
+| **failed-solve move** | 1e-5 | a feasible solve that NLopt reports as failed, or that ran out of budget and returned its start, is solved again from a point this far away |
 | **COBYLA merge** | 1e-12 relative | rows closer than this get one value |
+| **SLSQP flat rows** | 1e-12 | an inequality row whose value and every derivative are within this of 0 reaches SLSQP as exactly 0, with a zero gradient |
 | **non-finite value** | 1e10 | what NLopt sees in place of NaN or inf; such a run is never feasible |

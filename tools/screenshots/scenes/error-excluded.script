@@ -1,0 +1,5 @@
+# A misspelt name excludes its constraint from the model.
+open tests/data/tv_corner_ref.json
+set constraints[0].expr=clearance(tv, couh) >= clr
+wait 29
+shot

@@ -1,0 +1,9 @@
+# Typing in the formula: the names that complete it, inline under the
+# field, the entries before the builtins.
+open tests/data/tv_corner_ref.json
+wait 16
+action formula.add_constraint
+wait 8
+text "dist(c"
+wait 4
+shot

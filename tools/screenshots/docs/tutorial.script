@@ -1,0 +1,32 @@
+# The steps of the tutorial: the room, the design (the whole room in view),
+# the motion, the solved last step, then step 4 with its shelf constraint
+# violated at tau = 0.428 and selected.
+open docs/instances/start-tutorial-1.json
+wait 29
+shot room.ppm
+open docs/instances/start-tutorial-2.json
+wait 16
+action view.fit_all
+wait 13
+shot design.ppm
+open docs/instances/start-tutorial-3.json
+wait 29
+shot motion.ppm
+open docs/instances/start-tutorial-5.json
+solve
+panel solver
+wait 29
+shot solved.ppm
+open docs/instances/start-tutorial-4.json
+panel constraints
+select constraint shelf
+wait 16
+# The tau slider, Ctrl-clicked to type its value; the pointer then leaves
+# it, which would stay highlighted.
+click L 400 671 ctrl
+wait 2
+text "0.428"
+key Enter
+move 1590 10
+wait 16
+shot violated.ppm

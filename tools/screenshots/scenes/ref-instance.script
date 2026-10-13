@@ -1,0 +1,4 @@
+# The reference page's example instance.
+open docs/instances/ref-instance.json
+wait 29
+shot

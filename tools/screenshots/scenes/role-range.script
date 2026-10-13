@@ -1,0 +1,12 @@
+# link_1's role switched to range: its bound becomes From, its value, and
+# To, the max bound link_max it meets.
+open tests/data/tv_corner_ref.json
+panel criteria
+select criterion link_1
+wait 16
+click L 830 806
+wait 4
+click L 830 906
+move 800 10
+wait 4
+shot

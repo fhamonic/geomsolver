@@ -30,9 +30,13 @@ dependency comes from conan.
 
 ```sh
 make build        # conan build into build/
-make test         # ctest: test_engine, test_solve, geomsolver --selftest,
-                  # the CLI checks (tests/cli/cli_checks.cmake), live_instance
-                  # and docs_instances (every docs/instances/*.json evaluates)
+make test         # ctest: test_engine, test_solve, test_app,
+                  # geomsolver --selftest, gui_scripts (tests/gui played
+                  # headless), gs_app_toolkit_free, docs_screenshots (the
+                  # docs show the PNGs tools/screenshots/docs.sh makes), the
+                  # CLI checks (tests/cli/cli_checks.cmake), live_instance
+                  # and docs_instances (every docs/instances/*.json
+                  # evaluates)
 ./build/geomsolver                      # opens data/tv_corner.json
 ./build/geomsolver path/to/instance.json
 ./build/geomsolver-cli data/tv_corner.json --eval
@@ -55,156 +59,74 @@ cmake -S . -B build-warn -DCMAKE_TOOLCHAIN_FILE=$PWD/build/conan_toolchain.cmake
 cmake --build build-warn -j8
 ```
 
-The code is split into three parts:
+The code is split into four parts:
 
 | Part | Sources | Role |
 |---|---|---|
 | `gs_engine` | `src/gs/engine`, `include/gs/engine` | parser, compiler, AD evaluator, verification, load/save |
 | `gs_solve` | `src/gs/solve`, `include/gs/solve` | NLP, nlopt runs, multistart, Pareto, background service |
-| GUI | `src/main.cpp`, `src/ui`, `include/ui`, `include/panels` | the `geomsolver` window |
+| `gs_app` | `src/gs/app`, `include/gs/app` | the GUI's logic without a toolkit: document, undo, selection, scene, the canvas (picking, clicks, box selection, drags, pan, zoom, what the eyes hide, its display list), menu and keyboard actions, change notifications, and a presenter for every panel and dialog (the lists, Properties, Document, Solver, Margins, Messages, sweep bar) |
+| GUI | `src/front/imgui`, `include/front/imgui` | the `geomsolver` window, a Dear ImGui front-end of `gs_app` |
 
-The CLI is `src/cli/main.cpp`.
+`gs_app` links no GUI toolkit, so that another front-end can reuse it; the
+`gs_app_toolkit_free` test fails on a toolkit include, and `test_app` tests it
+headless. [GUI architecture](docs/contributing/gui-architecture.md) describes
+the two layers, their patterns and what a new front-end implements. The CLI is
+`src/cli/main.cpp`.
 
 ## The GUI
 
-The window has three areas:
+[The GUI](docs/getting-started/gui.md) in the documentation walks through
+the window, with screenshots. In short, it docks its panels between the menu
+bar and a status bar:
 
-- the **scene canvas** on the left, with one slider per sweep below it;
-- **Margins** and **Messages** tabs at the bottom;
-- **Inspector** and **Solver** tabs on the right.
+- the **canvas** in the centre, with one slider per sweep below it: the
+  constant geometry, the design domains, the `display` items with their
+  ghosts and traces, and a "Violated here" box with a red frame when a
+  requirement fails at the slider's position. Drag an orange handle to move a
+  design point, click or box-select entries, right-click for the actions on
+  the selection; pan with the middle or right button or <kbd>Space</kbd>,
+  zoom with the wheel, <kbd>F</kbd> and <kbd>G</kbd> fit;
+- **Elements**, **Variables**, **Quantities**, **Params** and **Ranges** over
+  **Constraints**, **Criteria** and the **Solver** on the right: one row per
+  entry, with its checkboxes and eyes, filters (Associated lists what uses
+  the selection), and Add and Delete buttons;
+- **Messages**, **Margins** and **Document** under the canvas, and
+  **Properties** beside them, which edits the selected entry; a formula is
+  edited in the **formula pop-up**, which completes the names you type and
+  shows the value and margin before the entry is added.
 
-The title shows the file name, with `*` when there are unsaved changes.
-
-### Canvas
-
-- Draws the constant geometry, the design domains (dashed), and the `display`
-  items at the current sweep value, with their ghosts and traces.
-- Panning and zooming:
-  - drag empty space, or use the middle or right button, to pan;
-  - the wheel zooms at the cursor;
-  - <kbd>F</kbd> fits everything and <kbd>G</kbd> fits the design.
-- Drag the orange handles to move design points. Each point stays inside its
-  domain.
-- Hover a design point, a display item or a geometry entry to see its name
-  and value.
-- When a constraint is violated at the current sweep value, the canvas gets a
-  red frame and a "Violated here" list. The top-right corner shows the
-  objective and the fine-grid status.
-- The View menu toggles the grid, geometry, labels, domains, handles, ghosts
-  and traces.
-
-### Sweep bar
-
-Each sweep has a slider, Play/Pause, a period (seconds per full sweep) and a
-mode: loop, bounce or once.
-
-### Inspector
-
-Sections: design variables, constraints, criteria, params, let bindings,
-display items, sweeps, constant geometry.
-
-- Every expression is editable:
-  - <kbd>Enter</kbd> applies it and recompiles; <kbd>Esc</kbd> cancels.
-  - Errors appear inline with the faulty column highlighted. The first errors
-    are also listed at the top.
-  - When a compile fails, the last good model stays active and "revert"
-    restores the last text that compiled.
-- **Design variables:**
-  - values are edited in their display unit;
-  - "fixed" turns a variable into a constant; a fixed value changes when the
-    slider or drag is released (and the instance recompiles);
-  - type (scalar or point), domain, min and max are editable.
-- **Constraints:**
-  - each one shows its fine-grid status (violated, active, or its margin, and
-    the sweep value where it is worst) and "[here]" when it is violated at the
-    slider position;
-  - the checkbox enables or disables it; the name and the `forall` sweep are
-    editable.
-- **Criteria** show their value in the display unit, with editors for name,
-  role (`minimize`, `maximize`, `max`, `min`, `report`), bound and unit.
-  Switching to a role without a bound (`minimize`, `maximize`, `report`)
-  removes the bound; switching back to `max` or `min` restores it (within the
-  session), else starts from the current value.
-- An error at a key that has no editor of its own (a schema error such as a
-  number where a string belongs) gets a raw JSON field under the message, and
-  a "remove" button that deletes the key. A key of a constraint or criterion
-  that the compiler ignores (a misspelt key, a `bound` its role does not use)
-  gets the remove button under its warning. An older instance's `weight` key
-  is removed this way.
-- Lets, constraints, criteria and display items can be added ("Add …") and
-  deleted (`x`). Design variables cannot be added or removed from the GUI.
-- Constraint margins are shown in natural SI units (m, rad, or
-  dimensionless). A bounded criterion shows its value and bound in its display
-  unit.
-
-### Solver tab
-
-- **Solve** runs a multistart; **Polish** runs one local solve from the
-  current design; **Stop** stops either within milliseconds.
-- A progress bar reports the job while it runs.
-- **Settings** are seeded from the instance's `solver` object. "Store in
-  instance" writes them back. An instance that asks for `MMA` or `CCSAQ`
-  (no longer offered) gets SLSQP and a warning under the progress bar.
-- **Solutions** lists the distinct solutions, feasible first and best first,
-  with every criterion in its display unit.
-  - "hits" counts the runs that ended there. "N variants" means the runs
-    ended at N different design points with the same objective and the same
-    values of the bounds that are active in either: the same linkage with
-    its links relabelled (A/B and c/d swapped), a variable the optimum leaves free, or another design with
-    those values (a table in either of two alcoves). Click "N variants" to
-    list them with the design values that differ, and click one to load it.
-  - Hover a row for the run details.
-  - Click a row to load that design into the editor. The document is then
-    marked modified, and Save writes the values.
-- **Pareto study** (epsilon-constraint):
-  1. Pick one or more bounded criteria (role `max` or `min`) that share a
-     unit, e.g. both view angles.
-  2. Type the bounds in that unit.
-  3. Run.
-
-  The result is a table and a bound-versus-objective plot. Click a point to
-  load its design.
-
-Results from an earlier compile can still be loaded: variables are matched by
-name.
-
-### Margins and Messages
-
-- **Margins** plots the margin of every for-all constraint against the sweep
-  for the current design (−violation, so below 0 means violated). Drag the
-  vertical line to move the sweep.
-- **Messages** lists the load, schema and compile diagnostics and a log.
-
-### File menu and shortcuts
-
-- **File** menu: Open (type a path), Reload, Save, Save As.
-- Shortcuts: <kbd>Ctrl+O</kbd>, <kbd>Ctrl+R</kbd>, <kbd>Ctrl+S</kbd>,
-  <kbd>Ctrl+Q</kbd>.
-- You are asked before unsaved changes are discarded, and Save As asks
-  before it replaces an existing file.
-- Save As into another directory rewrites relative `include` paths so they
-  still resolve.
-- Included files are never written: Save As refuses an included file as its
-  target.
+Every edit recompiles, an item with an error is excluded from the model and
+shown in red while the rest keeps working, and every change is one undo step.
+Panels can be moved by their tab and closed; View > Reset layout restores
+this arrangement, which `$XDG_CONFIG_HOME/geomsolver/settings.json` (else
+`~/.config/geomsolver`) keeps between runs, as it keeps what the eyes of the
+named entries hide.
 
 ### Automation
 
-`geomsolver --help` lists options for scripted use:
+`geomsolver --help` lists options for scripted use. A scripted run never
+reads or writes the settings, and draws the same pixels every time: its clock
+moves by 1/60 s per frame.
 
-- `--screenshot out.ppm` renders a hidden window and writes a PPM. It can be
-  combined with:
-  - `--solve` (a multistart first; the best solution is loaded);
-  - `--pareto C1,C2 --bounds b1,b2,...`;
-  - `--set PATH=VALUE` (edit the instance; `null` removes the key);
-  - `--tab`, `--expand`, `--size`, `--mouse`, `--drag`;
-  - `--click X,Y` (repeatable): left clicks in order after the drag, e.g. a
-    combo, then one of its items.
-- The sweep slider starts at the sweep's minimum: for the TV, the couch pose.
-  For another pose, drag the slider's handle. At the default 1600x1000 size,
-  `geomsolver data/tv_corner.json --solve --drag 97,683,795,683 --screenshot
-  kitchen.ppm` shows the solved design in the kitchen pose (tau = 1).
-- `--selftest tests/data/tv_corner_ref.json` runs the headless GUI checks
-  (they pin numbers of that frozen copy).
+- `--script FILE` plays a script of pointer and key input, commands
+  (`select design A`, `action edit.delete`, `solve`) and screenshots in a
+  hidden window, then exits; `docs/reference/cli.md` lists its commands.
+- `--headless` plays the script with no window, no display needed, and no
+  screenshot; `--dump out.json` writes what the run leaves: the document,
+  the selection, the status bar, the open panels and the open popup.
+- `--screenshot out.ppm` renders a hidden window and writes a PPM, after
+  `--solve` (a multistart, whose best solution is loaded), `--pareto C1,C2
+  --bounds b1,b2,...`, `--set PATH=VALUE` (`null` removes the key), `--tab`
+  and `--size`; `--mouse`, `--drag` and `--click X,Y` add pointer input.
+- `--selftest tests/data/tv_corner_ref.json` runs the headless checks of the
+  ImGui front-end on that frozen copy. The GUI logic itself is tested by
+  `test_app`, and the `gui_scripts` test plays `tests/gui/*.script` headless.
+- `tools/screenshots/render.sh` plays the scenes of `tools/screenshots/scenes`
+  and `compare.sh` compares two renders byte for byte;
+  `tools/screenshots/docs.sh` makes every screenshot of the documentation,
+  through `ppm2png.py`, which crops a PPM and writes a PNG with Python's
+  standard library alone.
 
 ## Instance file reference
 
@@ -259,17 +181,17 @@ the allowed ones.
 
 | Key | Content |
 |---|---|
-| `format` | `"geomsolver-instance/1"` (required) |
+| `format` | `"geomsolver-instance/1"` or `"geomsolver-instance/2"` (required). `/2` is needed by a sweep's `samples` and `sampling` and by a criterion's `"enabled": false`, which a geomsolver reading only `/1` would ignore; the GUI and `--set` raise the format when they write one |
 | `description` | free text |
 | `include` | geometry files, relative to this file. Their `geometry` objects are merged in; a name clash is an error. Format: `{"units": "m", "geometry": {...}}`, with `format`, `description` and `note` also accepted; any other key of an included file (`let`, `params`, ...) is ignored with a warning |
 | `params` | name → number (SI) or constant expression (`"15deg"`, `"W/2"`, may use other params and geometry) |
 | `geometry` | name → constant shape (see below) |
 | `design` | ordered name → design variable (see below) |
-| `sweeps` | name → `{"min", "max"}` (constants). Sweeps are sampled in normalised t ∈ [0,1] |
+| `sweeps` | name → `{"min", "max", "samples"?, "sampling"?}` (constants). Sweeps are sampled in normalised t ∈ [0,1]. `samples`: the sweep's initial sample count (default `solver.initial_samples`); `sampling`: `"adaptive"` (default) or `"fixed"`, see the exchange below |
 | `let` | name → expression of any type. Order does not matter; cycles are errors |
 | `constraints` | list of `{name, expr, forall?, enabled?, note?}` |
-| `criteria` | list of `{name, expr, role, bound?, unit?, note?}` |
-| `display` | list of `{expr, color?, fill?, width?, label?, ghosts?, trace?}` |
+| `criteria` | list of `{name, expr, role, bound?, unit?, enabled?, note?}` |
+| `display` | list of `{expr, color?, fill?, width?, label?, ghosts?, trace?, visible?}` |
 | `solver` | default solver settings (see [Solver](#solver)) |
 
 **Geometry entries:**
@@ -292,7 +214,12 @@ the allowed ones.
   domain:
   - a parallelogram (`box`, `rect`, any 4-vertex parallelogram) gives 2
     coordinates;
-  - a `segment` gives 1;
+  - a `segment` gives 1, and so do a parallelogram with exactly one side of
+    zero length (within 1e−12, relative), such as `box(x0, y, x1, y)`, and a
+    polygon flat along x or y. The coordinate is named after the point, and
+    there is no domain row;
+  - a domain that is a single point (`box(1, 1, 1, 1)`, `circle(c, 0)`)
+    fixes the variable at that point;
   - any other polygon or circle gives its bounding box plus an implicit
     "inside the domain" row.
 - **Common keys:** `fixed` (a constant, no coordinate), `unit` (display unit:
@@ -306,6 +233,8 @@ names and criterion names must each be unique.
 
 - `expr` is a relation: `a <= b`, `a >= b` or `a == b`. `<` and `>` are read
   as `<=` and `>=`.
+- A two-sided relation `lo <= e <= hi` (or `hi >= e >= lo`) is one constraint
+  with two rows, named `(lo)` and `(hi)`; `==` cannot be chained.
 - With `"forall": "s"`, the relation must hold for every value of sweep `s`.
   A `forall` on a relation that does not depend on `s` gets a warning.
 - A top-level `abs(e) <= b` is split into two smooth rows.
@@ -319,7 +248,14 @@ names and criterion names must each be unique.
   want in one expression.
 - `max`: `expr <= bound`.
 - `min`: `expr >= bound`.
+- `range`: `lo <= expr <= hi`, with `"bound": [lo, hi]`. `--bound` and
+  `--pareto` do not apply to it.
 - `report`: shown only.
+
+`"enabled": false` switches a criterion off whatever its role: it is still
+compiled, evaluated and reported (`disabled`), but it bounds nothing and is
+never the objective, so the one-objective rule counts enabled criteria only.
+It needs `geomsolver-instance/2`; `true`, the default, does not.
 
 `unit` is the display unit, as for design variables. Bounds typed in the GUI
 Pareto study and given to the CLI's `--bound` and `--bounds` are in this unit:
@@ -339,8 +275,9 @@ its link angle, wall gaps, link lengths and centring tolerances this way:
  "unit": "deg", "role": "min", "bound": "min_link_angle"}
 ```
 
-A length with both a lower and an upper limit takes two criteria
-(`link_1` with role `max`, `link_1_min` with role `min`). Keep a pure
+A length with both a lower and an upper limit is one `range` criterion, or
+two criteria when a study must move one limit: the TV instance writes
+`link_1` with role `max` and `link_1_min` with role `min`. Keep a pure
 relation, such as a clearance to an obstacle, as a constraint.
 
 **Display items:**
@@ -377,7 +314,8 @@ compile error.
 - `-2^2` is −4.
 - Allowed combinations: `Vec ± Vec`, `Scalar * Vec`, `Vec * Scalar`,
   `Vec / Scalar`, `-Vec`. Anything else is a type error; use `dot` or `cross`.
-- Comparisons are only allowed at the top level of a constraint.
+- Comparisons are only allowed at the top level of a constraint: one, or a
+  chain of two in the same direction.
 
 **Names** resolve to:
 
@@ -606,10 +544,10 @@ gives its own):
 | Command | Result |
 |---|---|
 | `geomsolver-cli tests/data/tv_corner_ref.json --eval` | hand design: protrusion 107.4117 cm, infeasible (link_angle 7.17° < 15°, wall_y −6.80 cm at τ = 0, wall_x −2.04 cm, view_couch 9.52° > 2°, kitchen_visible 85.81 % < 86 %) |
-| `geomsolver-cli tests/data/tv_corner_ref.json --out results.json` | 65 runs, best protrusion 104.3729 cm (51 runs, 2 variants: the same linkage with A/B and c/d relabelled), feasible |
+| `geomsolver-cli tests/data/tv_corner_ref.json --out results.json` | 65 runs, best protrusion 104.3729 cm (all 65 runs, 2 variants: the same linkage with A/B and c/d relabelled), feasible |
 | `geomsolver-cli tests/data/tv_corner_ref.json --pareto view_couch,view_kitchen --bounds 0,1,2,4` | 105.7293 / 105.0493 / 104.3729 / 103.1087 cm |
 | `geomsolver-cli tests/data/tv_corner_ref.json --pareto kitchen_visible --bounds 0,80,84,86,88` | 97.90595 / 98.63135 / 102.2104 / 104.3729 / 108.2699 cm |
-| `geomsolver-cli tests/data/tv_corner_ref.json --set 'criteria[0].role=report' --set 'criteria[3].role=maximize' --set 'criteria[3].bound=null'` | kitchen_visible 90.58655 % at most (249 of 257 runs with `--starts 256`) |
+| `geomsolver-cli tests/data/tv_corner_ref.json --set 'criteria[0].role=report' --set 'criteria[3].role=maximize' --set 'criteria[3].bound=null'` | kitchen_visible 90.58655 % at most (all 65 runs) |
 | `geomsolver-cli tests/data/tv_corner_ref.json --fix A,B` | wall pivots kept at the hand values: no feasible design found |
 
 ### The TV instance's trade-off
@@ -664,9 +602,16 @@ Each run proceeds as follows:
 2. **Rows.** These include the constraints, the bounds of `max`/`min`
    criteria, and the implicit assembly and domain rows.
 3. **Phase 1.** If the start violates a row, the solver first minimises the
-   largest violation. When that ends infeasible (it can stall at the kink of
-   a row like `abs(e) >= b`), it retries twice from a perturbed point and
-   keeps the best result.
+   largest violation. That can stop where the largest violation is flat: a
+   screen fully hidden behind the fridge (`kitchen_visible` is 0 nearby), a
+   linkage that does not assemble (`link_angle` does not change where the
+   dyad misses). Small moves stay on such a plateau. So when phase 1 ends
+   infeasible from a seeded start, it starts again from up to 10 fresh
+   uniform points drawn from the run's seed. The current design, a
+   `--polish` start and a Pareto point's previous best are only retried
+   twice, from a point moved by up to 0.05 around the best point so far:
+   polishing must not jump to an unrelated design. The least violated
+   attempt is kept (a NaN result loses to a finite one).
 4. **Phase 2.** SLSQP (NLopt `LD_SLSQP`) minimises the objective (the
    negated objective for `maximize`) with exact gradients. A worst-case
    objective becomes an epigraph variable z: `minimize max_over(s, e)` gets
@@ -674,7 +619,7 @@ Each run proceeds as follows:
    −e(tᵢ) ≤ z (z = −the minimum) and minimises z. Any other objective enters
    as its value.
 5. **Adaptive sampling (exchange).** For-all rows start on `initial_samples`
-   (5) uniform samples per sweep.
+   (5) uniform samples per sweep, or on the sweep's own `samples`.
    - After each solve, the design is verified on a grid of `verify_samples`
      (2001).
    - The worst sample of every violated row group is added, and the solve
@@ -683,12 +628,23 @@ Each run proceeds as follows:
      is worse than on its samples by more than `feas_tol`.
    - A solve that ends within 1e−4 of its own samples is only slightly off:
      the exchange goes on and the fine-grid check decides.
-   - A solve that fails (NLopt `ROUNDOFF_LIMITED` or `FAILURE`) at a
-     feasible point is no optimum: SLSQP can fail at its feasible start. It
-     is solved again from a point 1e−5 away (normalised coordinates), at
-     most 3 times; when every retry fails, the run is reported as "stalled".
+   - A solve that fails (NLopt `ROUNDOFF_LIMITED` or `FAILURE`), or stops on
+     `maxeval`/`maxtime`, at a feasible point with no sample to add is no
+     optimum: SLSQP can fail at its feasible start. It is solved again warm,
+     at most 3 times in a row; after a failure, or a budget stop that
+     returned its start unchanged, from a point 1e−5 away (normalised
+     coordinates). When none of these re-solves converges, the run is
+     reported as "stalled".
+   - A run that keeps a feasible iterate is reported "stalled" when later
+     solves on more samples end infeasible, never "infeasible on its
+     samples".
    - On the TV instance's frozen copy (`tests/data/tv_corner_ref.json`), the
      optimum converges with 9 samples.
+   - A sweep with `"sampling": "fixed"` never gets a sample: the rows,
+     aggregates and epigraph pieces over it hold at its initial samples only,
+     which is the problem the user chose. Verification judges them on those
+     samples too, and reports the worst violation on the fine grid apart
+     ("between samples"), never in the verdict.
 6. **Verification.** A run is feasible when the largest violation on the fine
    grid is ≤ `feas_tol` (1e−7) in each row's natural unit.
    - NaN or inf values are mapped to large finite values for NLopt.
@@ -724,10 +680,14 @@ is why an instance has one objective.
 
 **Algorithms:**
 
-- `SLSQP` is the default.
+- `SLSQP` is the default. An inequality row whose value and derivatives are
+  all within 1e−12 of 0 reaches it as exactly 0 with a zero gradient: SLSQP
+  linearises rows with no tolerance, and a row identically on its bound (a
+  link's joint held at exactly the gap from the body that carries it) would
+  otherwise reach it as rounding noise and wreck its subproblem.
 - `COBYLA` is derivative-free and slower (on the TV instance's frozen copy,
-  a 65-start solve takes about 1.6 s instead of 0.1 s, and 21 runs reach the
-  optimum instead of 51).
+  a 65-start solve takes about 1.4 s instead of 0.1 s, and 21 runs reach the
+  optimum instead of 65).
   NLopt's COBYLA solves an LP subproblem between two evaluations with no
   iteration limit of its own, and Stop, `maxeval` and `maxtime` act only at
   evaluations. That LP can cycle when constraint rows agree only up to
@@ -737,8 +697,10 @@ is why an instance has one objective.
 - `MMA` and `CCSAQ` are no longer offered: they solve a dual problem at every
   iteration, which is slow with many rows. An instance or a command line
   that asks for one runs SLSQP with a warning.
-- A solve that hits `maxeval`/`maxtime` while infeasible is re-solved warm on
-  the same samples, until those samples have cost twice `maxeval`.
+- A solve that hits `maxeval`/`maxtime` is re-solved warm on the same
+  samples when it misses its own samples, or when it is feasible with no
+  sample to add, at most 3 times in a row and until those samples have cost
+  twice `maxeval`.
 
 **`solver` keys** (instance defaults; the CLI and GUI override some):
 
@@ -749,7 +711,7 @@ is why an instance has one objective.
 | `seed` | 1 |
 | `threads` | 0 = all cores |
 | `phase1` | true |
-| `initial_samples` | 5 |
+| `initial_samples` | 5 (a sweep's own `samples` wins) |
 | `verify_samples` | 2001 |
 | `max_exchange_iterations` | 40 |
 | `feas_tol` | 1e-7 |

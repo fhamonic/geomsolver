@@ -1,6 +1,12 @@
+#include <algorithm>
 #include <cmath>
+#include <format>
 #include <numbers>
+#include <optional>
+#include <span>
+#include <string_view>
 
+#include "gs/engine/builtins.hpp"
 #include "helpers.hpp"
 
 namespace gs::test {
@@ -55,7 +61,94 @@ void check_cases(const std::vector<Case> & cases) {
     }
 }
 
+std::vector<Diagnostic> probe_diagnostics(const std::string & expr) {
+    CompileOptions o;
+    o.probes = {expr};
+    return compile(*instance_from(base_doc()), o).diagnostics;
+}
+
+bool mentions(const std::vector<Diagnostic> & ds, std::string_view fragment) {
+    return std::ranges::any_of(ds, [&](const Diagnostic & d) {
+        return d.message.find(fragment) != std::string::npos;
+    });
+}
+
+std::string call(std::string_view name, int args) {
+    std::string out = std::format("{}(", name);
+    for(int i = 0; i < args; ++i) out += i ? ", 1" : "1";
+    return out + ")";
+}
+
 }  // namespace
+
+TEST_CASE(
+    "builtins: builtin_functions() lists every name the compiler "
+    "accepts") {
+    const std::span<const Builtin> all = builtin_functions();
+    REQUIRE(!all.empty());
+    for(const Builtin & b : all) {
+        INFO(b.name);
+        CHECK(find_builtin(b.name) == &b);
+        const std::string arity = std::format("{}() takes", b.name);
+        switch(b.kind) {
+            case Builtin::Kind::Function: {
+                // Scalar arguments may be type errors; a listed function
+                // that Compiler::call does not dispatch is "unknown".
+                const std::vector<Diagnostic> ds =
+                    probe_diagnostics(call(b.name, b.min_args));
+                CHECK_FALSE(mentions(ds, "unknown function"));
+                CHECK_FALSE(mentions(ds, arity));
+                CHECK(mentions(probe_diagnostics(call(b.name, b.min_args - 1)),
+                               arity));
+                if(b.max_args >= 0)
+                    CHECK(mentions(
+                        probe_diagnostics(call(b.name, b.max_args + 1)),
+                        arity));
+                break;
+            }
+            case Builtin::Kind::SpecialForm:
+                CHECK_FALSE(mentions(
+                    probe_diagnostics(std::format("{}(tau, tau)", b.name)),
+                    "unknown function"));
+                break;
+            case Builtin::Kind::Constant: {
+                auto m = compile_ok(*instance_from(base_doc()),
+                                    {std::string(b.name)});
+                CHECK(probe_values(*m, m->initial_x())[0].data ==
+                      std::vector<double>{b.value});
+                CHECK(mentions(probe_diagnostics(call(b.name, 1)),
+                               std::format("unknown function '{}'", b.name)));
+                break;
+            }
+        }
+    }
+    const auto kind = [](std::string_view name) {
+        const Builtin * b = find_builtin(name);
+        return b ? std::optional(b->kind) : std::nullopt;
+    };
+    CHECK(kind("at") == Builtin::Kind::SpecialForm);
+    CHECK(kind("max_over") == Builtin::Kind::SpecialForm);
+    CHECK(kind("min_over") == Builtin::Kind::SpecialForm);
+    CHECK(kind("pi") == Builtin::Kind::Constant);
+    CHECK(find_builtin("pi")->value == std::numbers::pi);
+    CHECK(kind("clearance") == Builtin::Kind::Function);
+    CHECK(find_builtin("nosuch") == nullptr);
+    CHECK(
+        mentions(probe_diagnostics("nosuch(1)"), "unknown function 'nosuch'"));
+
+    // The special forms in the places they are allowed.
+    Json d = base_doc();
+    d["criteria"] = Json::parse(R"J([
+        {"name": "hi", "expr": "max_over(tau, tau)", "role": "report"},
+        {"name": "lo", "expr": "min_over(tau, tau)", "role": "report"}
+    ])J");
+    const CompileResult r =
+        compile(*instance_from(d), {.probes = {"at(tau = 0.25, tau)"}});
+    CHECK_MESSAGE(r.diagnostics.empty(), to_string(r.diagnostics));
+    REQUIRE(r.ok());
+    CHECK(probe_values(*r.model, r.model->initial_x())[0].data ==
+          std::vector<double>{0.25});
+}
 
 TEST_CASE("builtins: scalar functions") {
     const double pi = std::numbers::pi;

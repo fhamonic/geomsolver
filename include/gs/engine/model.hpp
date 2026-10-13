@@ -72,10 +72,24 @@ struct DesignVar {
     int size() const { return type == VarType::Scalar ? 1 : 2; }
 };
 
+// How the solver samples a sweep. Adaptive: the exchange adds the fine
+// grid's worst positions to the initial samples. Fixed: the initial samples
+// are the problem, for the whole solve; feasibility is judged on them, and
+// the fine grid only reports what happens between them.
+enum class Sampling : std::uint8_t { Adaptive, Fixed };
+
 struct SweepInfo {
     std::string name;
     double min = 0.0, max = 1.0;
+    // The sweep's own initial sample count ("samples"), 0 when it sets none.
+    int samples = 0;
+    Sampling sampling = Sampling::Adaptive;
     double value(double t) const { return min + t * (max - min); }
+    // `fallback` is the solver's initial_samples: a count read from the
+    // instance alone would ignore --initial-samples.
+    int initial_samples(int fallback) const {
+        return samples > 0 ? samples : fallback;
+    }
 };
 
 struct ParamInfo {
@@ -121,12 +135,20 @@ struct DisplayInfo : ExprInfo {
     std::string label;
     int ghosts = 0;
     bool trace = false;
+    bool visible = true;
 };
 
 struct ConstraintInfo {
     std::string name, path, text, forall, note;
     bool enabled = true;
     std::vector<int> groups;  // row groups it produced (empty when disabled)
+    // What the constraint bounds, compiled for a disabled constraint too:
+    // the middle of `lo <= e <= hi`; for one comparison, the side that is not
+    // constant when the other is, else lhs - rhs as written. A max_over /
+    // min_over side gives its body, which follows the sweep slider like the
+    // side of a "forall" constraint. ref.node is -1 when lhs - rhs would
+    // depend on two sweeps.
+    ExprInfo value;
 };
 
 enum class CriterionRole : std::uint8_t {
@@ -134,6 +156,7 @@ enum class CriterionRole : std::uint8_t {
     Maximize,
     Max,
     Min,
+    Range,
     Report
 };
 enum class Aggregate : std::uint8_t { None, MaxOver, MinOver };
@@ -141,13 +164,18 @@ enum class Aggregate : std::uint8_t { None, MaxOver, MinOver };
 struct CriterionInfo {
     std::string name, path, text, unit;
     CriterionRole role = CriterionRole::Report;
-    // SI; NaN without a bound. Max role: value <= bound; Min: value >= bound.
+    // false: evaluated and reported, but never the objective and without a
+    // bound group, whatever the role.
+    bool enabled = true;
+    // SI; NaN without a bound. Max role: value <= bound; Min: value >= bound;
+    // Range: lower <= value <= bound.
     double bound = std::numeric_limits<double>::quiet_NaN();
+    double lower = std::numeric_limits<double>::quiet_NaN();
     std::string bound_text;
     // Top-level max_over / min_over and the sweep it aggregates (-1 if None).
     Aggregate aggregate = Aggregate::None;
     int sweep = -1;
-    // RowGroup of the bound (Max / Min roles), -1 otherwise.
+    // RowGroup of the bounds (Max / Min / Range roles), -1 otherwise.
     int group = -1;
 };
 
@@ -167,7 +195,13 @@ struct RowGroup {
     int source = -1;
     std::string name;
     int sweep = -1;  // rows repeat for every sample of this sweep; -1: once
-    int split = 1;   // rows per context (2 when a top-level abs() was split)
+    // Rows per context: 2 for a split top-level abs() or a two-sided
+    // relation, up to 4 for a two-sided relation with splits.
+    int split = 1;
+    // Per row of a context when split > 1: "(+)" / "(-)" for an abs() split,
+    // "(lo)" / "(hi)" for the sides of a two-sided relation ("(hi+)" ...
+    // when a side is split).
+    std::vector<std::string> labels;
     bool equality = false;
     // Natural unit of the verification value: the row's own SI unit, except
     // Assembly groups whose solver row is the dimensionless -sin^2 while the
@@ -179,6 +213,32 @@ struct CompileOptions {
     // Extra expressions compiled against the instance (any type, may depend on
     // one free sweep); evaluated through Model::probes() like display items.
     std::vector<std::string> probes;
+    // Leave out each let, constraint, criterion and display item that has an
+    // error, and each one using an excluded let, instead of failing: the model
+    // holds the rest and CompileResult::excluded lists what was left out. The
+    // diagnostics are those of a compile without it. Any other error (schema,
+    // includes, names, params, geometry, sweeps, design, probes) still fails
+    // the compile, as does a probe using an excluded let: those change the
+    // coordinates, what a name means or the caller's probe indices.
+    // The model's lists skip the excluded entries, so constraints()[i] need
+    // not be the instance's constraints[i]: match them by path.
+    // Off for the CLI, which must not solve a model that silently lacks a
+    // mistyped constraint.
+    bool isolate_items = false;
+};
+
+// The item CompileOptions::isolate_items leaves out for an error at `path`
+// ("constraints[3]" for "constraints[3].expr"), empty where an error fails
+// the compile instead ("design.c.domain", "params.W").
+std::string_view isolated_item(std::string_view path);
+
+// An item that CompileOptions::isolate_items left out of the model.
+struct ExcludedItem {
+    // "let.K1", "constraints[3]", "criteria[0]", "display[2]".
+    std::string path;
+    // Its first error ("constraints[3].expr at column 4: unknown name 'K'"),
+    // else "uses let.K1, which is excluded" (a let it uses directly).
+    std::string reason;
 };
 
 // A compiled instance. Immutable after compile(): every member function is
@@ -205,8 +265,8 @@ public:
     const std::vector<DisplayInfo> & display() const { return display_; }
     const std::vector<ExprInfo> & probes() const { return probes_; }
     const std::vector<RowGroup> & groups() const { return groups_; }
-    // Index in criteria() of the one minimize or maximize criterion, -1 when
-    // the instance has none (a feasibility problem).
+    // Index in criteria() of the one enabled minimize or maximize criterion,
+    // -1 when the instance has none (a feasibility problem).
     int objective() const { return objective_; }
     // -1 when the objective is maximised, else +1: the solver minimises
     // objective_sign() * value, and "better" compares that product.
@@ -241,7 +301,8 @@ public:
                        std::span<double> x) const;
 
     NlpLayout nlp_layout(const SampleSets & samples) const;
-    // "link_angle[tau=0.25]", "view_couch:bound(+)", "assembly of p[tau=0.5]".
+    // "link_angle[tau=0.25]", "view_couch:bound(+)", "height(lo)",
+    // "assembly of p[tau=0.5]".
     std::string row_name(const NlpRow & row, const SampleSets & samples) const;
 
     const detail::Program & program() const { return *program_; }
@@ -267,8 +328,13 @@ private:
 };
 
 struct CompileResult {
-    std::shared_ptr<const Model> model;   // null when there are errors
+    // Null when there are errors, unless isolate_items excluded every item
+    // that has one: ok() then holds alongside errors.
+    std::shared_ptr<const Model> model;
     std::vector<Diagnostic> diagnostics;  // errors and warnings
+    // Lets, then constraints, criteria and display items, each in instance
+    // order; empty without isolate_items.
+    std::vector<ExcludedItem> excluded;
     bool ok() const { return model != nullptr; }
 };
 

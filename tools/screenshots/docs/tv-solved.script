@@ -1,0 +1,29 @@
+# The corner TV example after a solve: the Solver tab; the default layout
+# with A selected; the sheets of a point and of a criterion in a taller
+# Properties; the Criteria panel in a wider right column, where the
+# formulas fit.
+open tests/data/tv_corner_ref.json
+solve
+panel solver
+wait 29
+shot solver.ppm
+panel constraints
+select design A
+wait 16
+shot overview.ppm
+# The border between the canvas and the panels under it, dragged up; the
+# pointer then leaves it, which would stay highlighted.
+drag L 300 691 300 420
+move 1590 10
+wait 16
+shot point.ppm
+select criterion link_angle
+wait 16
+shot criterion.ppm
+action edit.clear_selection
+panel criteria
+# The border between the left column and the right one, dragged left.
+drag L 1023 300 700 300
+move 1590 10
+wait 16
+shot criteria.ppm
