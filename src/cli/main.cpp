@@ -15,6 +15,7 @@
 #include "gs/engine/instance.hpp"
 #include "gs/engine/model.hpp"
 #include "gs/engine/types.hpp"
+#include "gs/sketch/sketch.hpp"
 #include "gs/solve/nlp.hpp"
 #include "gs/solve/report.hpp"
 #include "gs/solve/run.hpp"
@@ -34,6 +35,9 @@ const char * kUsage =
 
   --eval                    verify the instance's design values, no solve
   --polish                  one run from the instance's design values
+  --sketch-solve            settle the sketch: move its free values onto its
+                            geometry constraints, least change;
+                            --write-instance saves the drawing
   --pareto C1[,C2...] --bounds b1,b2,...
                             epsilon-constraint study: every listed criterion
                             gets each bound in turn (display unit of C1)
@@ -47,7 +51,8 @@ const char * kUsage =
                             when it parses, else as a string; null removes
                             the key. An index path follows the file's order;
                             --write-instance saves the edits
-  --fix name,...            fix design variables at their instance values
+  --fix name,...            fix design variables, or sketch points, circles,
+                            arcs and bodies, at their instance values
   --bound C=VALUE           replace criterion C's bound (its display unit)
   --no-current              do not use the instance's design as a start
   --no-phase1               skip the phase-1 feasibility solve
@@ -60,15 +65,20 @@ const char * kUsage =
   --out results.json        write the results
   --write-instance out.json save the instance with the best design values and
                             the criterion bounds it was solved under (--bound,
-                            or the Pareto point's bound)
+                            or the Pareto point's bound); for a sketch with
+                            nothing to optimise, as checked, if feasible; with
+                            --sketch-solve, the settled drawing
   --write-point K           with --pareto: write point K (1-based) instead
                             (required with --pareto --write-instance)
+  --verbose-sketch          list every geometry constraint of a sketch, not
+                            only the violated ones
   --quiet                   no progress line
 )";
 
 struct Args {
     std::string instance;
-    bool eval = false, polish = false, quiet = false;
+    bool eval = false, polish = false, quiet = false, verbose_sketch = false,
+         sketch_solve = false;
     std::vector<std::string> pareto;
     std::vector<double> bounds;
     std::optional<int> starts, threads, initial_samples, verify_samples,
@@ -137,6 +147,10 @@ Args parse(int argc, char ** argv) {
             a.polish = true;
         } else if(arg == "--quiet") {
             a.quiet = true;
+        } else if(arg == "--verbose-sketch") {
+            a.verbose_sketch = true;
+        } else if(arg == "--sketch-solve") {
+            a.sketch_solve = true;
         } else if(arg == "--pareto") {
             a.pareto = split(value(), ',');
         } else if(arg == "--bounds") {
@@ -204,10 +218,13 @@ Args parse(int argc, char ** argv) {
     if(a.pareto.empty() != a.bounds.empty())
         throw std::invalid_argument("--pareto and --bounds go together");
     if(static_cast<int>(a.eval) + static_cast<int>(a.polish) +
-           static_cast<int>(!a.pareto.empty()) >
+           static_cast<int>(!a.pareto.empty()) +
+           static_cast<int>(a.sketch_solve) >
        1)
         throw std::invalid_argument(
-            "--eval, --polish and --pareto exclude each other");
+            "--eval, --polish, --pareto and --sketch-solve exclude each other");
+    if(a.sketch_solve && !a.out.empty())
+        throw std::invalid_argument("--sketch-solve writes no results (--out)");
     if(a.write_point > 0 && a.pareto.empty())
         throw std::invalid_argument("--write-point needs --pareto");
     if(a.write_point > static_cast<int>(a.bounds.size()))
@@ -234,6 +251,32 @@ Json bound_json(const ShownBound & b) {
     return Json(std::format("{}{}", b.display, b.unit));
 }
 
+// Writes the bounds `shown` into `inst`, then saves it to `path`: the text of
+// the bounds ("reach <= 75cm"), or nullopt once the error is printed.
+std::optional<std::string> save_with_bounds(
+    gs::Instance & inst, const gs::Model & m,
+    const std::vector<ShownBound> & shown, const std::string & path) {
+    std::string err, text;
+    for(const ShownBound & b : shown) {
+        const gs::CriterionInfo & ci =
+            m.criteria()[static_cast<std::size_t>(b.criterion)];
+        if(!inst.set(ci.path + ".bound", bound_json(b), &err)) {
+            std::cerr << "--write-instance: " << err << "\n";
+            return std::nullopt;
+        }
+        text += std::format("{}{} {} {}", text.empty() ? "" : ", ", ci.name,
+                            ci.role == gs::CriterionRole::Max ? "<=" : ">=",
+                            bound_json(b).is_string()
+                                ? bound_json(b).get<std::string>()
+                                : bound_json(b).dump());
+    }
+    if(!inst.save(path, &err)) {
+        std::cerr << "--write-instance: " << err << "\n";
+        return std::nullopt;
+    }
+    return text;
+}
+
 int criterion_or_throw(const gs::Model & m, const std::string & name) {
     const int c = m.find_criterion(name);
     if(c < 0) throw std::invalid_argument("no criterion named '" + name + "'");
@@ -246,6 +289,75 @@ int criterion_or_throw(const gs::Model & m, const std::string & name) {
        gs::CriterionRole::Range)
         throw std::invalid_argument(gs::range_override_message(name));
     return c;
+}
+
+// The Sketch section's data: settle() and, when it converged, the
+// diagnosis at the settled values. `settled.model` is null when the
+// sketch-mode compile failed.
+struct SketchCheck {
+    gs::sketch::Settled settled;
+    std::optional<gs::sketch::Diagnosis> diagnosis;
+    std::string report(bool verbose) const {
+        return gs::sketch::format_report(
+            settled, diagnosis ? &*diagnosis : nullptr, verbose);
+    }
+    Json json() const {
+        return gs::sketch::report_json(settled,
+                                       diagnosis ? &*diagnosis : nullptr);
+    }
+};
+
+SketchCheck check_sketch(gs::Instance & inst, bool dry_run) {
+    gs::sketch::SettleOptions o;
+    o.dry_run = dry_run;
+    SketchCheck c{gs::sketch::settle(inst, o), std::nullopt};
+    const gs::sketch::Settled & s = c.settled;
+    if(s.model && s.converged) {
+        const gs::sketch::System system(s.model);
+        c.diagnosis =
+            system.diagnose(s.model->initial_x(), s.q, gs::sketch::left_out(s));
+    }
+    return c;
+}
+
+// The path of the "fixed" key --fix sets on `name`: a design variable, a
+// sketch point, circle or arc (a body's as "tv.c"), or a body. Throws with the
+// reason when `name` is none of them.
+std::string fixed_path(const gs::Instance & inst, const std::string & name) {
+    if(inst.get("design." + name)) return "design." + name + ".fixed";
+    const auto dot = name.find('.');
+    if(dot == std::string::npos && inst.get("sketch.bodies." + name))
+        return "sketch.bodies." + name + ".fixed";
+    const std::string entry = dot == std::string::npos
+                                  ? "sketch.elements." + name
+                                  : "sketch.bodies." + name.substr(0, dot) +
+                                        ".elements." + name.substr(dot + 1);
+    const gs::Instance::Json * type = inst.get(entry + ".type");
+    if(!type || !type->is_string())
+        throw std::invalid_argument(std::format(
+            "--fix: no design variable, sketch element or body named '{}'",
+            name));
+    if(*type != "point" && *type != "circle" && *type != "arc")
+        throw std::invalid_argument(
+            std::format("--fix: '{}' is a {}: only a point, a circle, an arc "
+                        "or a body of the sketch has a fixed state",
+                        name, type->get<std::string>()));
+    return entry + ".fixed";
+}
+
+// A sketch with no element and no body counts as none.
+bool has_sketch(const gs::Model & m) {
+    return !m.sketch().empty() || !m.sketch_bodies().empty();
+}
+
+// The compile's notes (gs::ModelNote) for --out. Written only when there
+// is one: a results file of an instance without an arc keeps its keys.
+void add_notes(const gs::Model & m, Json & j) {
+    if(m.notes().empty()) return;
+    Json notes = Json::array();
+    for(const gs::ModelNote & n : m.notes())
+        notes.push_back({{"path", n.path}, {"text", n.text}});
+    j["notes"] = std::move(notes);
 }
 
 Json probe_json(const gs::Model & m, gs::Evaluator & ev,
@@ -301,13 +413,32 @@ int run(const Args & a) {
                          "(check the spelling)\n";
     }
     for(const std::string & name : a.fix) {
-        if(!inst->get("design." + name)) {
-            std::cerr << "--fix: no design variable named '" << name << "'\n";
+        std::string path;
+        try {
+            path = fixed_path(*inst, name);
+        } catch(const std::invalid_argument & e) {
+            std::cerr << e.what() << "\n";
             return 2;
         }
         std::string err;
-        if(!inst->set("design." + name + ".fixed", true, &err)) {
+        if(!inst->set(path, true, &err)) {
             std::cerr << "--fix " << name << ": " << err << "\n";
+            return 2;
+        }
+    }
+    // --sketch-solve settles before the design-mode compile, as the
+    // Document does (plan 2.6): that compile folds the drawn values, so a
+    // let or a dyad that fails at a drawing the solver would move refuses
+    // the very file --sketch-solve exists to repair.
+    std::optional<SketchCheck> settled;
+    if(a.sketch_solve) {
+        settled = check_sketch(*inst, false);
+        if(!settled->settled.model) {
+            std::cerr << gs::to_string(settled->settled.diagnostics);
+            return 2;
+        }
+        if(!has_sketch(*settled->settled.model)) {
+            std::cerr << "--sketch-solve: the instance has no sketch section\n";
             return 2;
         }
     }
@@ -318,6 +449,17 @@ int run(const Args & a) {
     if(!cr.ok()) return 2;
     const std::shared_ptr<const gs::Model> model = cr.model;
     const gs::Model & m = *model;
+    // A sketch is constant geometry for the optimiser until its variables
+    // can be released (plan, P3): with no hand-written variable a solve
+    // checks the drawing, as --eval does, but exits by the verdict.
+    const bool nothing_to_solve = has_sketch(m) && m.n() == 0;
+    // Every point of a study would be the same drawing. Reduced to one
+    // check, it would exit 0 with no study for a script to read.
+    if(nothing_to_solve && !a.pareto.empty()) {
+        std::cerr << "--pareto: nothing to optimise: a sketch is checked, not "
+                     "solved, until variables can be released\n";
+        return 2;
+    }
 
     std::vector<std::string> messages;
     Json solver_json = m.solver_settings();
@@ -364,19 +506,71 @@ int run(const Args & a) {
         shown.push_back({c, value, unit});
     }
 
+    if(settled) {
+        const SketchCheck & sk = *settled;
+        std::cout << std::format("instance {}  (sketch solve)\n", a.instance)
+                  << sk.report(a.verbose_sketch);
+        const gs::sketch::Status st = sk.settled.status;
+        if(!sk.settled.converged) {
+            std::cout << (st == gs::sketch::Status::Conflicting
+                              ? "conflicting"
+                              : "did not converge")
+                      << ": nothing written\n";
+            if(!a.write_instance.empty())
+                std::cerr << "--write-instance: the sketch was not solved, so "
+                             "nothing was written\n";
+            return 1;
+        }
+        std::string moved;
+        for(const std::string & p : sk.settled.written)
+            moved += (moved.empty() ? "" : ", ") + p;
+        std::cout << (moved.empty()
+                          ? std::string("settled: nothing moved\n")
+                          : std::format(
+                                "settled: {} value{} moved: {}\n",
+                                sk.settled.written.size(),
+                                sk.settled.written.size() == 1 ? "" : "s",
+                                moved));
+        if(!a.write_instance.empty()) {
+            const std::optional<std::string> bounds =
+                save_with_bounds(*inst, m, shown, a.write_instance);
+            if(!bounds) return 2;
+            std::cout << std::format(
+                "instance written to {}{}\n", a.write_instance,
+                bounds->empty() ? "" : "; bounds " + *bounds);
+        }
+        return st == gs::sketch::Status::Malformed ||
+                       st == gs::sketch::Status::Conflicting
+                   ? 1
+                   : 0;
+    }
+
     std::cout << std::format("instance {}  (n = {}, {} row groups, {})\n",
                              a.instance, m.n(), m.groups().size(),
                              gs::algorithm_name(s.algorithm))
               << gs::format_sweeps(m, s);
+    std::optional<SketchCheck> sketch;
+    if(has_sketch(m)) {
+        sketch = check_sketch(*inst, true);
+        if(!sketch->settled.model) {
+            std::cerr << gs::to_string(sketch->settled.diagnostics);
+            return 2;
+        }
+        std::cout << sketch->report(a.verbose_sketch);
+    }
+    // Report text, never "warning:" (gs::ModelNote).
+    for(const gs::ModelNote & n : m.notes())
+        std::cout << "note: " << n.text << "\n";
     gs::Evaluator ev(m);
     const std::vector<double> x0 = m.initial_x();
 
-    if(a.eval) {
+    if(a.eval || nothing_to_solve) {
         const gs::Check c = gs::check(ev, x0, s, overrides, false, true);
         std::string probes_text;
         const Json probes = probe_json(m, ev, x0, probes_text);
         std::cout << gs::format_design(m, x0)
-                  << gs::format_check(m, c, s.feas_tol) << probes_text;
+                  << gs::format_check(m, c, s.feas_tol, a.verbose_sketch)
+                  << probes_text;
         if(!a.out.empty()) {
             gs::RunResult r;
             r.origin = "instance values";
@@ -401,13 +595,40 @@ int run(const Args & a) {
             j["sweeps"] = gs::sweeps_json(m, s);
             j["evaluation"] = gs::run_json(m, r);
             j["probes"] = probes;
+            if(sketch) j["sketch"] = sketch->json();
+            add_notes(m, j);
             std::string err;
             if(!gs::write_json(a.out, j, &err)) {
                 std::cerr << err << "\n";
                 return 2;
             }
         }
-        return 0;
+        if(a.eval) return 0;
+        std::cout << "note: nothing to optimise: a sketch is checked, not "
+                     "solved, until variables can be released\n";
+        const bool feasible = c.feasible(s.feas_tol);
+        if(!a.write_instance.empty()) {
+            if(!feasible) {
+                std::cerr << "--write-instance: the sketch fails its check, "
+                             "so nothing was written\n";
+                return 1;
+            }
+            const std::optional<std::string> bounds =
+                save_with_bounds(*inst, m, shown, a.write_instance);
+            if(!bounds) return 2;
+            std::cout << std::format(
+                "instance written to {}{}\n", a.write_instance,
+                bounds->empty() ? "" : "; bounds " + *bounds);
+        }
+        return feasible ? 0 : 1;
+    }
+
+    // Constant for every design: said first, before every run reports
+    // itself infeasible.
+    if(sketch) {
+        const std::string failure =
+            gs::check_failure(m, ev.verify(x0, 2), s.feas_tol);
+        if(!failure.empty()) std::cout << failure << "\n";
     }
 
     gs::SolveJob job;
@@ -517,11 +738,14 @@ int run(const Args & a) {
         std::string probes_text;
         probes = probe_json(m, ev, best->x, probes_text);
         std::cout << gs::format_design(m, best->x)
-                  << gs::format_check(m, c, s.feas_tol) << probes_text;
+                  << gs::format_check(m, c, s.feas_tol, a.verbose_sketch)
+                  << probes_text;
     }
     if(!a.out.empty()) {
         Json j = gs::outcome_json(*o);
         if(!probes.empty()) j["probes_of_best"] = probes;
+        if(sketch) j["sketch"] = sketch->json();
+        add_notes(m, j);
         if(!gs::write_json(a.out, j, &err)) {
             std::cerr << err << "\n";
             return 2;
@@ -536,27 +760,12 @@ int run(const Args & a) {
         const std::vector<std::string> names =
             gs::apply_design(*inst, m, best->x);
         // The design is feasible only under the bounds it was solved with.
-        std::string bounds_text;
-        for(const ShownBound & b : best_shown) {
-            const gs::CriterionInfo & ci =
-                m.criteria()[static_cast<std::size_t>(b.criterion)];
-            if(!inst->set(ci.path + ".bound", bound_json(b), &err)) {
-                std::cerr << "--write-instance: " << err << "\n";
-                return 2;
-            }
-            bounds_text += std::format(
-                "{}{} {} {}", bounds_text.empty() ? "" : ", ", ci.name,
-                ci.role == gs::CriterionRole::Max ? "<=" : ">=",
-                bound_json(b).is_string() ? bound_json(b).get<std::string>()
-                                          : bound_json(b).dump());
-        }
-        if(!inst->save(a.write_instance, &err)) {
-            std::cerr << "--write-instance: " << err << "\n";
-            return 2;
-        }
+        const std::optional<std::string> bounds =
+            save_with_bounds(*inst, m, best_shown, a.write_instance);
+        if(!bounds) return 2;
         std::cout << std::format(
             "instance with the best design ({} variables{}) written to {}\n",
-            names.size(), bounds_text.empty() ? "" : "; bounds " + bounds_text,
+            names.size(), bounds->empty() ? "" : "; bounds " + *bounds,
             a.write_instance);
     }
     return best && best->feasible ? 0 : 1;

@@ -7,9 +7,11 @@
 #include <format>
 #include <iterator>
 #include <set>
+#include <span>
 #include <utility>
 
 #include "gs/app/app.hpp"
+#include "gs/app/pick_tool.hpp"
 
 namespace gs::app {
 namespace {
@@ -27,6 +29,8 @@ constexpr std::pair<std::string_view, SelKey::Kind> kKinds[] = {
     {"criterion", SelKey::Kind::Criterion},
     {"display", SelKey::Kind::Display},
     {"geometry", SelKey::Kind::Geometry},
+    {"element", SelKey::Kind::Element},
+    {"body", SelKey::Kind::Body},
 };
 
 std::string_view kind_name(SelKey::Kind kind) {
@@ -285,7 +289,7 @@ void LineParser::parse(std::string_view line, int number) {
         return;
     }
     args_ = tokens(rest);
-    if(cmd != "text" && cmd != "select")
+    if(cmd != "text" && cmd != "select" && cmd != "activate")
         for(const Token & t : args_)
             if(t.quoted) throw Bad{std::format("{} takes no quoted word", cmd)};
     if(cmd == "size") {
@@ -407,6 +411,17 @@ void LineParser::parse(std::string_view line, int number) {
                 std::format("not a panel ({}): '{}'", panel_keys(), arg(0))};
         ScriptStep s = make_step(Kind::Panel, label_);
         s.panel = *id;
+        steps().push_back(std::move(s));
+    } else if(cmd == "activate") {
+        if(args_.size() < 2 || (arg(0) != "status" && arg(0) != "messages") ||
+           (arg(0) == "status" && args_.size() != 2) || args_.size() > 3)
+            throw Bad{
+                "usage: activate status TEXT, or activate messages "
+                "TEXT [PART]"};
+        ScriptStep s = make_step(Kind::Activate, label_);
+        s.where = arg(0);
+        s.text = arg(1);
+        if(args_.size() == 3) s.part = arg(2);
         steps().push_back(std::move(s));
     } else {
         throw Bad{std::format("unknown command '{}'", cmd)};
@@ -626,6 +641,42 @@ bool ScriptPlayer::run(App & app, const ScriptStep & s) {
         case Kind::Panel:
             app.focus_panel(s.panel);
             return true;
+        case Kind::Activate: {
+            if(s.where == "status") {
+                const std::vector<StatusBarPresenter::Segment> bar =
+                    app.status_bar().segments();
+                for(std::size_t i = 0; i < bar.size(); ++i) {
+                    const StatusBarPresenter::Segment & g = bar[i];
+                    if(!g.status.text.contains(s.text)) continue;
+                    if(!g.link && g.field.empty() && g.select.empty())
+                        return fail(
+                            std::format("'{}' is no link", g.status.text));
+                    app.status_bar().activate(i);
+                    return true;
+                }
+                return fail(std::format("no status bar segment '{}'", s.text));
+            }
+            MessagesPresenter & messages = app.panels().messages;
+            const std::vector<MessagesPresenter::Line> lines =
+                messages.view().problems;
+            for(std::size_t i = 0; i < lines.size(); ++i) {
+                if(!lines[i].text.contains(s.text)) continue;
+                if(s.part.empty()) {
+                    if(messages.activate(i)) return true;
+                    return fail(std::format("'{}' is no link", lines[i].text));
+                }
+                const auto & parts = lines[i].parts;
+                const auto p = std::ranges::find(parts, s.part,
+                                                 &SketchMessage::Part::text);
+                if(p != parts.end() &&
+                   messages.activate(
+                       i, static_cast<std::size_t>(p - parts.begin())))
+                    return true;
+                return fail(std::format("'{}' of '{}' is no link", s.part,
+                                        lines[i].text));
+            }
+            return fail(std::format("no message '{}'", s.text));
+        }
         default:
             return true;
     }
@@ -665,7 +716,54 @@ Json run_state(App & app, std::string_view popup) {
             : Json();
     const View2d & view = app.canvas().view();
     out["view"] = {{"centre", {view.centre.x, view.centre.y}},
-                   {"scale", view.scale}};
+                   {"scale", view.scale},
+                   {"rect", {view.ox, view.oy, view.w, view.h}}};
+    if(const Tool * tool = app.tools().active()) {
+        Json fields = Json::array();
+        for(const ValueField & f : tool->fields())
+            fields.push_back(
+                {{"id", f.id},
+                 {"text", f.text},
+                 {"set", f.set},
+                 {"positional", f.kind == ValueField::Kind::Positional},
+                 {"placed", f.placed},
+                 {"refusal", f.refusal ? Json(*f.refusal) : Json()}});
+        const std::optional<ToolHost::Edit> & edit = app.tools().editing();
+        const std::span<const std::string> methods = tool->methods();
+        const auto m = static_cast<std::size_t>(tool->method());
+        const PreviewList preview = tool->preview();
+        Json prims = Json::array();
+        for(const PreviewPrim & p : preview.prims) {
+            Json points = Json::array();
+            for(const Vec2d & v : p.points) points.push_back({v.x, v.y});
+            Json prim = {
+                {"kind", p.kind == PreviewPrim::Kind::Point  ? "point"
+                         : p.kind == PreviewPrim::Kind::Path ? "path"
+                                                             : "circle"},
+                {"points", std::move(points)}};
+            if(p.kind == PreviewPrim::Kind::Point) prim["label"] = p.label;
+            prims.push_back(std::move(prim));
+        }
+        Json suggestions = Json::array();
+        for(const Suggestion & g : preview.suggestions)
+            suggestions.push_back({{"formula", g.formula}, {"glyph", g.glyph}});
+        Json picks = Json::array();
+        if(const auto * p = dynamic_cast<const PickTool *>(tool))
+            for(const ToolPick & k : p->picks()) picks.push_back(k.ref);
+        out["tool"] = {
+            {"id", std::string(tool->id())},
+            {"hint", tool->hint()},
+            {"method", m < methods.size() ? Json(methods[m]) : Json("")},
+            {"in_progress", tool->in_progress()},
+            {"fields", std::move(fields)},
+            {"editing",
+             edit ? Json{{"id", edit->id}, {"text", edit->text}} : Json()},
+            {"preview", std::move(prims)},
+            {"suggestions", std::move(suggestions)},
+            {"picks", std::move(picks)}};
+    } else {
+        out["tool"] = Json();
+    }
     const FormulaDraft & formula = app.formula();
     out["formula"] = formula.is_open() ? Json{{"title", formula.title()},
                                               {"text", formula.text()}}

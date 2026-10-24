@@ -48,6 +48,9 @@ struct DetailItem {
         Colour,   // `value` is an Rgba
         Button,   // `label` is its caption; press() runs it
         Section,  // `label` heads the items that follow, up to the next one
+        // `text` names `target`, which press() selects and reveals; plain
+        // text without one (a slot that holds a constant).
+        Link,
     };
     Kind kind = Kind::Note;
     // Names the item in the keyed operations, unique in its sheet and the
@@ -74,6 +77,7 @@ struct DetailItem {
     // Why the last set() of this Name or Field was refused, empty when it
     // was not: a name in use, a Number field's text that is not a number.
     std::string refusal;
+    std::optional<SelKey> target;  // a Link's
 
     bool operator==(const DetailItem &) const = default;
 };
@@ -142,7 +146,8 @@ public:
     // and the reason is in the item's `refusal` until its next set().
     bool set(const SelKey & key, std::string_view item,
              const DetailValue & value);
-    // A Button.
+    // A Button; a Link, which selects its target alone and reveals it
+    // (App::reveal()), whatever the builder.
     bool press(const SelKey & key, std::string_view item);
     // A drag of a Drag, Slider or Colour, between a press and its release:
     // sheet() shows each value update_drag() gives, and end_drag() applies

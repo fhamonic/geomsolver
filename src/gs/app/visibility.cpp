@@ -57,6 +57,44 @@ void Visibility::renamed(std::string_view from, std::string_view to) {
     changed_.emit(Change::Visibility);
 }
 
+void Visibility::renamed_prefix(std::string_view from, std::string_view to) {
+    bool changed = false;
+    for(Names * names : {&hidden_, &shown_}) {
+        Names moved;
+        for(auto it = names->begin(); it != names->end();)
+            if(it->starts_with(from)) {
+                moved.insert(std::string(to) + it->substr(from.size()));
+                it = names->erase(it);
+            } else {
+                ++it;
+            }
+        changed |= !moved.empty();
+        names->merge(moved);
+    }
+    if(!changed) return;
+    save();
+    changed_.emit(Change::Visibility);
+}
+
+void Visibility::set_glyph_hidden(std::string_view constraint, bool hidden) {
+    if(hidden == glyph_hidden(constraint)) return;
+    if(hidden)
+        glyphs_hidden_.emplace(constraint);
+    else
+        glyphs_hidden_.erase(glyphs_hidden_.find(constraint));
+    save();
+    changed_.emit(Change::Visibility);
+}
+
+void Visibility::glyph_renamed(std::string_view from, std::string_view to) {
+    const auto it = glyphs_hidden_.find(from);
+    if(it == glyphs_hidden_.end()) return;
+    glyphs_hidden_.erase(it);
+    glyphs_hidden_.emplace(to);
+    save();
+    changed_.emit(Change::Visibility);
+}
+
 void Visibility::follow(const Document & doc) {
     const std::string key = settings_key(doc.path());
     if(source_ == doc.instance()) {
@@ -67,27 +105,30 @@ void Visibility::follow(const Document & doc) {
     }
     source_ = doc.instance();
     key_ = key;
-    Names hidden, shown;
+    Names hidden, shown, glyphs;
     const std::optional<std::string> text =
         key_.empty() ? std::nullopt : settings_.read(key_);
     const nlohmann::json j =
         text ? nlohmann::json::parse(*text, nullptr, false) : nlohmann::json();
     for(auto [names, field] :
-        {std::pair{&hidden, "hidden"}, std::pair{&shown, "shown"}}) {
+        {std::pair{&hidden, "hidden"}, std::pair{&shown, "shown"},
+         std::pair{&glyphs, "glyphs"}}) {
         if(!j.is_object() || !j.contains(field) || !j[field].is_array())
             continue;
         for(const nlohmann::json & n : j[field])
             if(n.is_string()) names->insert(n.get<std::string>());
     }
-    if(hidden == hidden_ && shown == shown_) return;
+    if(hidden == hidden_ && shown == shown_ && glyphs == glyphs_hidden_) return;
     hidden_ = std::move(hidden);
     shown_ = std::move(shown);
+    glyphs_hidden_ = std::move(glyphs);
     changed_.emit(Change::Visibility);
 }
 
 void Visibility::save() const {
     if(key_.empty()) return;
-    const nlohmann::json j = {{"hidden", hidden_}, {"shown", shown_}};
+    nlohmann::json j = {{"hidden", hidden_}, {"shown", shown_}};
+    if(!glyphs_hidden_.empty()) j["glyphs"] = glyphs_hidden_;
     settings_.write(key_, j.dump());
 }
 
@@ -124,6 +165,12 @@ std::optional<SelKey> eye_of(const Document & doc, const SelKey & key) {
                     return drawn[i];
             return key;
         }
+        case Kind::Element:
+        case Kind::Body:
+            if(doc.has_instance() && key.sub.empty() &&
+               !entry_paths(*doc.instance(), key).empty())
+                return key;
+            return std::nullopt;
         case Kind::Param:
         case Kind::Sweep:
         case Kind::Constraint:
@@ -159,6 +206,12 @@ std::string eye_tip(const Document & doc, const SelKey & eye, bool open) {
                       "no undo step."
                     : "Not drawn. Check it to draw it on the canvas, kept "
                       "for this file in your settings.";
+    if(eye.kind == SelKey::Kind::Body)
+        return open ? "Its elements are shown on the canvas. Hiding them is "
+                      "kept for this file in your settings, not in the file, "
+                      "and is no undo step."
+                    : "Its elements are hidden on the canvas, for this file, "
+                      "in your settings.";
     return open ? "Shown on the canvas. Hiding it is kept for this file in "
                   "your settings, not in the file, and is no undo step."
                 : "Hidden on the canvas, for this file, in your settings.";

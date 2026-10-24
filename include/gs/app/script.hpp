@@ -43,6 +43,7 @@ struct ScriptStep {
         Select,
         Action,
         Panel,
+        Activate,
     };
     Kind kind = Kind::Wait;
     // Names the step in notes and errors: "line 3: select", or the option
@@ -56,8 +57,12 @@ struct ScriptStep {
     Mods mods = Mods::None;
     float wheel = 0.0f;
     // KeyDown, KeyUp: the key's name. Text: the typed text. Open, Shot: a
-    // path. Action: its id. Pareto: the bounds.
+    // path. Action: its id. Pareto: the bounds. Activate: a text the
+    // segment's or the line's holds.
     std::string text;
+    // Activate: "status" (the status bar) or "messages", and the text of
+    // the part of a Messages line to click, "" for the whole line.
+    std::string where, part;
     std::vector<std::string> criteria;                       // Pareto
     std::vector<std::pair<std::string, std::string>> edits;  // Set
     std::vector<SelKey> keys;                                // Select
@@ -107,7 +112,9 @@ Script make_script(const ScriptOptions & options, std::optional<Script> file);
 // is modified, its last undo step and its document; the selection as
 // `select` takes it ("design A"); the status bar's texts; the open panels
 // and the one with the keyboard; the entry the name editor is open on and
-// its panel; the canvas's view; the formula pop-up's text; and `popup`, the
+// its panel; the canvas's view (its rectangle in window pixels too); the
+// active tool, its hint, method, fields and the one being typed in, its
+// preview and its suggestions; the formula pop-up's text; and `popup`, the
 // title of the popup or dialog the front-end shows, "" for none.
 Json run_state(App & app, std::string_view popup);
 

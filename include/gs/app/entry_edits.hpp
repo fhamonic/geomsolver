@@ -11,8 +11,9 @@
 
 namespace gs::app {
 
-// Whether a params, design, sweeps, let or geometry entry is named `name`,
-// the included files' geometry too: the namespace expressions share.
+// Whether a params, design, sweeps, let or geometry entry, a world element
+// or a body of the sketch is named `name`, the included files' geometry
+// too: the namespace expressions share.
 bool name_used(const Instance & instance, std::string_view name);
 // The first "<prefix><k>", k from 1, that name_used() does not find: the
 // name of a new entry of that namespace.

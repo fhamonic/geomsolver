@@ -1,5 +1,5 @@
 # The hover tooltip of a geometry shape, chair1.
 open tests/data/tv_corner_ref.json
-move 691 295
+move 759 295
 wait 28
 shot

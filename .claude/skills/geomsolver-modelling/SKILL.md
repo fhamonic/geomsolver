@@ -142,6 +142,48 @@ Jobs chain: A ends in B when the solve is infeasible; C ends in B when the chang
    before and after and the rows that became ACTIVE. If the change made it INFEASIBLE, do job B.
 7. **Nothing else changed**: `diff FILE.json.bak FILE.json` must show only the lines you meant to change.
 
+## Files with a sketch
+
+A `/2` file may have a `sketch` section: named points and shapes (`point`, `segment`, `polyline`, `polygon`,
+`box`, `circle`) with their values written in the file, and constraints over their names in `constraints`.
+`references/language.md` section 2 lists the keys; `docs/instances/sketch-basic.json` is a complete file.
+
+- **The sketch is constant for the optimiser** in this version: no solve moves a sketch point. A constraint
+  that reads only the sketch is checked (part of the VERDICT, never optimised). With no design variable,
+  `check.py --solve` only checks the drawing (RUNS: `nothing to optimise`). For the solver to choose a
+  position or a size, make it a design variable, as in any file.
+- **The SKETCH section** of check.py is what the sketch solver finds in the drawing: its free DOFs, the
+  redundant, conflicting or Malformed geometry constraints, and `not solved` when the drawing is off them.
+  To move the drawing onto its geometry constraints, settle it into a new file:
+  `geomsolver-cli FILE.json --sketch-solve --write-instance NEW.json` (least change; the original stays).
+  Never move points by hand to satisfy a constraint.
+- **Never hand-write an expression into a free value** (a point's `value`, a circle's `radius`): give a
+  number, or a number with a unit (`"45cm"`). The sketch solver (`--sketch-solve`) rewrites those values. A
+  formula needs `"fixed": true` on the element first.
+- A slot, a fixed value or a radius may use params, geometry, other elements and constant lets. It may
+  not name a design variable, nor use a let that depends on a design variable or a sweep (COMPILE_ERROR
+  `a sketch value may not depend on ...`).
+- Geometric relations are predicates, each a whole constraint with no comparison: `horizontal(base)`,
+  `parallel(AB, CD, 1)`, `tangent(top, wheel, 1)`, `coincident(vertex(frame, 1), B)`
+  (`references/language.md` section 5). Write the orientation (+1/-1) the drawing has: the check is against it.
+- Write a dimension the way the sketcher reads it, so the GUI shows it as one: `dist(A, B) == 1.2`,
+  `len(L1) >= 30cm`, `lo <= dist(A, B) <= hi`, `B.x - A.x == 0.3` (ordered so the value is positive),
+  `A.y == 0`, `angle(L1, L2) == 90deg`, `radius(K) == 0.2`, `len(L1) == len(L2)`. Its operands are elements
+  or `start`/`end`/`mid`/`center`/`vertex(X, 2)`/`edge(X, 0)` of one; its value a number, a param or an
+  expression of params, never a let. Any other formula is still a valid constraint, of kind Formula; the
+  GUI's delete and merge take a recognised one with its element, and leave a Formula in red for the user.
+- A rigid part drawn in its own frame (the TV, a bracket) is a BODY: `sketch.bodies.tv` with a pose and
+  elements named `tv.c` everywhere (`docs/instances/sketch-body.json`). Its elements' values are local; its
+  slots name only its own elements and constants. A world segment may end at `tv.c` (a link arm); pin two
+  frames with `coincident(A, tv.c)`; write a relation inside the body with `"frame": "tv"`, reaching a world
+  point through `local(A, tv)`.
+- A swing, a door's sweep or a curved edge is an ARC element (`"type": "arc"`, `center`, `radius`, `start`,
+  `end`, counter-clockwise; `docs/instances/sketch-arc.json`). A segment that ends on it writes `"to":
+  "end(door)"` and shares that point; tangency there is `tangent_at(leaf, door, end(door), 1)`. The optimiser
+  sees its polyline, within `chord_error` (0.1 mm): bounds on `clearance`/`min_x`/... of it are tightened by
+  that, in a `note:` line (check.py's NOTES), never a warning: a bound violated by less than that is the
+  tightening, not the drawing.
+
 ## Report template
 
 Use this shape for every job (drop sections that do not apply):
@@ -164,7 +206,7 @@ Next step: <one suggestion>
 | a constraint "has no effect" on one of two links | label swap | write it for both links |
 | a shape is reported inside a region but crosses its edge | `clearance(shape, region) <= -m` | per-wall rows (patterns table) |
 | `max_over(...) >= b` is a compile error | it would only mean "at one sample" | witness variable + `at(s = w, ...)` |
-| a requirement seems ignored, no error | misspelt key or section (`"constraint"`) | `check.py` LINT lists them |
+| a requirement seems ignored, no error | misspelt key or section (`"constraint"`) in a `/1` file | `check.py` LINT lists them (a `/2` file refuses them: COMPILE_ERROR) |
 | infeasible, tiny violations everywhere | requirements conflict | job B; never `feas_tol` |
 | solve result changes between runs | fragile: few feasible runs | more `--starts`, `--polish` |
 | warning "as an equality it stops every SLSQP solve" | an `==` constraint that uses no free variable | `"enabled": false` on it, or unfix a variable |
@@ -172,8 +214,8 @@ Next step: <one suggestion>
 
 ## Where things are
 
-- `references/language.md`: file skeleton, every key, units, operators, all 48 builtins, `forall`,
-  `at()`, `max_over`/`min_over`, roles and rows. Read when writing or fixing an expression.
+- `references/language.md`: file skeleton, every key, units, operators, all 61 builtins and 11 predicates,
+  `forall`, `at()`, `max_over`/`min_over`, roles and rows. Read when writing or fixing an expression.
 - `references/patterns.md`: requirement in words -> exact JSON (42 tested rows), three worked
   translations, the four-bar linkage step by step. Read in jobs A and C.
 - `references/diagnosis.md`: decision tree, every common error/warning message with its fix, reading

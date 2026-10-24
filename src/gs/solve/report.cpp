@@ -82,12 +82,14 @@ std::string pad(std::string s, std::size_t w) {
     return s;
 }
 
-// NaN compares false and Evaluator::verify turns an all-NaN group into -inf:
-// either would otherwise print as "ok".
+// A NaN violation compares false: it would otherwise print as "ok".
 std::string status(double violation, double tol) {
     if(!std::isfinite(violation)) return "NON-FINITE";
     return violation <= tol ? "ok" : "VIOLATED";
 }
+
+// A sketch's geometry constraints (plan 1.5).
+bool geometry_group(const RowGroup & g) { return g.role == GroupRole::Solve; }
 
 long nonfinite_derivative_evals(const RunResult & r) {
     long n = 0;
@@ -447,7 +449,8 @@ std::string format_sweeps(const Model & m, const SolverSettings & s) {
     return plain ? std::string() : "sweeps: " + out + "\n";
 }
 
-std::string format_check(const Model & m, const Check & c, double feas_tol) {
+std::string format_check(const Model & m, const Check & c, double feas_tol,
+                         bool all_geometry) {
     const Verification & V = c.v;
     std::string s;
     std::string fixed;
@@ -504,14 +507,22 @@ std::string format_check(const Model & m, const Check & c, double feas_tol) {
             return std::format("{:.7g}", -violation == 0.0 ? 0.0 : -violation);
         return format_value(-violation, unit);
     };
+    int hidden = 0;
     for(uz g = 0; g < m.groups().size(); ++g) {
         const RowGroup & rg = m.groups()[g];
         const GroupCheck & gc = V.groups[g];
+        const std::string st = status(gc.violation, feas_tol);
+        if(!all_geometry && geometry_group(rg) && st == "ok") {
+            ++hidden;
+            continue;
+        }
         s += std::format("  {} {} {} {}\n", pad(rg.name, 30),
-                         pad(margin_text(rg, gc.violation), 18),
-                         pad(status(gc.violation, feas_tol), 10),
+                         pad(margin_text(rg, gc.violation), 18), pad(st, 10),
                          where(m, rg.sweep, gc.t, gc.sweep_value));
     }
+    if(hidden > 0)
+        s += std::format("  {} geometry constraint{} satisfied\n", hidden,
+                         hidden == 1 ? "" : "s");
     if(V.worst_between_group >= 0) {
         s += std::format(
             "between the samples of fixed sweeps ({} samples per sweep; "
@@ -556,6 +567,26 @@ std::string format_check(const Model & m, const Check & c, double feas_tol) {
                          V.max_between, rg.name, at.empty() ? "" : " at " + at);
     }
     return s;
+}
+
+std::string check_failure(const Model & m, const Verification & v,
+                          double feas_tol) {
+    std::string failed;
+    for(uz g = 0; g < m.groups().size(); ++g) {
+        const RowGroup & rg = m.groups()[g];
+        const double violation = v.groups[g].violation;
+        if(!rg.check_only || violation <= feas_tol) continue;
+        const std::string unit =
+            rg.natural == "m" || rg.natural == "rad" ? " " + rg.natural : "";
+        failed += std::format("{}{}", failed.empty() ? "" : ", ",
+                              std::isfinite(violation)
+                                  ? std::format("{} violated by {:.3g}{}",
+                                                rg.name, violation, unit)
+                                  : rg.name + " is not finite");
+    }
+    if(failed.empty()) return {};
+    return "the sketch fails its check: " + failed +
+           "; no design can satisfy it";
 }
 
 std::string format_solutions(const Model & m, const MultistartResult & r,

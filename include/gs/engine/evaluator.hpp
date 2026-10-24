@@ -83,7 +83,11 @@ struct BetweenSamples {
 struct GroupCheck {
     // Max over the group's rows in natural units: > 0 violated by that much,
     // <= 0 the margin. Equality rows count |g|; Assembly groups report the
-    // assembly gap in metres (max(d - r1 - r2, |r1 - r2| - d)).
+    // assembly gap in metres (max(d - r1 - r2, |r1 - r2| - d)). NaN when a
+    // row is NaN, at the sample where one first is: compare with
+    // !(violation <= tol), never violation > tol, which reads NaN as
+    // satisfied. Verification::max_violation skips it (Check::finite in
+    // gs_solve does not).
     double violation = 0.0;
     int sample = -1;  // argmax sample (-1 for unrepeated groups)
     double t = std::numeric_limits<double>::quiet_NaN();
@@ -138,6 +142,11 @@ public:
     Evaluator & operator=(Evaluator &&) noexcept;
 
     const Model & model() const { return *model_; }
+
+    // The columns of q (Model::sketch_coords()) every later call reads: the
+    // drawn values (Model::initial_q()) until set. A Jacobian is taken in x
+    // only. Throws std::invalid_argument when q has the wrong size.
+    void set_q(std::span<const double> q);
 
     // NLP rows and objective pieces (see NlpLayout for the order). Throws
     // std::invalid_argument when x has the wrong size or an aggregate's sweep

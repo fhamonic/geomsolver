@@ -1,5 +1,5 @@
 # A's handle dragged: one undo step.
 open tests/data/tv_corner_ref.json
-drag L 350 579 423 549
+drag L 418 579 491 549
 wait 14
 shot

@@ -25,7 +25,7 @@ Probes are printed after the verification report, one per line, with 10 signific
 | **`design.<v>.min`, `.max`** | number or string | constant | Scalar |
 | **`design.<v>.domain`** | string | constant | Polygon, Circle, or a Polyline of 2 points |
 | **`let.<name>`** | string | full | any |
-| **`constraints[i].expr`** | string | relation | Scalar on both sides |
+| **`constraints[i].expr`** | string | relation, or a predicate call | Scalar on both sides |
 | **`criteria[i].expr`** | string | full, plus `max_over` / `min_over` | Scalar |
 | **`criteria[i].bound`** | number or string; for role `range`, an array of two | constant | Scalar |
 | **`display[i].expr`** | string | full | any |
@@ -39,7 +39,7 @@ params.k at column 0: 'u' is a sweep and cannot appear in a constant expression
 params.k at column 0: 'arm' is a let binding and cannot appear in a constant expression
 ```
 
-A **full** context may use every name. A **relation** is a full expression with one comparison at the top, or a chain of two (see [Relations](#relations)).
+A **full** context may use every name. A **relation** is a full expression with one comparison at the top, or a chain of two (see [Relations](#relations)). A constraint's `expr` may instead be one call of a [predicate](builtins.md#predicates), such as `horizontal(base)`, with no comparison.
 
 ## Lexical rules
 
@@ -118,7 +118,7 @@ probes[19] at column 3: type error: Polygon + Polygon
 probes[20] at column 2: type error: Scalar ^ Vec
 probes[18] at column 0: cannot negate a Polygon
 probes[17] at column 2: '.x' needs a Vec, got Polygon
-probes[16] at column 2: expected 'x' or 'y' after '.'
+probes[16] at column 0: 'P' is a geometry constant, not a body: only x or y may follow its '.'
 ```
 
 ## Types
@@ -135,7 +135,7 @@ Polygon and Polyline vertices keep the order in which they are written; `vertex(
 
 ## Names
 
-A name refers to one of six things:
+A name refers to one of eight things:
 
 | Category | Defined in | Usable in a constant context |
 | --- | --- | --- |
@@ -144,6 +144,8 @@ A name refers to one of six things:
 | **let binding** | `let` | no |
 | **param** | `params` | yes |
 | **geometry** | `geometry` and the `include` files | yes |
+| **sketch element** | `sketch.elements`, and a body's `elements` as `tv.c` (see [sketch](instance.md#sketch)) | no |
+| **body** | `sketch.bodies` (see [bodies](instance.md#bodies)) | no |
 | **`pi`** | builtin, 3.141592654 | yes |
 
 They share one namespace. A name defined twice, in the same category or in two, is an error at the second definition. `pi` is registered first, then the categories in the order of the table, the included files' geometry before the instance's own; this order decides which definition gets the error:
@@ -154,10 +156,17 @@ params.pi: name 'pi' is already a builtin constant (builtin)
 ../../tests/data/example_room_ref.json: geometry.table: name 'table' is already a let binding (let.table)
 ```
 
-Names of params, geometry, design variables, sweeps and lets must be identifiers:
+Names of params, geometry, design variables, sweeps, lets, sketch elements and bodies must be identifiers:
 
 ```text
 let.2x: '2x' is not a valid name: use letters, digits and '_', not starting with a digit
+```
+
+**Qualified names.** An element of a body is named by the body's name, a dot and its own: `tv.c` for the element `c` of the body `tv`, everywhere, in the body's own slots too. It is one name, written without spaces, and `tv.c.x` is its x. Any identifier but `x` and `y` after a dot makes a qualified name, so an element of a body is never called `x` or `y`. A body's name alone is no value: it is the argument of `origin`, `angle` and `local` ([builtins](builtins.md#bodies)).
+
+```text
+constraints[3].expr at column 0: the body 'tv' has no element 'e'
+constraints[3].expr at column 0: 'tv' is a body: name an element of it (tv.c), or use origin(tv), angle(tv) or local(P, tv)
 ```
 
 Function names are separate from these names. A param named `sin` does not hide the builtin `sin()`, and a param named `x` does not conflict with `.x`: with `params.sin = 2` and `params.x = 3`, `sin + sin(0)` is 2 and `P.x + x` is 6.
@@ -231,7 +240,7 @@ constraints[0].expr at column 0: max_over(u, f) >= b only asks for f >= b at one
 
 ## Relations
 
-A constraint's `expr` is a relation: one comparison between two Scalar expressions, or a chain of two comparisons that bounds one expression from both sides.
+A constraint's `expr` is a relation: one comparison between two Scalar expressions, or a chain of two comparisons that bounds one expression from both sides. It may instead be a [predicate](builtins.md#predicates) call, a constraint by itself.
 
 - The comparison is `<=`, `>=` or `==`; `<` and `>` mean `<=` and `>=`.
 - A **two-sided relation** `lo <= e <= hi`, or `hi >= e >= lo`, chains two comparisons in the same direction. It is one constraint and one row group of two rows, `lo - e` and `e - hi`, named after the constraint with `(lo)` and `(hi)`: `height(lo)`, `height(hi)`. Its margin is that of the side closer to violation. `==` cannot be chained, and a chain has two comparisons at most.
@@ -254,7 +263,52 @@ criteria[1].expr at column 2: a criterion is an expression, not a comparison (us
 
 The second to fifth lines are `0 <= norm(tip) <= 2 <= 3`, `norm(tip) <= 2 >= 0`, `0 == norm(tip) <= 2` and `max_over(u, tip.y) <= max_over(u, norm(tip)) <= 2`.
 
-Each constraint also has a **value**, which the GUI shows in the constraint's sheet and the tooltip of its status, disabled constraints included: the middle of a chain; for one comparison, the side that is not constant when the other one is, else lhs − rhs. A `max_over` / `min_over` side contributes its body, so the value follows the sweep slider like the side of a `forall` constraint. For the playground's `norm(tip) <= 2` it is `norm(tip)`.
+Each constraint also has a **value**, which the GUI shows in the constraint's sheet and the tooltip of its status, disabled constraints included: the middle of a chain; for one comparison, the side that is not constant when the other one is, else lhs − rhs. A drawn quantity of a [sketch](instance.md#sketch) counts as not constant against a number or a param, and as constant against a design variable or a sweep: `dist(O, E) == room_w` shows the distance, and `dist(V, O) <= 2` with a design point `V` shows `dist(V, O)`. A `max_over` / `min_over` side contributes its body, so the value follows the sweep slider like the side of a `forall` constraint. For the playground's `norm(tip) <= 2` it is `norm(tip)`.
+
+A constraint that is a [predicate](builtins.md#predicates) call, such as `parallel(base, top)`, has its own rows and groups, listed with the predicate. Its value is its row, or for two rows the length of (row 1, row 2).
+
+### Wrapped angle relations
+
+An equality one of whose sides is a whole call of `angle(s)`, `angle(s1, s2)` or `angle(s1, s2, o)` on segments, of `angle(b)` of a [body](instance.md#bodies), or of `start_angle(k)` or `end_angle(k)` of an [arc](builtins.md#arcs), such as `angle(base, side) == 90deg`, `30deg == angle(top)` or `angle(tv) == -90deg`, compiles its row as atan2(sin(a - b), cos(a - b)) instead of a - b: the difference of the two sides, wrapped into (-π, π]. The row then jumps by 2π only where the angle is 180° away from the target. The angle itself jumps at ±180°, which can lie next to the target: with a target of 179°, a segment at -178.57° is 2.43° off, where a - b says 357.57°.
+
+```bash
+geomsolver-cli docs/instances/ref-predicates.json --eval --set 'sketch.elements.C.value=[-2, 0.95]' --set 'constraints[19].expr=angle(top) == 179deg' --set 'constraints[18].expr=angle(C - D) == 179deg'
+```
+
+```text title="Output (two rows)"
+  right_angle                    -6.240737          VIOLATED   
+  level                          -0.04244809        VIOLATED   
+```
+
+`level` reads the segment from D to C, and is wrapped: 0.04244809 rad is 2.43°. `right_angle`, now `angle(C - D)` of the same points as a Vec, is not. Only these equalities are wrapped: not an inequality (`angle(s) <= 10deg`), not a side that merely contains the call (`angle(s) + 0 == 30deg`, `angle(s) - 30deg == 0`), not `angle(v)` of a Vec nor `angle_between`, so no formula written before them changes. A wrapped row's unit is the radian. When both sides vary, or both are constant (as drawn sketch angles are), the constraint's value is its row, not a − b.
+
+For `start_angle(k) == θ` and `end_angle(k) == θ`, the cut can lie between the drawing and its target: an end drawn at 90° and typed to 280° has its cut at 100°, so the row points the sketch solver down, through the arc's span, which no step may cross. Its component is then solved once more from the drawing with θ taken in the turn the arc can reach: in (start, start + 360°] for the end, in [end − 360°, end) for the start. Where the wrapped row converges, the solver keeps it, and the turn nearest the drawing.
+
+`span(k) == s` is an angle row too, in radians, but not wrapped: an arc's span is no direction, and lies in (0, 2π). The sketch solver weighs these rows by the shorter segment, or the radius of the arc, they read. `radius(k) == r` and `span(k) == s` also check what they set: a radius of 0 or less, or a span outside (0, 2π), makes the constraint [Malformed](cli.md#sketch-solve) for the sketch solver, which would only creep towards it.
+
+### Kinds
+
+The GUI reads a constraint's **kind** from its formula: what it states the way a sketcher states it, a dimension or a predicate. The Kind column of the Constraints panel shows it. A formula of none of these kinds is a **Formula**: a constraint like any other, shown with the relation it states.
+
+| Kind | Formula |
+| --- | --- |
+| Distance | `dist(P, Q) == c`; a bound, `dist(P, Q) >= c` or `<= c`; a range, `lo <= dist(P, Q) <= hi` |
+| Length | `len(S) == c`, a bound or a range |
+| Point–line distance | `line_dist(P, S, side) == c`; `line_dist(P, S) == c` is side +1 |
+| Distance X, Distance Y | `B.x - A.x == c`, `B.y - A.y == c` |
+| Order X, Order Y | `P.x >= Q.x`, `P.y >= Q.y`, and the other comparisons |
+| Lock X, Lock Y | `P.x == c`, `P.y == c` |
+| Angle | `angle(S1, S2) == c`, `angle(S1, S2, o) == c` (its orientation read as a point–line distance's side), `angle(S) == c`, `angle(b) == c` of a body b |
+| Radius | `radius(K) == c` |
+| Start angle, End angle | `start_angle(A) == c`, `end_angle(A) == c` |
+| Span | `span(A) == c` |
+| Equal | `len(S1) == len(S2)`, `radius(K1) == radius(K2)` |
+| each [predicate](builtins.md#predicates) | its call, such as `parallel(S1, S2, 1)` |
+
+- **Operands.** P, Q, A and B are points of the sketch: a point element, `start(S)` or `end(S)` of a segment, a polyline or an arc, `mid(S)` of a segment or an arc, `center(K)`, or `vertex(X, i)` with a number i. S is a segment element or `edge(X, i)`, K a circle or an arc element, A (in the arc kinds) an arc element; an element of a body is named as such (`tv.c`). A dimension of anything else, a design point, a let or `segment(A, B)`, is a Formula, so a file without a sketch has none. A predicate has its kind whatever its arguments.
+- **The constant c** is a number, a param, or an expression of these and of functions, such as `2 * W + 1cm`: the dimension's value. A let or any other name on that side makes a Formula.
+- **Written either way.** The sides may be swapped (`0.3 == dist(A, B)`), an inequality turned around (`0.1 > dist(A, B)` is the bound `dist(A, B) <= 0.1`), a difference compared with 0 (`dist(A, B) - W == 0` is the Distance `dist(A, B) == W`, `A.x - B.x >= 0` the Order `A.x >= B.x`; not an angle: `angle(S) - c == 0`, `start_angle(A) - c == 0`, `end_angle(A) - c == 0` and `span(A) - c == 0` are no [angle rows](#wrapped-angle-relations), so they are Formulas), and the points of `dist`, the segments of Equal and the operands of a symmetric predicate (`coincident(B, A)`) written in either order. `B.x - A.x == 0` is a Distance X; `A.x == B.x` has no constant and is a Formula. A constraint's `frame` does not change its kind.
+- **Magnitudes.** The constant of a distance, a length, a point–line distance, a Distance X or Y, the angle between two segments, a radius and a span is a magnitude: the orientation is in the order of the operands (`B.x - A.x`, `angle(S1, S2)`) or in the side argument, and a negative value mirrors the drawing. That of a Lock X or Y, of `angle(S)`, of `angle(b)` and of an arc's start or end angle is a signed coordinate.
 
 [Constraints](../guide/constraints.md) explains how to choose between the forms.
 

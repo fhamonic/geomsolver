@@ -1,0 +1,19 @@
+# Smart Dimension on two lines: L1 and L2, the angle between them (a1);
+# L1 and the parallel L4, the distance between them (d1), Esc keeping the
+# measured value.
+open tests/data/sketch-dimension.json
+wait 16
+action tool.dimension
+wait 2
+click L 360 248
+click L 716 476
+click L 579 339
+wait 2
+key Enter
+wait 2
+click L 360 248
+click L 762 156
+click L 579 193
+wait 2
+key Escape
+wait 2

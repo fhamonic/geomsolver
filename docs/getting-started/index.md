@@ -1,6 +1,6 @@
 # Installation
 
-geomsolver is built from source, with conan 2 and GCC 15. Every library comes from conan: Dear ImGui, ImPlot, GLFW and GLEW for the window, nlohmann_json and json-schema-validator for the instance files, NLopt for the optimisation and doctest for the tests. The build produces two programs, the GUI `geomsolver` and the headless `geomsolver-cli`.
+geomsolver is built from source, with conan 2 and GCC 15. Every library comes from conan: Dear ImGui, ImPlot, GLFW and GLEW for the window, nlohmann_json and json-schema-validator for the instance files, NLopt for the optimisation, Eigen for the sketch solver (in its MPL2-only configuration) and doctest for the tests. The build produces two programs, the GUI `geomsolver` and the headless `geomsolver-cli`.
 
 ## Prerequisites
 
@@ -65,7 +65,7 @@ The build produces:
 | --- | --- |
 | **`build/geomsolver`** | the GUI, described in [The GUI](gui.md) |
 | **`build/geomsolver-cli`** | the headless solver, described in [The command line](cli.md) |
-| **`build/test_engine`**, **`build/test_solve`**, **`build/test_app`** | the unit tests |
+| **`build/test_engine`**, **`build/test_solve`**, **`build/test_sketch`**, **`build/test_app`** | the unit tests |
 
 ## 3. Run the tests
 
@@ -79,12 +79,13 @@ make test
 cd build && ctest --output-on-failure
 ```
 
-The suite has nine tests:
+The suite has eleven tests:
 
 | Test | What it checks |
 | --- | --- |
 | **`test_engine`** | parser, compiler, evaluator, geometry and instance files |
 | **`test_solve`** | the NLP, local runs, multistart and Pareto jobs, and the background service |
+| **`test_sketch`** | the sketch solver: a drawing settled onto its geometry constraints, the values written back, degrees of freedom, bodies whose frame is not anchored, redundant, Malformed and conflicting constraints, accidental configurations, free directions and monitored groups, drags (points, edges, circles, bodies, the pose gizmo, Edit body) and the assembly modes they keep, a diagnosis on another thread during drags; it prints the timings of its corpus, with a warning above their targets, and never fails on one |
 | **`test_app`** | the GUI logic, headless: document edits and undo, renames, selection and deletion, the scene, the canvas's picking, clicks, drags, pan, zoom and what it draws, the solver session, the menu and keyboard actions, the dialogs' flows, change notifications, and what the panels show and do (the lists, Properties, Document, Solver, Margins, Messages, sweep bar), every section of the TV example edited from them, with a list model and a property grid as a retained toolkit would keep them |
 | **`geomsolver_selftest`** | the ImGui front-end, headless: a canvas drag and keyboard shortcuts through `geomsolver --selftest tests/data/tv_corner_ref.json` |
 | **`gui_scripts`** | the scripts of `tests/gui`, played with `geomsolver --headless` (a box selection, a context menu's Delete, a pan, F2, a constraint added through the formula pop-up...), each checked through its `--dump`, with an empty `XDG_CONFIG_HOME` that must stay empty (`tests/gui/gui_scripts.cmake`) |
@@ -93,6 +94,8 @@ The suite has nine tests:
 | **`geomsolver_cli`** | the CLI end to end (`tests/cli/cli_checks.cmake`) |
 | **`live_instance`** | `data/tv_corner.json` loads, compiles and reaches a feasible design in an 8-start multistart |
 | **`docs_instances`** | every instance of the documentation, `docs/instances/*.json`, evaluates without a warning; the files named `*-broken.json`, wrong on purpose, are still diagnosed (`tests/docs/docs_instances.cmake`) |
+
+The same timings fail at 3 times their targets in **`bench_sketch`**, which a plain `ctest` leaves out: run it on a release build with `ctest -C bench -L bench`.
 
 The tests that pin numbers read the frozen copies `tests/data/tv_corner_ref.json` and `tests/data/example_room_ref.json`, so editing the instances in `data/` never breaks them. Only `live_instance` reads `data/tv_corner.json` (see [Troubleshooting](#troubleshooting)).
 

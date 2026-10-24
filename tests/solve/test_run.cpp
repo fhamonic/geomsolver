@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <set>
 
+#include "gs/engine/keys.hpp"
 #include "gs/solve/report.hpp"
 #include "helpers.hpp"
 
@@ -36,6 +38,26 @@ TEST_CASE("settings: defaults come from the instance's solver object") {
     CHECK(settings_from_json(to_json(t)).algorithm == Algorithm::COBYLA);
     CHECK_FALSE(parse_algorithm("ccsaq").has_value());
     CHECK_FALSE(parse_algorithm("LD_LBFGS").has_value());
+}
+
+TEST_CASE("settings: the engine's key table lists every setting") {
+    const auto it = std::ranges::find(
+        key_sections(), std::string_view("solver"), &KeySection::where);
+    REQUIRE(it != key_sections().end());
+    std::set<std::string> table, written;
+    for(const InstanceKey & k : it->keys) {
+        table.emplace(k.name);
+        std::vector<std::string> msgs;
+        settings_from_json(Json{{k.name, nullptr}}, &msgs);
+        CAPTURE(k.name);
+        REQUIRE(msgs.size() == 1);
+        CHECK(msgs[0].find("unknown setting") == std::string::npos);
+    }
+    for(const auto & [key, v] : to_json(SolverSettings{}).items())
+        written.insert(key);
+    CHECK_MESSAGE(table == written,
+                  "a setting missing from the table is an error in a /2 "
+                  "instance");
 }
 
 TEST_CASE("exchange: a run from the hand design is fine-grid feasible") {
@@ -411,6 +433,93 @@ TEST_CASE("solve_from: equality rows, min-role bounds and a plain objective") {
     const SampleSets S = SampleSets::uniform(*m, 5);
     NlpProblem native(ev, S, NlpMode::Phase2, {});
     CHECK(native.m_eq() == 1);
+}
+
+TEST_CASE("exchange: a violated check-only group adds no sample") {
+    // "far" reads only the sketch: constant for the optimiser, checked by the
+    // verdict, and with no sweep for the exchange to refine.
+    auto m = model_from(Json::parse(R"J({
+      "format": "geomsolver-instance/2",
+      "sketch": {"elements": {
+        "P": {"type": "point", "value": [0, 0]},
+        "Q": {"type": "point", "value": [1, 0]}}},
+      "design": {"d": {"type": "scalar", "min": 0, "max": 2, "value": 1}},
+      "sweeps": {"tau": {"min": 0, "max": 1}},
+      "constraints": [
+        {"name": "far", "expr": "dist(P, Q) == 2"},
+        {"name": "swing", "expr": "d * tau <= 1.5", "forall": "tau"}],
+      "criteria": [{"name": "big", "expr": "d", "role": "maximize"}]
+    })J"));
+    REQUIRE(m->groups()[0].check_only);
+    Evaluator ev(*m);
+    const SolverSettings s;
+    const RunResult r = solve_from(*m, ev, m->initial_x(), s, {}, 1);
+    CHECK_FALSE(r.feasible);
+    CHECK(r.groups[0].violation == doctest::Approx(1));
+    CHECK(r.groups[1].violation <= s.feas_tol);
+    CHECK(r.objective == doctest::Approx(1.5).epsilon(1e-6));
+    CHECK(r.samples == SampleSets::initial(*m, s.initial_samples).t);
+}
+
+TEST_CASE("report: a sketch's satisfied geometry constraints are counted") {
+    auto m = model_from(Json::parse(R"J({
+      "format": "geomsolver-instance/2",
+      "sketch": {"elements": {
+        "P": {"type": "point", "value": [0, 0]},
+        "Q": {"type": "point", "value": [1, 0]},
+        "F": {"type": "point", "value": [0, 2], "fixed": true},
+        "G": {"type": "point", "value": [1, 2], "fixed": true}}},
+      "design": {"w": {"type": "scalar", "min": 0, "max": 1, "value": 0,
+                       "fixed": true}},
+      "constraints": [
+        {"name": "flat", "expr": "P.y == Q.y"},
+        {"name": "apart", "expr": "dist(P, Q) == 2"},
+        {"name": "gap", "expr": "dist(P, Q) >= 0.5"},
+        {"name": "level", "expr": "F.y == G.y"},
+        {"name": "at_w", "expr": "P.x == w"}]
+    })J"));
+    Evaluator ev(*m);
+    const SolverSettings s;
+    const Check c = check(ev, m->initial_x(), s, {});
+    const std::string table = format_check(*m, c, s.feas_tol);
+    CHECK(table.find("flat") == std::string::npos);
+    CHECK(table.find("apart                          -1                 "
+                     "VIOLATED") != std::string::npos);
+    CHECK_MESSAGE(table.find("gap ") != std::string::npos,
+                  "an inequality is not a geometry constraint");
+    // An equality of fixed sketch values is one too; an equality that reads
+    // a design variable, fixed or not, is not.
+    CHECK(table.find("level ") == std::string::npos);
+    CHECK(table.find("at_w ") != std::string::npos);
+    CHECK(table.find("  2 geometry constraints satisfied\n") !=
+          std::string::npos);
+    const std::string all = format_check(*m, c, s.feas_tol, true);
+    CHECK(all.find("flat                           0                  ok") !=
+          std::string::npos);
+    CHECK(all.find("geometry constraint") == std::string::npos);
+}
+
+TEST_CASE("report: a sketch that fails its check is named first") {
+    auto m = model_from(Json::parse(R"J({
+      "format": "geomsolver-instance/2",
+      "sketch": {"elements": {
+        "P": {"type": "point", "value": [0, 0]},
+        "Q": {"type": "point", "value": [1, 0.1]}}},
+      "design": {"w": {"type": "scalar", "min": 0, "max": 1, "value": 0}},
+      "constraints": [
+        {"name": "flat", "expr": "horizontal(P, Q)"},
+        {"name": "apart", "expr": "dist(P, Q) == 2"},
+        {"name": "turn", "expr": "angle(segment(P, Q)) == 0"},
+        {"name": "far", "expr": "dist(P, Q) >= 3 + w"}]
+    })J"));
+    Evaluator ev(*m);
+    const Verification v = ev.verify(m->initial_x(), 2);
+    // In a predicate's or a wrapped relation's unit; a formula's has none.
+    // far is violated too, but an NLP row: a design can satisfy it.
+    CHECK(check_failure(*m, v, 1e-7) ==
+          "the sketch fails its check: flat violated by 0.1 m, apart violated "
+          "by 0.995, turn violated by 0.0997 rad; no design can satisfy it");
+    CHECK(check_failure(*m, v, 1.0) == "");
 }
 
 }  // namespace gs::test

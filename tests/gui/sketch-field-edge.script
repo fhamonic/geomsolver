@@ -1,0 +1,12 @@
+# A digit typed with the Segment tool's second point at the canvas's
+# bottom-right corner, where its length field would stick out of the
+# canvas: the field takes the keyboard and the canvas does not scroll.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.segment
+wait 2
+click L 500 300
+move 1010 645 4
+wait 2
+text "1"
+wait 4

@@ -1,6 +1,7 @@
 #include "front/imgui/main_window.hpp"
 
 #include <algorithm>
+#include <cfloat>
 #include <deque>
 #include <format>
 #include <optional>
@@ -50,6 +51,7 @@ void menu_entries(const App & app, const Menu & menu) {
                            a.chords.empty() ? nullptr : chord.c_str(),
                            a.is_checked(), a.is_enabled()))
             a.run();
+        if(a.tip) tooltip_text(a.tip());
     }
 }
 
@@ -82,6 +84,8 @@ struct MainWindow::Impl {
     ImVec2 context_at;  // where the context menu opens
 
     void status_bar();
+    void toolbar();
+    void toolbar_groups(std::span<const Menu> groups);
     void canvas_window(const Scene & scene);
     // The panel's dock window while it is open; a click on its close button
     // closes it in the App.
@@ -126,7 +130,7 @@ void MainWindow::Impl::status_bar() {
             if(i > 0) ImGui::Separator();
             ImGui::PushID(static_cast<int>(i));
             ImGui::PushStyleColor(ImGuiCol_Text, tone_color(st.tone));
-            if(segments[i].link) {
+            if(segments[i].link || !segments[i].select.empty()) {
                 if(ImGui::Selectable(st.text.c_str(), false, 0,
                                      ImGui::CalcTextSize(st.text.c_str())))
                     bar.activate(i);
@@ -140,6 +144,65 @@ void MainWindow::Impl::status_bar() {
         ImGui::EndMenuBar();
     }
     ImGui::End();
+}
+
+void MainWindow::Impl::toolbar() {
+    // The tools scroll in a child and the options stay in view below it: in
+    // one scrolling column, a toolbar shorter than its content hides the
+    // options, which nothing else shows or sets.
+    if(ImGui::Begin(
+           toolbar_window_title().c_str(), nullptr,
+           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        const std::span<const Menu> groups = app.toolbar();
+        const auto split = std::ranges::find(groups, true, &Menu::options);
+        const float options_h =
+            split == groups.end()
+                ? 0.0f
+                : ImGui::GetStyle().ItemSpacing.y +
+                      ImGui::GetTextLineHeightWithSpacing() +
+                      static_cast<float>(split->entries.size()) *
+                          ImGui::GetFrameHeightWithSpacing();
+        ImGui::SetNextWindowSizeConstraints(
+            ImVec2(0.0f, 0.0f),
+            ImVec2(FLT_MAX,
+                   std::max(ImGui::GetFrameHeightWithSpacing(),
+                            ImGui::GetContentRegionAvail().y - options_h)));
+        ImGui::BeginChild("##tools", ImVec2(0.0f, 0.0f),
+                          ImGuiChildFlags_AutoResizeY);
+        toolbar_groups({groups.begin(), split});
+        ImGui::EndChild();
+        toolbar_groups({split, groups.end()});
+    }
+    ImGui::End();
+}
+
+void MainWindow::Impl::toolbar_groups(std::span<const Menu> groups) {
+    const float w = ImGui::GetContentRegionAvail().x;
+    for(const Menu & group : groups) {
+        ImGui::TextDisabled("%s", group.title.c_str());
+        for(const std::string & id : group.entries) {
+            const Action & a = *app.actions().find(id);
+            const std::string caption =
+                a.caption.empty() ? a.label() : a.caption;
+            const std::string label = std::format("{}###{}", caption, a.id);
+            ImGui::BeginDisabled(!a.is_enabled());
+            if(group.options) {
+                bool on = a.is_checked();
+                if(ImGui::Checkbox(label.c_str(), &on)) a.run();
+            } else {
+                const bool active = a.is_checked();
+                if(active)
+                    ImGui::PushStyleColor(
+                        ImGuiCol_Button,
+                        ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                if(ImGui::Button(label.c_str(), ImVec2(w, 0.0f))) a.run();
+                if(active) ImGui::PopStyleColor();
+            }
+            ImGui::EndDisabled();
+            if(a.tip) tooltip_text(a.tip());
+        }
+        ImGui::Spacing();
+    }
 }
 
 void MainWindow::Impl::canvas_window(const Scene & scene) {
@@ -159,6 +222,9 @@ void MainWindow::Impl::canvas_window(const Scene & scene) {
         const float sweep_h =
             sweep_rows * ImGui::GetFrameHeightWithSpacing() + 8.0f;
         const float avail = ImGui::GetContentRegionAvail().y;
+        // A field wider than a small canvas still sticks out of it, and
+        // would scroll it as it takes the keyboard.
+        ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
         ImGui::BeginChild(
             "##canvas", ImVec2(0, std::max(60.0f, avail - sweep_h)),
             ImGuiChildFlags_None,
@@ -246,8 +312,32 @@ void MainWindow::Impl::messages() {
         text_colored(tone_color(l.tone), l.text);
         ImGui::PopTextWrapPos();
     };
+    // The sketch message: its pieces on one line, each link its own text.
+    auto parts = [&](std::size_t i) {
+        const MessagesPresenter::Line & l = v.problems[i];
+        // A long message wraps at the panel's edge, each part from where the
+        // last one ended.
+        ImGui::PushTextWrapPos(0.0f);
+        for(std::size_t p = 0; p < l.parts.size(); ++p) {
+            const SketchMessage::Part & part = l.parts[p];
+            if(p > 0) ImGui::SameLine(0.0f, 0.0f);
+            text_colored(tone_color(l.tone), part.text);
+            if(!ImGui::IsItemHovered()) continue;
+            const std::string & tip = part.tip.empty() ? l.tip : part.tip;
+            if(!tip.empty()) tooltip_text(tip);
+            if(part.select.empty()) continue;
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                presenter.activate(i, p);
+        }
+        ImGui::PopTextWrapPos();
+    };
     // A link is its text: a click on it, hovered, activates it.
     for(std::size_t i = 0; i < v.problems.size(); ++i) {
+        if(!v.problems[i].parts.empty()) {
+            parts(i);
+            continue;
+        }
         line(v.problems[i]);
         if(v.problems[i].path.empty() || !ImGui::IsItemHovered()) continue;
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -377,13 +467,14 @@ void MainWindow::show() {
     App & app = s.app;
     Document & doc = app.document();
 
-    run_shortcuts(app.actions(), KeyScope::Global);
+    run_shortcuts(app, KeyScope::Global);
     app.sync();
-    if(app.focused_panel()) run_shortcuts(app.actions(), KeyScope::Panel);
+    if(app.focused_panel()) run_shortcuts(app, KeyScope::Panel);
     // A widget that disappears while held never reports its release, and
     // the gesture it began would swallow every later move of x. A sheet's
     // drag first, which ends the gesture it began itself.
     if(!ImGui::IsAnyItemActive()) {
+        send_typed_value(app);
         app.panels().properties.finish_drag();
         if(doc.in_gesture()) doc.end_gesture();
     }
@@ -404,6 +495,7 @@ void MainWindow::show() {
     s.focus_given = ImGui::IsPopupOpen(
         "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     s.focused.reset();
+    s.toolbar();
     s.canvas_window(scene);
     s.panel(PanelId::Messages, app.panels().messages.tab_label(),
             [&] { s.messages(); });

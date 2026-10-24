@@ -1,0 +1,4 @@
+# Opens the sketch example: every panel draws a file with a sketch, whose
+# elements the canvas draws and no list shows before plan step 7b.
+open docs/instances/sketch-basic.json
+wait 16

@@ -48,8 +48,8 @@ bool has_member(const Json * section, std::string_view name) {
 }  // namespace
 
 bool name_used(const Instance & instance, std::string_view name) {
-    for(const char * section :
-        {"params", "design", "sweeps", "let", "geometry"})
+    for(const char * section : {"params", "design", "sweeps", "let", "geometry",
+                                "sketch.elements", "sketch.bodies"})
         if(has_member(instance.get(section), name)) return true;
     for(const Instance::Include & inc : instance.includes())
         if(inc.doc.is_object() &&

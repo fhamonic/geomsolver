@@ -1,0 +1,18 @@
+# Types 120 into the End of the arc bar in Properties, one key per frame as
+# a user types, then Enter: the end is written as typed, not dragged
+# through 1 and 12 on the way.
+size 1600 1300
+open docs/instances/sketch-arc.json
+wait 16
+select element bar
+wait 6
+click L 840 1191 ctrl
+wait 3
+text "1"
+wait 2
+text "2"
+wait 2
+text "0"
+wait 2
+key Enter
+wait 8

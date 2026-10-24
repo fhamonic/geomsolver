@@ -1,0 +1,9 @@
+# B placed 30 px right of A and 18 px below it, where A's x and y show
+open docs/instances/sketch-basic.json
+wait 16
+action tool.segment
+wait 2
+click L 724 291
+wait 2
+click L 754 309
+wait 2

@@ -10,7 +10,14 @@ class Recipe(ConanFile):
     build_policy = "missing"
     # Without the Luksan code (LD_LBFGS, LD_VAR*, LD_TNEWTON*) nlopt is MIT
     # instead of LGPL; none of the algorithms the solver offers need it.
-    default_options = {"nlopt/*:enable_luksan": False}
+    # MPL2_only defines EIGEN_MPL2_ONLY: an Eigen header under another
+    # licence (LGPL) then fails to compile instead of entering the build.
+    # The recipe deletes the option from Eigen 5.0.0 on, so moving to 5.x
+    # means removing it here and checking the modules' licences again.
+    default_options = {
+        "nlopt/*:enable_luksan": False,
+        "eigen/*:MPL2_only": True,
+    }
 
     def requirements(self):
         # force: implot's own imgui/1.92.5 requirement resolves to the
@@ -22,6 +29,7 @@ class Recipe(ConanFile):
         self.requires("nlohmann_json/3.11.3", override=True)
         self.requires("json-schema-validator/2.3.0")
         self.requires("nlopt/2.11.0")
+        self.requires("eigen/3.4.1")
 
     def validate(self):
         # implot's package_id records only imgui's minor version: without the

@@ -1,0 +1,21 @@
+# A segment's values typed fast over the canvas, before the field has the
+# keyboard: the length 12, its 2 on the frame the field takes the keyboard
+# and Enter on the next, when ImGui's field does not route it yet; then the
+# angle 90, Enter on the frame after its seed, which completes the shape
+# with both values as typed.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.segment
+wait 2
+click L 724 291
+wait 2
+move 800 250 3
+wait 2
+text "1"
+wait 1
+text "2"
+key Enter
+wait 4
+text "90"
+key Enter
+wait 4

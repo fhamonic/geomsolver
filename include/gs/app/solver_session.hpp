@@ -33,7 +33,8 @@ public:
     // False, with the reason in message(), when the job cannot start. It
     // follows `doc` first: an action may start a job before any view has
     // called follow(), and the job would then take the defaults or the
-    // settings of the previous instance.
+    // settings of the previous instance. A job that starts leaves message()
+    // empty, or saying that the sketch fails its check (check_failure()).
     bool start(Document & doc, SolveKind kind);
     // Multistart with the current settings, waiting for the end, then loads
     // the best solution (--screenshot --solve). False with a message when no
@@ -100,5 +101,12 @@ std::string objective_unit(const Model & m);
 std::string objective_text(const Model * m, double v, int digits);
 // Why no job starts while the model lacks excluded items.
 std::string excluded_message(const Document & doc);
+// A file with a sketch and no hand-written design variable: until P3 can
+// release sketch values, there is nothing for Solve, Polish or the Pareto
+// study to move (plan 2.2). A file without a sketch is as it always was.
+bool nothing_to_optimise(const Document & doc);
+inline constexpr const char * kNothingToOptimise =
+    "Nothing to optimise: the sketch is checked, not solved, until variables "
+    "can be released";
 
 }  // namespace gs::app

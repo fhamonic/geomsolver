@@ -1,0 +1,21 @@
+# The Circle tool on the sketch example: a click for the centre and one on
+# the rim draw K1; the radius 30cm typed in a burst draws K2; a centre on E
+# and a rim on O draw K3, which passes through O: on(O, K3). Esc quits.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.circle
+wait 2
+click L 724 307
+click L 772 307
+wait 2
+click L 724 371
+move 756 371 3
+wait 2
+text "30cm"
+key Enter
+wait 2
+click L 837 532
+click L 321 532
+wait 2
+key Escape
+wait 2

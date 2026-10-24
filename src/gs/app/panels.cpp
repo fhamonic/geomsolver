@@ -59,6 +59,8 @@ PanelId home_panel(const Document & doc, const SelKey & key) {
     switch(entry_kind(doc, key)) {
         case EntryKind::DesignPoint:
         case EntryKind::Geometry:
+        case EntryKind::SketchElement:
+        case EntryKind::Body:
             return PanelId::Elements;
         case EntryKind::DesignScalar:
             return PanelId::Variables;

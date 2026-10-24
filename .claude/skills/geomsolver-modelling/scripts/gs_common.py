@@ -390,31 +390,63 @@ def lint_units(instance: dict) -> list[str]:
     return out
 
 
-TOP_KEYS = ("format", "description", "include", "params", "geometry", "design", "sweeps", "let", "constraints",
-            "criteria", "display", "solver")
-SECTION_KEYS = {  # keys the CLI accepts; any other key in these sections is dropped WITHOUT a warning
-    "design": {"type", "min", "max", "domain", "value", "fixed", "unit", "note"},
-    "sweeps": {"min", "max", "samples", "sampling", "note"},
-    "geometry": {"type", "x", "y", "width", "height", "angle", "r", "points", "closed", "note"},
+# The keys of every object of an instance, as the engine's key table lists them (src/gs/engine/keys.cpp);
+# test_scripts.py fails when the two differ. "*" is any entry of a name-keyed section, "[]" any index.
+ELEMENT_KEYS = {"type", "value", "from", "to", "points", "corners", "center", "radius", "start", "end", "helper",
+                "fixed", "note"}
+INSTANCE_KEYS = {
+    "": {"format", "description", "include", "params", "geometry", "design", "sweeps", "let", "constraints",
+         "criteria", "display", "solver", "sketch"},
+    "geometry.*": {"type", "x", "y", "width", "height", "angle", "r", "points", "closed", "note"},
+    "design.*": {"type", "min", "max", "domain", "value", "fixed", "unit", "note"},
+    "sweeps.*": {"min", "max", "samples", "sampling", "note"},
+    "constraints[]": {"name", "expr", "forall", "enabled", "note", "frame", "driving", "label"},
+    "constraints[].label": {"offset"},
+    "criteria[]": {"name", "expr", "role", "bound", "unit", "enabled", "note"},
+    "display[]": {"expr", "color", "fill", "width", "label", "ghosts", "trace", "visible", "note"},
+    "solver": {"algorithm", "starts", "seed", "threads", "phase1", "initial_samples", "verify_samples",
+               "max_exchange_iterations", "feas_tol", "maxeval", "maxtime", "xtol_rel", "constraint_tol",
+               "include_current", "cluster_x_tol", "cluster_f_tol", "pareto_starts"},
+    "sketch": {"extent", "chord_error", "elements", "bodies"},
+    "sketch.elements.*": ELEMENT_KEYS,
+    "sketch.bodies.*": {"pose", "fixed", "elements"},
+    "sketch.bodies.*.pose": {"origin", "angle"},
+    "sketch.bodies.*.pose.origin": {"value"},
+    "sketch.bodies.*.pose.angle": {"value"},
+    "sketch.bodies.*.elements.*": ELEMENT_KEYS,
 }
+# The objects whose unknown keys a /1 file drops WITHOUT a warning (constraints, criteria and solver warn).
+SILENT_SECTIONS = ("design", "sweeps", "geometry", "display")
 
 
 def lint_keys(instance: dict) -> list[str]:
+    """Unknown keys a /1 file drops silently. A /2 file refuses every unknown key itself: the CLI exits 2 and names
+    the key and the keys allowed there, so there is nothing to lint."""
+    if instance.get("format") != "geomsolver-instance/1":
+        return []
     out = []
+    top = INSTANCE_KEYS[""]
     for key in instance:
-        if key not in TOP_KEYS:
-            close = difflib.get_close_matches(key, TOP_KEYS, n=1, cutoff=0.75)
+        if key not in top:
+            close = difflib.get_close_matches(key, sorted(top), n=1, cutoff=0.75)
             if close:
                 out.append(f"top-level key '{key}' is ignored without a warning: did you mean '{close[0]}'? "
                            f"Everything under it is lost.")
-    for section, allowed in SECTION_KEYS.items():
-        for name, entry in (instance.get(section) or {}).items():
+    for section in SILENT_SECTIONS:
+        entries = instance.get(section) or {}
+        if section == "display":
+            allowed = INSTANCE_KEYS["display[]"]
+            items = [(f"display[{i}]", e) for i, e in enumerate(entries if isinstance(entries, list) else [])]
+        else:
+            allowed = INSTANCE_KEYS[f"{section}.*"]
+            items = [(f"{section}.{n}", e) for n, e in (entries.items() if isinstance(entries, dict) else [])]
+        for where, entry in items:
             if not isinstance(entry, dict):
                 continue
             for key in entry:
                 if key not in allowed:
                     close = difflib.get_close_matches(key, sorted(allowed), n=1, cutoff=0.6)
-                    out.append(f"{section}.{name}.{key} is ignored without a warning"
+                    out.append(f"{where}.{key} is ignored without a warning"
                                + (f": did you mean '{close[0]}'?" if close else f" (allowed: {', '.join(sorted(allowed))})"))
     return out
 

@@ -13,6 +13,8 @@ enum class ShapeKind : std::uint8_t { Polygon, Polyline, Circle };
 struct Vec2d {
     double x = 0.0;
     double y = 0.0;
+
+    bool operator==(const Vec2d &) const = default;
 };
 
 // A value computed by the engine, in internal units (metres, radians).

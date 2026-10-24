@@ -1,0 +1,35 @@
+{
+  "format": "geomsolver-instance/2",
+  "description": "A door on its hinge, its leaf ending on the arc's end, and a curved bar run into a straight front without a kink: exact arcs, tessellated for the clearance to the couch",
+  "params": {"door_w": 0.8},
+  "geometry": {
+    "couch": {"type": "rect", "x": 2.2, "y": 1.8, "width": 1.2, "height": 0.6, "angle": 0}
+  },
+  "sketch": {
+    "chord_error": "0.1mm",
+    "elements": {
+      "O":     {"type": "point", "value": [0, 0], "fixed": true},
+      "E":     {"type": "point", "value": [3.2, 0]},
+      "wall":  {"type": "segment", "from": "O", "to": "E"},
+      "H":     {"type": "point", "value": [0.4, 0]},
+      "door":  {"type": "arc", "center": "H", "radius": 0.8, "start": 0, "end": "90deg", "helper": true},
+      "leaf":  {"type": "segment", "from": "H", "to": "end(door)"},
+      "K":     {"type": "point", "value": [2.6, 0.9]},
+      "bar":   {"type": "arc", "center": "K", "radius": 0.4, "start": "90deg", "end": "180deg"},
+      "F":     {"type": "point", "value": [2.2, 0.3]},
+      "front": {"type": "segment", "from": "end(bar)", "to": "F"}
+    }
+  },
+  "constraints": [
+    {"name": "level", "expr": "horizontal(wall)"},
+    {"name": "length", "expr": "len(wall) == 3.2"},
+    {"name": "hinge", "expr": "on_line(H, wall)"},
+    {"name": "hinge_at", "expr": "dist(O, H) == 0.4"},
+    {"name": "door_size", "expr": "radius(door) == door_w"},
+    {"name": "door_from", "expr": "start_angle(door) == 0"},
+    {"name": "door_open", "expr": "span(door) == 90deg"},
+    {"name": "smooth", "expr": "tangent_at(bar, front, end(bar), 1)"},
+    {"name": "swing", "expr": "clearance(door, couch) >= 0.3"},
+    {"name": "bar_gap", "expr": "clearance(bar, couch) >= 0.1"}
+  ]
+}

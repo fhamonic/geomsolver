@@ -172,6 +172,7 @@ public:
             const Token op = next();
             auto rel = node(Ast::Kind::Relation, op.column);
             rel->text = op.text;
+            rel->begin = lhs->begin;
             adopt(*rel, std::move(lhs));
             adopt(*rel, expr());
             if(is_relop(peek())) {
@@ -184,6 +185,7 @@ public:
                                       "at most two comparisons are allowed, "
                                       "as in lo <= e <= hi"};
             }
+            rel->end = rel->args.back()->end;
             lhs = std::move(rel);
         }
         if(peek().kind != Token::Kind::End) unexpected(peek());
@@ -247,6 +249,7 @@ private:
         auto a = std::make_unique<Ast>();
         a->kind = k;
         a->column = col;
+        a->begin = col;
         return a;
     }
     static void adopt(Ast & parent, std::unique_ptr<Ast> child) {
@@ -301,6 +304,8 @@ private:
             const Token op = next();
             auto a = node(Ast::Kind::Neg, op.column);
             adopt(*a, unary());
+            a->begin = op.column;
+            a->end = a->args[0]->end;
             return a;
         }
         return power();
@@ -320,10 +325,30 @@ private:
         while(is_op(peek(), ".")) {
             const Token dot = next();
             const Token & f = peek();
-            if(f.kind != Token::Kind::Ident || (f.text != "x" && f.text != "y"))
+            const bool xy = f.kind == Token::Kind::Ident &&
+                            (f.text == "x" || f.text == "y");
+            // A body's member: one Name, "tv.c". Rename rewrites a name as
+            // the bytes [column, column + size): a space inside would make
+            // it cut the wrong ones.
+            if(!xy && f.kind == Token::Kind::Ident &&
+               a->kind == Ast::Kind::Name && a->begin == a->column &&
+               a->text.find('.') == std::string::npos) {
+                if(dot.column != a->end || f.column != dot.column + 1)
+                    throw SyntaxError{
+                        dot.column,
+                        std::format("a qualified name has no spaces: {}.{}",
+                                    a->text, f.text)};
+                a->text += "." + f.text;
+                a->end = f.column + static_cast<int>(f.text.size());
+                next();
+                continue;
+            }
+            if(!xy)
                 throw SyntaxError{f.column, "expected 'x' or 'y' after '.'"};
             auto m = node(Ast::Kind::Member, dot.column);
             m->text = f.text;
+            m->begin = a->begin;
+            m->end = f.column + 1;
             next();
             adopt(*m, std::move(a));
             a = std::move(m);
@@ -336,6 +361,7 @@ private:
             auto a = node(Ast::Kind::Number, t.column);
             a->number = t.number;
             a->text = t.text;
+            a->end = t.column + static_cast<int>(t.text.size());
             next();
             return a;
         }
@@ -344,6 +370,7 @@ private:
             if(!is_op(peek(), "(")) {
                 auto a = node(Ast::Kind::Name, id.column);
                 a->text = id.text;
+                a->end = id.column + static_cast<int>(id.text.size());
                 return a;
             }
             next();
@@ -370,13 +397,18 @@ private:
                     break;
                 }
             }
+            call->end = peek().column + 1;
             expect(")");
             return call;
         }
         if(is_op(t, "(")) {
+            const int open = t.column;
             next();
             auto a = expr();
+            const int close = peek().column;
             expect(")");
+            a->begin = open;
+            a->end = close + 1;
             return a;
         }
         unexpected(t);
@@ -385,6 +417,8 @@ private:
                                        std::unique_ptr<Ast> b) {
         auto n = node(Ast::Kind::Binary, op.column);
         n->text = op.text;
+        n->begin = a->begin;
+        n->end = b->end;
         adopt(*n, std::move(a));
         adopt(*n, std::move(b));
         return n;

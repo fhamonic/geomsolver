@@ -1,0 +1,28 @@
+{
+  "format": "geomsolver-instance/2",
+  "description": "The corner of a room, drawn as a sketch: two walls, a shelf against the north wall and a round table that leaves a passage. Its constraints are checked against the drawing, not solved.",
+  "params": {"room_w": 3.2, "room_d": 2.4, "shelf_d": "35cm", "walk": "60cm"},
+  "sketch": {
+    "extent": "box(-0.5, -0.5, 3.7, 2.9)",
+    "elements": {
+      "O":     {"type": "point", "value": [0, 0], "fixed": true, "note": "the corner, origin of the room"},
+      "E":     {"type": "point", "value": [3.2, 0]},
+      "N":     {"type": "point", "value": [0, 2.4]},
+      "walls": {"type": "polyline", "points": ["E", "O", "N"]},
+      "S":     {"type": "point", "value": [0.4, 2.05]},
+      "shelf": {"type": "box", "corners": ["S", "S + vec(1.2, shelf_d)"]},
+      "C":     {"type": "point", "value": [1.6, 0.9]},
+      "table": {"type": "circle", "center": "C", "radius": "45cm"},
+      "axis":  {"type": "segment", "from": "O", "to": "C", "helper": true}
+    }
+  },
+  "constraints": [
+    {"name": "east_wall", "expr": "E.y == O.y"},
+    {"name": "north_wall", "expr": "N.x == O.x"},
+    {"name": "width", "expr": "dist(O, E) == room_w", "label": {"offset": [0, -0.3]}},
+    {"name": "depth", "expr": "dist(O, N) == room_d"},
+    {"name": "shelf_on_wall", "expr": "max_y(shelf) == N.y"},
+    {"name": "passage", "expr": "clearance(table, shelf) >= walk"},
+    {"name": "diagonal", "expr": "dist(O, C) == 1.836", "driving": false}
+  ]
+}

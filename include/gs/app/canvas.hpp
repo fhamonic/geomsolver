@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -12,6 +13,7 @@
 #include "gs/app/keys.hpp"
 #include "gs/app/scene_cache.hpp"
 #include "gs/app/selection.hpp"
+#include "gs/app/tool.hpp"
 #include "gs/app/view.hpp"
 
 namespace gs::app {
@@ -31,13 +33,12 @@ struct CanvasOptions {
 };
 
 // Design fits the display items with their ghosts and traces, the lets
-// drawn and the design handles, or does All when there are none. All fits
-// the constant geometry, the display items and the lets drawn. Selection
-// fits what the canvas draws of the selected entries. Each leaves out what
-// is hidden.
-enum class FitRequest : std::uint8_t { None, All, Design, Selection };
-
-enum class Button : std::uint8_t { Left, Right, Middle };
+// drawn, the sketch's elements and the design handles, or does All when
+// there are none. All fits the constant geometry, the display items, the
+// lets drawn and the elements. Selection fits what the canvas draws of the
+// selected entries. Extent fits the sketch's extent (sketch.extent), or does
+// Design without one: a file's first fit. Each leaves out what is hidden.
+enum class FitRequest : std::uint8_t { None, All, Design, Selection, Extent };
 
 // The pointer as the canvas sees it in one update: once per frame in an
 // immediate-mode toolkit, once per mouse event in a retained one. Keys do
@@ -101,6 +102,8 @@ struct CanvasShown {
     std::vector<bool> lets;           // per let, in the quantity style
     std::vector<bool> geometry;       // per geometry entry
     std::vector<bool> design;         // per design variable
+    // Per element of the model's sketch: its eye and its body's are open.
+    std::vector<bool> sketch;
 };
 CanvasShown canvas_shown(const Scene & scene, const Model * geometry,
                          const CanvasOptions & options,
@@ -108,12 +111,27 @@ CanvasShown canvas_shown(const Scene & scene, const Model * geometry,
 
 // What a pick hit, and the entry a click there selects.
 struct Pick {
-    enum class Source : std::uint8_t { Handle, Display, Let, Geometry };
+    enum class Source : std::uint8_t {
+        Handle,
+        Display,
+        Let,
+        Geometry,
+        Element
+    };
     Source source = Source::Handle;
-    // The design variable, or the place in the model's display(), lets() or
-    // geometry().
+    // The design variable, or the place in the model's display(), lets(),
+    // geometry() or sketch().
     int index = -1;
+    // A body's element selects the body ({Body, "tv"}): in world mode a
+    // body is edited whole (plan 4.8).
     SelKey key;
+    // What of a sketch element the pointer is on, which decides what a
+    // drag moves: a point element (Whole), the edge `edge` of a segment,
+    // polyline, polygon or box, a circle's or an arc's rim (Edge), an arc's
+    // start or end.
+    enum class Part : std::uint8_t { Whole, Edge, Start, End };
+    Part part = Part::Whole;
+    int edge = -1;
 };
 
 // What the pointer is over, for a tooltip.
@@ -131,16 +149,29 @@ int handle_at(std::span<const DesignHandle> handles, const View2d & view,
 // handles, picking, hover and the pointer gestures. A press that moves less
 // than 6 pixels before its release is a click; nothing moves before then.
 // - Left press on a movable handle: drags the point, one undo step "move
-//   A". A click selects what pick() finds (Shift or Ctrl toggles it, a
-//   double click also reveals it in its home panel); on nothing it clears
-//   the selection unless Shift or Ctrl is held. Any other left drag draws a
-//   selection box, which selects every entry drawn inside it on release
-//   (Shift or Ctrl adds them).
+//   A". Left press on a sketch element of the world, not a fixed point:
+//   drags it through a SketchSession drag (a point, both ends of an edge, a
+//   circle's or an arc's radius by its rim, an arc's end), which writes
+//   nothing while held and one undo step at the release. A click selects
+//   what pick() finds (Shift or Ctrl toggles it, a double click also
+//   reveals it in its home panel); on nothing it clears the selection
+//   unless Shift or Ctrl is held. Any other left drag draws a selection
+//   box, which selects every entry drawn inside it on release (Shift or
+//   Ctrl adds them).
 // - Middle press, or left press with Space held: pans from the first
 //   update. Right press: pans once it is a drag; a right click is
 //   App::context_click() on the pick.
 // - The wheel zooms at the pointer, by 1.18 per notch.
-// The pick under the pointer is the App's hot key from the canvas.
+// While a tool is active (ToolHost::active()), the left button's press,
+// the moves and the release go to the tool with what the pointer snaps to
+// (Snapper, under the tool's snap_filter(); nothing with Ctrl held, the
+// freehand modifier, and the grid with the Grid snap option) and what it
+// picks (Picker, under the tool's pick_filter(), Ctrl or not), and a right
+// click is the Esc chain from the tool's shape (ToolHost::right_click()); pan
+// and zoom are unchanged. A scene of another model than the tool's last event's
+// (a commit, an undo) feeds the tool the pointer again, as a move, though it
+// did not move. The pick under the pointer is the App's hot key from the
+// canvas; with a tool, what it picks, else what it snaps to.
 class CanvasController {
 public:
     explicit CanvasController(App & app);
@@ -152,6 +183,8 @@ public:
     void fit_all();
     void fit_design();
     void fit_selection();
+    // The sketch's extent, else Design: App::open() asks for it.
+    void fit_extent();
     // Pending until an update has geometry to fit; a new controller asks for
     // Design.
     FitRequest fit_request() const { return fit_; }
@@ -161,8 +194,20 @@ public:
     // Picks from the handles of `scene`, taken before the pointer moves
     // anything: during a drag the document then holds a newer position.
     void update(const PointerInput & in, const Scene & scene);
+    // Characters typed while the pointer is over the canvas and no text
+    // field has the keyboard: to the active tool (ToolHost::typed()).
+    // Nothing while the last update() was typing.
+    void typed(std::string_view text);
+    // The pointer capture was lost with a button held (wxWidgets'
+    // EVT_MOUSE_CAPTURE_LOST): the press ends without a release, which
+    // would select, place a point or end a box. A design point's drag ends
+    // as one undo step, a sketch drag is dropped (SketchSession::cancel()),
+    // a box or a pan stops, and the tool that had the press gets
+    // ToolEvent::Cancel.
+    void cancel_pointer();
 
-    bool dragging() const { return drag_var_ >= 0; }
+    // A design point's or a sketch element's drag is under way.
+    bool dragging() const { return drag_var_ >= 0 || sketch_drag_; }
     bool hovered() const { return hovered_; }
     const View2d & view() const { return view_; }
     // The handles of the design points shown, from the last update.
@@ -180,15 +225,17 @@ public:
     CanvasShown shown(const Scene & scene) const;
     // The entry drawn under `screen`, in this order, the topmost first in
     // each list: a design handle within 9 pixels; a point within 7 pixels
-    // (display items, lets drawn, then geometry); an edge within 4 pixels
-    // (the same lists); the inside of a shape drawn filled (display items,
+    // (display items, lets drawn, the sketch's point elements and arc ends,
+    // then geometry); an edge within 4 pixels (the same lists, an arc by
+    // its exact rim); the inside of a shape drawn filled (display items,
     // then geometry). What is hidden is not picked, nor are ghosts and
     // traces. Call it with the scene of the last update(): the handles are
     // those of that update's model.
     std::optional<Pick> pick(Vec2d screen, const Scene & scene) const;
     // The entries with a drawing wholly inside the screen rectangle: a point
     // by its position, a shape by all its vertices, a circle by its bounding
-    // box; each once, in drawing order. Same scene as pick().
+    // box; each once, in drawing order; a body once all its elements shown
+    // are inside. Same scene as pick().
     std::vector<SelKey> boxed(Vec2d a, Vec2d b, const Scene & scene) const;
     // The text of the last update's pick, nothing while panning, drawing a
     // box or when the pointer is not over the canvas. Call it with the
@@ -215,11 +262,25 @@ private:
         bool grabbed = false;
         // It moved 6 pixels or more: a drag, no longer a click.
         bool dragged = false;
+        // It went to the active tool, which gets its release.
+        bool tool = false;
+        // A sketch element it grabbed, dragged once the press is a drag.
+        std::optional<Pick> grab;
+        Vec2d world;  // where it went down, in the world
     };
 
     void apply_fit(const Scene & scene);
     void press(const PointerInput & in, const Scene & scene);
     void release(Mods mods, const Scene & scene);
+    // The active tool's event at the pointer, snapped in `scene`.
+    void to_tool(ToolEvent::Kind kind, const Scene & scene);
+    // Starts the SketchSession drag of press_->grab; moves it to the
+    // pointer.
+    void begin_sketch_drag(const Scene & scene);
+    void move_sketch_drag();
+    std::optional<Pick> pick_element(Vec2d world, const Scene & scene,
+                                     const CanvasShown & shown,
+                                     bool points) const;
     std::optional<Pick> pick_handle(int var) const;
 
     App & app_;
@@ -234,10 +295,25 @@ private:
     Vec2d world_;      // pointer_world()
     double px_ = 0.0;  // one pixel in metres, at the same time as world_
     std::optional<Pick> hover_;
+    // What the last event to the tool snapped to, the hot key while a tool
+    // is active.
+    std::optional<SelKey> snapped_;
+    // The model of the scene the tool's last event was snapped in; null
+    // while no tool is active. Not a raw pointer: a new model may take the
+    // freed address of the old one, and the snap would then stay the one
+    // made before the commit, which shows the suggestions of a point the
+    // next click does not create.
+    std::shared_ptr<const Model> tool_model_;
     int drag_var_ = -1;
     Vec2d drag_offset_;
     bool panning_ = false;
     bool boxing_ = false;
+    bool typing_ = false;  // the last update's PointerInput::typing
+    Mods mods_ = Mods::None;
+    // A SketchSession drag this controller began; the centre of the rim it
+    // drags, for a radius.
+    bool sketch_drag_ = false;
+    Vec2d rim_centre_;
     std::optional<Press> press_;
     Signal<Changes> changed_;
 };

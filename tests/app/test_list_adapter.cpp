@@ -11,6 +11,8 @@
 #include "gs/app/app.hpp"
 #include "gs/app/list.hpp"
 
+#include "../sketch/corpus.hpp"
+#include "fake_tool.hpp"
 #include "helpers.hpp"
 
 namespace gs::test {
@@ -32,6 +34,7 @@ public:
         read_all(children_, rows_);
         footer_ = list_.footer();
         filters_ = list_.filters();
+        shown_ = columns_shown();
     }
 
     // How it followed the changes: the toolkit calls it would have made.
@@ -46,7 +49,8 @@ public:
         Rows rows;
         read_all(children, rows);
         return children == children_ && rows == rows_ &&
-               footer_ == list_.footer() && filters_ == list_.filters();
+               footer_ == list_.footer() && filters_ == list_.filters() &&
+               shown_ == columns_shown();
     }
     const std::vector<ListCell> & footer() const { return footer_; }
     std::vector<std::string> names() const {
@@ -72,12 +76,21 @@ private:
         read(std::nullopt);
     }
 
+    // Which columns it draws: a wxDataViewColumn's SetHidden().
+    std::vector<bool> columns_shown() const {
+        std::vector<bool> out;
+        for(std::size_t c = 0; c < list_.columns().size(); ++c)
+            out.push_back(list_.column_shown(c));
+        return out;
+    }
+
     void reset() {
         filters_ = list_.filters();
         children_.clear();
         rows_.clear();
         read_all(children_, rows_);
         footer_ = list_.footer();
+        shown_ = columns_shown();
         ++resets;
     }
 
@@ -90,7 +103,7 @@ private:
         if(c.has(Change::Content)) diff(std::nullopt);
         if(c.has_any(Change::Content | Change::Model | Change::Values |
                      Change::Sweep | Change::Visibility | Change::Solver |
-                     Change::Scene)) {
+                     Change::Scene | Change::Sketch)) {
             for(auto & [id, row] : rows_) {
                 if(std::optional<ListRow> now = list_.row(id))
                     row = std::move(*now);
@@ -98,6 +111,7 @@ private:
                     ++stale;
             }
             footer_ = list_.footer();
+            shown_ = columns_shown();
             ++refreshes;
         }
     }
@@ -117,13 +131,32 @@ private:
         for(const RowId & child : children_[id]) insert(child);
     }
 
+    // Every removal, under every parent, before any addition: a row may
+    // move to another parent with its id (a constraint between Geometry and
+    // Design), and added first it would be found cached, then erased with
+    // its old parent.
     void diff(const std::optional<RowId> & parent) {
+        prune(parent);
+        add(parent);
+    }
+    void prune(const std::optional<RowId> & parent) {
         const std::vector<RowId> now = list_.children(parent);
-        for(const RowId & id : children_[parent])
-            if(!std::ranges::contains(now, id)) erase(id);
+        std::vector<RowId> kept;
+        for(const RowId & id : children_[parent]) {
+            if(std::ranges::contains(now, id)) {
+                kept.push_back(id);
+                prune(id);
+            } else {
+                erase(id);
+            }
+        }
+        children_[parent] = std::move(kept);
+    }
+    void add(const std::optional<RowId> & parent) {
+        const std::vector<RowId> now = list_.children(parent);
         for(const RowId & id : now) {
-            if(rows_.contains(id))
-                diff(id);
+            if(std::ranges::contains(children_[parent], id))
+                add(id);
             else
                 insert(id);
         }
@@ -135,6 +168,7 @@ private:
     Rows rows_;
     std::vector<ListCell> footer_;
     std::vector<Filter> filters_;
+    std::vector<bool> shown_;
     Signal<Changes>::Connection link_, filters_link_;
 };
 
@@ -957,8 +991,9 @@ TEST_CASE("list adapter: a toggle column is named for what it toggles") {
                     toggles.push_back(std::format("{}: {}", p.key, c.label));
     CHECK_MESSAGE(
         (toggles ==
-         std::vector<std::string>{"elements: Eye", "variables: Released",
-                                  "quantities: Eye", "constraints: On",
+         std::vector<std::string>{"elements: Eye", "elements: Helper",
+                                  "variables: Released", "quantities: Eye",
+                                  "constraints: On", "constraints: Eye",
                                   "criteria: On"}),
         "an eye, Released and Enabled look alike without their header");
 }
@@ -1022,6 +1057,220 @@ TEST_CASE("list adapter: the rows a list keeps follow what it is built from") {
                      "../../docs/instances/guide-b-desk-errors-broken.json"));
     app.scene(false);
     CHECK_MESSAGE(hold(), "another instance, which does not compile");
+}
+
+}  // namespace gs::test
+
+namespace gs::test {
+
+TEST_CASE("list adapter: Sketch changes are read again, Tool changes none") {
+    // A strip of 100 points settled first: one component of 238 columns,
+    // diagnosed at a tick, the only change that tick brings.
+    LoadResult strip = Instance::from_json(
+        strip_doc(100, 3, 1, 0), fs::temp_directory_path() / "strip.json");
+    REQUIRE(strip.instance);
+    REQUIRE(sketch::settle(*strip.instance).converged);
+    App app(std::make_unique<FakeBackend>());
+    Document & doc = app.document();
+    REQUIRE(doc.load_json(strip.instance->doc(),
+                          fs::temp_directory_path() / "test_app_strip.json"));
+    app.sync();
+    app.scene(false);
+    Panels & panels = app.panels();
+    FakeRetainedAdapter constraints(app, panels.constraints);
+    FakeRetainedAdapter elements(app, panels.elements);
+    FakeRetainedAdapter params(app, panels.params);
+    auto fresh = [&] {
+        return constraints.matches_fresh_read() &&
+               elements.matches_fresh_read() && params.matches_fresh_read();
+    };
+    REQUIRE(fresh());
+    Changes seen;
+    const Signal<Changes>::Connection link =
+        app.changed().connect([&](Changes c) { seen |= c; });
+
+    const int refreshes = constraints.refreshes;
+    app.tick(0.0);
+    CHECK(seen == Changes(Change::Sketch));
+    CHECK_MESSAGE((fresh() && constraints.refreshes == refreshes + 1 &&
+                   constraints.resets == 0),
+                  "a diagnosis arriving: Sketch alone, the rows read again");
+
+    const Model & m = *doc.sketch_model();
+    const auto p =
+        std::ranges::find(m.sketch(), std::string("P50"), &SketchInfo::name);
+    REQUIRE(app.sketch().begin(
+        sketch::drag_point(m, static_cast<int>(p - m.sketch().begin())),
+        "move P50"));
+    seen = {};
+    REQUIRE(app.sketch().move(std::vector<Vec2d>{{25.05, 0.05}}));
+    CHECK(seen == Changes(Change::Sketch));
+    CHECK_MESSAGE(fresh(), "a drag frame: the live values");
+    REQUIRE(app.sketch().end());
+    CHECK_MESSAGE(fresh(), "its release, one commit");
+    REQUIRE(doc.undo());
+    app.tick(0.0);
+    CHECK(fresh());
+
+    const int before = constraints.refreshes + constraints.resets;
+    app.changed().emit(Change::Tool);
+    CHECK_MESSAGE(
+        (fresh() && constraints.refreshes + constraints.resets == before),
+        "a tool's change reads no list again");
+    CHECK((constraints.stale == 0 && elements.stale == 0 && params.stale == 0));
+}
+
+}  // namespace gs::test
+
+namespace gs::test {
+
+TEST_CASE("list adapter: a sketch's body rows, helper toggles and glyph eyes") {
+    App app(std::make_unique<FakeBackend>());
+    Document & doc = app.document();
+    REQUIRE(app.open(fs::path(GS_TEST_DATA_DIR) /
+                     "../../docs/instances/sketch-body.json"));
+    app.sync();
+    app.scene(false);
+    Panels & panels = app.panels();
+    using K = SelKey::Kind;
+    FakeRetainedAdapter elements(app, panels.elements);
+    FakeRetainedAdapter constraints(app, panels.constraints);
+    auto fresh = [&] {
+        return elements.matches_fresh_read() &&
+               constraints.matches_fresh_read();
+    };
+    REQUIRE(fresh());
+    CHECK_MESSAGE(
+        (misfit(panels.elements).empty() && misfit(panels.constraints).empty()),
+        misfit(panels.elements) << misfit(panels.constraints));
+    CHECK_MESSAGE(std::ranges::contains(elements.names(), std::string("tv.c")),
+                  "the members are read under their body's row");
+
+    REQUIRE(panels.elements.toggle({{K::Element, "wall"}}, 5));
+    CHECK_MESSAGE(fresh(), "a helper flag: one commit");
+    REQUIRE(panels.elements.toggle({{K::Body, "tv"}}, 0));
+    CHECK_MESSAGE(fresh(), "a body's eye: its members' tips too");
+    REQUIRE(panels.constraints.toggle({{K::Constraint, "pin"}}, 1));
+    CHECK_MESSAGE(fresh(), "a glyph's eye");
+
+    const int resets = elements.resets;
+    REQUIRE(panels.host.rename({K::Body, "tv"}, "telly"));
+    CHECK_MESSAGE(
+        (fresh() && elements.resets == resets + 1 &&
+         std::ranges::contains(elements.names(), std::string("telly.c"))),
+        "a body renamed: every member's path moves");
+    REQUIRE(doc.undo());
+    app.sync();
+    CHECK(fresh());
+
+    REQUIRE(app.sketch().begin(
+        sketch::drag_body(*doc.sketch_model(), 0, {0.0, 0.0}), "move tv"));
+    REQUIRE(app.sketch().move(std::vector<Vec2d>{{0.6, 1.25}}));
+    CHECK_MESSAGE(fresh(), "a body's drag: its pose and members, live");
+    REQUIRE(app.sketch().end());
+    app.tick(0.0);
+    CHECK(fresh());
+    REQUIRE(!doc.edit("params.W", "1.23 +"));
+    REQUIRE(doc.sketch_stale());
+    CHECK_MESSAGE(fresh(), "a failed compile: the states greyed");
+    REQUIRE(doc.undo());
+    CHECK(fresh());
+
+    REQUIRE(app.open(tv_file()));
+    app.sync();
+    CHECK_MESSAGE(fresh(),
+                  "a file without a sketch: its sketch columns and "
+                  "filter hidden again");
+    CHECK((elements.stale == 0 && constraints.stale == 0));
+}
+
+TEST_CASE("list adapter: a constraint that moves between Geometry and Design") {
+    // A formula edit moves a row to the other header with its RowId, under
+    // Content alone: a cache that adds before it removes finds the row
+    // present, then drops it with its old parent.
+    App app(std::make_unique<FakeBackend>());
+    Document & doc = app.document();
+    REQUIRE(app.open(fs::path(GS_TEST_DATA_DIR) /
+                     "../../docs/instances/sketch-basic.json"));
+    app.sync();
+    app.scene(false);
+    ListPresenter & list = app.panels().constraints;
+    FakeRetainedAdapter constraints(app, list);
+    auto parent_of = [&](const char * name) {
+        const std::optional<ListRow> r =
+            list.row({{SelKey::Kind::Constraint, name}});
+        REQUIRE((r && r->parent));
+        return r->parent->group;
+    };
+    REQUIRE(parent_of("width") == "geometry");
+    REQUIRE(doc.edit("constraints[2].expr", "dist(O, E) >= room_w"));
+    CHECK(parent_of("width") == "design");
+    CHECK_MESSAGE(constraints.matches_fresh_read(), "Geometry to Design");
+    REQUIRE(doc.edit("constraints[2].expr", "dist(O, E) == room_w"));
+    CHECK(parent_of("width") == "geometry");
+    CHECK_MESSAGE(constraints.matches_fresh_read(), "Design to Geometry");
+    CHECK(constraints.stale == 0);
+}
+
+}  // namespace gs::test
+
+namespace gs::test {
+
+// A tool that adds the first element of a sketch changes what the lists
+// show of a file without one: Constraints' groups, Elements' Sketch group,
+// filter and Helper column. Its undo takes them away again.
+TEST_CASE("list adapter: a tool adds a sketch section, its undo removes it") {
+    App app(std::make_unique<FakeBackend>());
+    Document & doc = app.document();
+    REQUIRE(app.open(tv_file()));
+    app.sync();
+    app.scene(false);
+    FakeLog log;
+    provide_fake(app, log);
+    std::vector<std::unique_ptr<FakeRetainedAdapter>> lists;
+    for(const PanelId id :
+        {PanelId::Elements, PanelId::Variables, PanelId::Quantities,
+         PanelId::Params, PanelId::Ranges, PanelId::Constraints,
+         PanelId::Criteria})
+        lists.push_back(
+            std::make_unique<FakeRetainedAdapter>(app, *app.panels().list(id)));
+    auto fresh = [&] {
+        return std::ranges::all_of(
+            lists, [](const auto & l) { return l->matches_fresh_read(); });
+    };
+    REQUIRE(fresh());
+
+    ToolHost & tools = app.tools();
+    REQUIRE(tools.start("tool.segment"));
+    int refreshes = 0;
+    for(const auto & l : lists) refreshes += l->refreshes + l->resets;
+    tools.event({.kind = ToolEvent::Kind::Move, .world = {0.1, 0.1}});
+    tools.event({.kind = ToolEvent::Kind::Press, .world = {0.1, 0.1}});
+    int after = 0;
+    for(const auto & l : lists) after += l->refreshes + l->resets;
+    CHECK_MESSAGE((fresh() && after == refreshes),
+                  "a tool's move and press, before its commit: Tool only, no "
+                  "list reads again");
+
+    tools.event({.kind = ToolEvent::Kind::Press, .world = {0.5, 0.1}});
+    REQUIRE((log.commits == 1 && doc.has_sketch()));
+    CHECK_MESSAGE(fresh(), "the sketch section added");
+    REQUIRE(doc.undo());
+    app.sync();
+    CHECK_MESSAGE((!doc.has_sketch() && fresh()), "and removed by its undo");
+    REQUIRE(doc.redo());
+    app.sync();
+    CHECK_MESSAGE((doc.has_sketch() && fresh()), "and added by its redo");
+    REQUIRE(doc.undo());
+    app.sync();
+    // An edit that selects nothing: the filters are read again on
+    // Structure, not on the Selection a tool's commit brings.
+    REQUIRE(doc.edit(
+        "sketch",
+        Json{{"elements", {{"Q", {{"type", "point"}, {"value", {0, 0}}}}}}}));
+    CHECK_MESSAGE((doc.has_sketch() && fresh()),
+                  "a section added without a tool");
+    for(const auto & l : lists) CHECK(l->stale == 0);
 }
 
 }  // namespace gs::test

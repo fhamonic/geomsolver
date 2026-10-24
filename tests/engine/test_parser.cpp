@@ -77,6 +77,65 @@ TEST_CASE("parser: a chain keeps its operands, columns and written order") {
     CHECK(r.ast->second_column == -1);
 }
 
+TEST_CASE("parser: a node's span is its text, parentheses included") {
+    const std::string text =
+        "lo < 2 * ((W + 1)) <= -line_dist(end(L1), S, -1).x";
+    const ParseResult r = parse_expression(text);
+    REQUIRE(r.ok());
+    const auto cut = [&](const Ast & a) {
+        return text.substr(static_cast<std::size_t>(a.begin),
+                           static_cast<std::size_t>(a.end - a.begin));
+    };
+    const Ast & rel = *r.ast;
+    CHECK(cut(rel) == text);
+    CHECK(cut(*rel.args[0]) == "lo");
+    const Ast & product = *rel.args[1];
+    CHECK(cut(product) == "2 * ((W + 1))");
+    CHECK(cut(*product.args[1]) == "((W + 1))");
+    CHECK(cut(*product.args[1]->args[1]) == "1");
+    const Ast & neg = *rel.args[2];
+    CHECK(cut(neg) == "-line_dist(end(L1), S, -1).x");
+    const Ast & member = *neg.args[0];
+    CHECK(cut(member) == "line_dist(end(L1), S, -1).x");
+    const Ast & call = *member.args[0];
+    CHECK(cut(call) == "line_dist(end(L1), S, -1)");
+    CHECK(cut(*call.args[0]) == "end(L1)");
+    CHECK(cut(*call.args[2]) == "-1");
+
+    const std::string units = "f() >= 90deg";
+    const ParseResult u = parse_expression(units);
+    REQUIRE(u.ok());
+    CHECK(units.substr(static_cast<std::size_t>(u.ast->args[0]->begin),
+                       static_cast<std::size_t>(u.ast->args[0]->end)) == "f()");
+    CHECK(units.substr(static_cast<std::size_t>(u.ast->args[1]->begin)) ==
+          "90deg");
+    CHECK(u.ast->args[1]->end == static_cast<int>(units.size()));
+}
+
+TEST_CASE("parser: a body's member is one name") {
+    CHECK(parsed("tv.c") == "tv.c");
+    CHECK(parsed("tv.c.x - A.y") == "(tv.c.x - A.y)");
+    CHECK(parsed("dist(tv.c, arm.p_2)") == "dist(tv.c, arm.p_2)");
+    // x and y stay coordinates: a member is never named so.
+    CHECK(parsed("tv.x") == "tv.x");
+    const ParseResult r = parse_expression("edge(tv.shape, 0).x");
+    REQUIRE(r.ok());
+    const Ast & name = *r.ast->args[0]->args[0];
+    CHECK(name.kind == Ast::Kind::Name);
+    CHECK(name.text == "tv.shape");
+    CHECK(name.column == 5);
+    CHECK(name.begin == 5);
+    CHECK(name.end == 13);
+    CHECK(r.ast->args[0]->args[0]->args.empty());
+
+    // Only after a name written alone, and once.
+    CHECK(failed("tv.c.d").error_column == 5);
+    CHECK(failed("(tv).c").error_column == 5);
+    CHECK(failed("tv.c.x.y.z").error_column == 9);
+    CHECK(failed("tv .c").error.find("no spaces") != std::string::npos);
+    CHECK(failed("tv. c").error.find("no spaces") != std::string::npos);
+}
+
 TEST_CASE("parser: numbers and unit suffixes") {
     CHECK(number("12") == 12.0);
     CHECK(number("1.5") == 1.5);
@@ -116,9 +175,13 @@ TEST_CASE("parser: errors carry the 0-based column of the offending token") {
     CHECK(r.error_column == 2);
     CHECK(r.error.find("at(") != std::string::npos);
 
-    r = failed("p.z");
-    CHECK(r.error_column == 2);
+    r = failed("f(p).z");
+    CHECK(r.error_column == 5);
     CHECK(r.error.find("'x' or 'y'") != std::string::npos);
+
+    r = failed("tv . c");
+    CHECK(r.error_column == 3);
+    CHECK(r.error == "a qualified name has no spaces: tv.c");
 
     r = failed("(a <= b)");
     CHECK(r.error_column == 3);

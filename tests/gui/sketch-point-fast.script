@@ -1,0 +1,18 @@
+# The Point tool's x and y typed fast after Tab, before the field has the
+# keyboard: x is 2.5, its second part typed on the frame the field takes
+# the keyboard and Tab on the next; then y, 1, and Enter, which places the
+# point at once.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.point
+wait 2
+move 760 300 3
+wait 2
+key Tab
+text "2"
+wait 1
+text ".5"
+key Tab
+text "1"
+key Enter
+wait 4

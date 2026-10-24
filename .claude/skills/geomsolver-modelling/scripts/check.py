@@ -3,8 +3,10 @@
 
 The report always has these parts, in this order:
   VERDICT: FEASIBLE | INFEASIBLE | COMPILE_ERROR | ERROR
-  MODE, COMMAND, then the sections ERRORS, WARNINGS, LINT, RUNS, DESIGN, CRITERIA,
-  ACTIVE, VIOLATED, PROBES (each "(none)" when empty), and a final "NEXT:" line.
+  MODE, COMMAND, then the sections ERRORS, WARNINGS, LINT, RUNS, SKETCH (only for a file with a
+  sketch: what the sketch solver finds in the drawing), NOTES (only when the compile approximated
+  something: an arc's tessellation, a bound tightened by it), DESIGN, CRITERIA, ACTIVE, VIOLATED,
+  PROBES (each "(none)" when empty), and a final "NEXT:" line.
   LINT lists likely modelling mistakes that the CLI accepts without a warning (a bare number
   read as SI where a unit was meant; clearance(shape, region) <= -m used to keep a shape inside).
 
@@ -205,7 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     obj_name = gc.objective_name(brun)
     obj_role = brun["criteria"][obj_name]["role"] if obj_name else None
     stopped = bool(results.get("stopped")) or run.timed_out
-    if results.get("kind") == "evaluation":
+    # The CLI answers a solve with an evaluation only for a sketch with no design variable: nothing to optimise.
+    sketch_only = solve and results.get("kind") == "evaluation"
+    if sketch_only:
+        runs_body.append(f"  nothing to optimise: the sketch is checked, not solved, and the file has no design "
+                         f"variable; the drawing is {'feasible' if feasible else 'NOT feasible'}")
+    elif results.get("kind") == "evaluation":
         runs_body.append(f"  evaluation only: the design values written in the file are "
                          f"{'feasible' if feasible else 'NOT feasible'} (this says nothing about the problem: "
                          f"use --solve to search)")
@@ -234,6 +241,18 @@ def main(argv: list[str] | None = None) -> int:
                              f" max viol {gc.g(b.get('max_violation'), 3):<10} hits {s.get('hits')}"
                              f"  run {b.get('index')} ({b.get('origin')})")
     section(lines, "RUNS", runs_body)
+    sketch = results.get("sketch")
+    if sketch:
+        report["sketch"] = sketch
+        section(lines, "SKETCH (the sketch solver's view of the drawing; --sketch-solve of the CLI settles it)",
+                [f"  {ln}" for ln in sketch["report"].splitlines()])
+    notes = results.get("notes")
+    if notes:
+        report["notes"] = notes
+        section(lines, "NOTES (what the compile approximated: a VIOLATED row over an arc may be its tightening)",
+                [f"  {n['path']}: {n['text']}" for n in notes])
+    unsettled = bool(sketch) and sketch.get("residual") is not None and sketch["residual"] > 1e-10 and \
+        not sketch.get("conflicting") and not sketch.get("malformed")
     report["runs"] = {"feasible": nfeas, "total": nruns, "distinct": len(sols), "stopped": stopped,
                       "objective": obj_name, "objective_role": obj_role,
                       "best_objective": gc.objective_display(brun),
@@ -313,7 +332,19 @@ def main(argv: list[str] | None = None) -> int:
                          *(gc.shell_quote(a) for a in overrides)])
 
     stop_note = f"stopped by --timeout after {nruns} runs; " if stopped else ""
-    if results.get("kind") == "evaluation":
+    settle = " ".join([gc.rel_path(str(cli)), gc.shell_quote(args.instance), *(gc.shell_quote(a) for a in overrides),
+                       "--sketch-solve", "--write-instance", "NEW.json"])
+    # Whatever the mode: no design is feasible while the drawing breaks its geometry constraints, so a --solve
+    # first would only report the same drawing again.
+    if not feasible and unsettled:
+        nxt = (f"the drawing is off its geometry constraints (SKETCH: not solved): settle it into a new file with: "
+               f"{settle} , then check NEW.json")
+    elif sketch_only:
+        nxt = ("the sketch is constant for the optimiser: to let the solver choose a position or a size, make it a "
+               "design variable (sketch values cannot be optimised yet)" if feasible else
+               "the drawing breaks the VIOLATED rows, and moving it cannot fix them all (read SKETCH): fix those "
+               "constraints or the sketch's values by hand")
+    elif results.get("kind") == "evaluation":
         if feasible:
             nxt = f"the written design is feasible; optimise it with: {script('check.py', '--solve')}"
         else:

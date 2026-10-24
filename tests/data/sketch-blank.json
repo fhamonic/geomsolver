@@ -1,0 +1,8 @@
+{
+  "format": "geomsolver-instance/2",
+  "description": "An empty sketch, one metre square, for the GUI scripts that draw and constrain from nothing.",
+  "sketch": {
+    "extent": "box(0, 0, 1, 1)",
+    "elements": {}
+  }
+}

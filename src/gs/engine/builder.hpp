@@ -30,7 +30,11 @@ public:
     }
     std::pair<int, int> conflict() const { return conflict_; }
 
-    int constant(ValueType type, ShapeKind kind, std::span<const double> data);
+    // `from`: the meta of the node a shape is folded from, whose arc
+    // parameters (or moved_arc) the constant keeps, and which tell it from a
+    // plain polyline of the same points.
+    int constant(ValueType type, ShapeKind kind, std::span<const double> data,
+                 const ShapeMeta * from = nullptr);
     int scalar(double v) {
         return constant(ValueType::Scalar, ShapeKind::Polygon,
                         std::span<const double>(&v, 1));
@@ -41,6 +45,8 @@ public:
     }
     int var(int index, ValueType type);
     int sweep(int index);
+    // Column `column` of q, a Scalar.
+    int sketch_var(int column);
     int make(Op op, std::span<const int> args, int aux = 0);
     int make(Op op, std::initializer_list<int> args, int aux = 0) {
         return make(op, std::span<const int>(args.begin(), args.size()), aux);
@@ -70,7 +76,7 @@ private:
         ShapeMeta meta;
         bool has_meta = false;
     };
-    Inferred infer(Op op, std::span<const int> args) const;
+    Inferred infer(Op op, std::span<const int> args, int aux) const;
     int fold(Op op, std::span<const int> args, int aux, const Inferred & inf);
     int push(Node n, std::span<const int> args, const std::string & key);
 

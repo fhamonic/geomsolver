@@ -193,7 +193,12 @@ void SolverPresenter::begin_frame() {
 std::optional<SolverPresenter::Blocker> SolverPresenter::blocker() const {
     if(doc_.stale()) return Blocker{"fix the errors first", true};
     if(!doc_.excluded().empty()) return Blocker{excluded_message(doc_), false};
+    if(nothing_to_optimise(doc_)) return Blocker{kNothingToOptimise, false};
     return std::nullopt;
+}
+
+std::string_view SolverPresenter::solve_tip() const {
+    return nothing_to_optimise(doc_) ? kNothingToOptimise : kSolveTip;
 }
 
 SolverPresenter::Progress SolverPresenter::progress() const {
@@ -308,7 +313,7 @@ void SolverPresenter::toggle_pareto(const ParetoForm & form, std::size_t k) {
 
 bool SolverPresenter::can_run_pareto() const {
     return !session_.running() && !session_.pareto_criteria().empty() &&
-           doc_.complete();
+           doc_.complete() && !nothing_to_optimise(doc_);
 }
 
 void SolverPresenter::run_pareto() { session_.start(doc_, SolveKind::Pareto); }

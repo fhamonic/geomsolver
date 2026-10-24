@@ -1,0 +1,23 @@
+# The Steps 9-10 ruling: a value left in a tool's field blocks the keys only
+# until the field first has the keyboard. The Point tool adds P1; the
+# Circle tool, centred on it, gets "3" typed for its radius; a click on an
+# Elements row takes the keyboard, the 3 waiting in the field; Ctrl+Z then
+# undoes P1, which drops the circle under way.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.point
+wait 2
+click L 724 291
+wait 2
+key Escape
+wait 2
+action tool.circle
+wait 2
+click L 724 291
+move 772 275 3
+text "3"
+wait 3
+click L 1150 200
+wait 3
+key Z ctrl
+wait 3

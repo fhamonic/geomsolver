@@ -1,14 +1,14 @@
 #pragma once
 
-#include "gs/app/actions.hpp"
+#include "gs/app/app.hpp"
 
 namespace gs::front::imgui {
 
 using namespace gs::app;
 
-// ActionRegistry::run_pressed() with this frame's keys, modifiers, active
-// text field and open popups.
-void run_shortcuts(const ActionRegistry & actions, KeyScope scope);
+// ActionRegistry::run_pressed() with this frame's keys and modifiers, in
+// App::key_focus() of its active text field and open popups.
+void run_shortcuts(const App & app, KeyScope scope);
 Mods held_mods();
 
 }  // namespace gs::front::imgui

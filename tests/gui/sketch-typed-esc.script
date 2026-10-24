@@ -1,0 +1,16 @@
+# The same typing, then Esc: nothing is written.
+size 1600 1300
+open docs/instances/sketch-arc.json
+wait 16
+select element bar
+wait 6
+click L 840 1191 ctrl
+wait 3
+text "1"
+wait 2
+text "2"
+wait 2
+text "0"
+wait 2
+key Escape
+wait 8

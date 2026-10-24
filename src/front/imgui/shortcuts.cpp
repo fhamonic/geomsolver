@@ -45,13 +45,12 @@ Mods held_mods() {
     return out;
 }
 
-void run_shortcuts(const ActionRegistry & actions, KeyScope scope) {
-    const KeyFocus focus{
-        .scope = scope,
-        .typing = ImGui::GetIO().WantTextInput,
-        .popup = ImGui::IsPopupOpen(
-            "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)};
-    actions.run_pressed(focus, held_mods(), [](Key key, bool repeat) {
+void run_shortcuts(const App & app, KeyScope scope) {
+    const KeyFocus focus = app.key_focus(
+        scope, ImGui::GetIO().WantTextInput,
+        ImGui::IsPopupOpen(
+            "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel));
+    app.actions().run_pressed(focus, held_mods(), [](Key key, bool repeat) {
         return ImGui::IsKeyPressed(to_imgui(key), repeat);
     });
 }

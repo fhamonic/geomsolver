@@ -1,0 +1,22 @@
+# Types 1 into C's x in Properties, Tab, 0.5 into its y, then Enter: both
+# are written as typed. Tab leaves no item active for a frame, which ends
+# the drag of x: the value typed must reach it first.
+size 1600 1300
+open docs/instances/sketch-basic.json
+wait 16
+select element C
+wait 6
+click L 753 1116 ctrl
+wait 3
+text "1"
+wait 2
+key Tab
+wait 3
+text "0"
+wait 2
+text "."
+wait 2
+text "5"
+wait 2
+key Enter
+wait 8

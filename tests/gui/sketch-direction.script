@@ -1,0 +1,28 @@
+# Horizontal and Vertical on an empty sketch: two segments drawn slanted,
+# which suggest nothing; Horizontal, tool first, levels the first (h1);
+# Vertical on the selection of the second makes it plumb (v1) and quits;
+# Horizontal on the second is then refused, and the status bar says why.
+open tests/data/sketch-blank.json
+wait 16
+action tool.segment
+wait 2
+click L 415 503
+click L 743 449
+click L 469 394
+click L 524 175
+key Escape
+key Escape
+wait 2
+action tool.horizontal
+wait 2
+click L 661 462
+wait 2
+key Escape
+wait 2
+select element L2
+action tool.vertical
+wait 2
+action tool.horizontal
+wait 2
+click L 497 284
+wait 4

@@ -1,0 +1,16 @@
+# A segment's length typed, Tab, its angle typed and Tab at once: the
+# angle's field takes the keyboard while Tab's frame comes, and both values
+# are the segment's.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.segment
+wait 2
+click L 708 339
+move 760 300 3
+wait 2
+text "0.5"
+wait 2
+key Tab
+text "30"
+key Tab
+wait 2

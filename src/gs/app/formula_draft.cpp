@@ -112,6 +112,8 @@ std::optional<Named> named(const Document & doc, const SelKey & key) {
         case Kind::Sweep:
         case Kind::Constraint:
         case Kind::Criterion:
+        case Kind::Element:
+        case Kind::Body:
             break;
     }
     return std::nullopt;
@@ -151,9 +153,17 @@ std::string arity(const Builtin & b) {
 }
 
 std::string builtin_kind(Builtin::Kind k) {
-    return k == Builtin::Kind::Function      ? "function"
-           : k == Builtin::Kind::SpecialForm ? "special form"
-                                             : "constant";
+    switch(k) {
+        case Builtin::Kind::Function:
+            return "function";
+        case Builtin::Kind::SpecialForm:
+            return "special form";
+        case Builtin::Kind::Constant:
+            return "constant";
+        case Builtin::Kind::Predicate:
+            return "predicate";
+    }
+    return "";
 }
 
 // The entries a formula may name, with their kind and a short value.
@@ -195,6 +205,31 @@ std::vector<Completion> entries(const Document & doc) {
         }
     for(const GeometryEntry & g : geometry_entries(inst))
         out.push_back({g.name, "geometry", geometry_type(*g.json)});
+    if(const Json * sketch = section("sketch")) {
+        auto object = [&](const char * key) {
+            return sketch->contains(key) && (*sketch)[key].is_object()
+                       ? &(*sketch)[key]
+                       : nullptr;
+        };
+        if(const Json * elements = object("elements"))
+            for(const auto & [name, value] : elements->items())
+                out.push_back({name, "element", text_at(value, "type")});
+        if(const Json * bodies = object("bodies"))
+            for(const auto & [name, value] : bodies->items())
+                out.push_back({name, "body", ""});
+    }
+    return out;
+}
+
+// The members of body `body` of `doc` with their types, by their names
+// within it: what completes after "tv.".
+std::vector<Completion> members(const Document & doc, std::string_view body) {
+    std::vector<Completion> out;
+    const Json * elements =
+        doc.instance()->get(std::format("sketch.bodies.{}.elements", body));
+    if(elements && elements->is_object())
+        for(const auto & [name, value] : elements->items())
+            out.push_back({name, "element", text_at(value, "type")});
     return out;
 }
 
@@ -260,6 +295,50 @@ Prefill constraint_prefill(const Document & doc,
     return p;
 }
 
+SketchPrefills sketch_prefills(std::span<const SketchOperand> operands) {
+    using K = SketchOperand::Kind;
+    SketchPrefills out;
+    auto at_end = [](std::string text) {
+        const std::size_t n = text.size();
+        return Prefill{std::move(text), n, {}};
+    };
+    if(operands.size() == 1 && operands[0].kind == K::Line) {
+        const std::string & l = operands[0].ref;
+        out.bound = at_end(std::format("len({}) <= ", l));
+        out.range = {std::format(" <= len({}) <= ", l), 0, {}};
+        return out;
+    }
+    if(operands.size() != 2) return out;
+    const SketchOperand & a = operands[0];
+    const SketchOperand & b = operands[1];
+    if(a.kind == K::Point && b.kind == K::Point) {
+        out.bound = at_end(std::format("dist({}, {}) >= ", a.ref, b.ref));
+        out.range = {std::format(" <= dist({}, {}) <= ", a.ref, b.ref), 0, {}};
+        // As drawn: the one further along first. Level or plumb at the
+        // editor's 4 decimals, the first first and `>=`, which holds there:
+        // `>` would be violated as drawn (check gap 7).
+        auto order = [&](double pa, double pb, char axis) {
+            const bool tie = std::fabs(pb - pa) < 0.5e-4;
+            const SketchOperand & hi = pb > pa && !tie ? b : a;
+            const SketchOperand & lo = pb > pa && !tie ? a : b;
+            return at_end(std::format("{}.{} {} {}.{}", hi.ref, axis,
+                                      tie ? ">=" : ">", lo.ref, axis));
+        };
+        out.order_x = order(a.at.x, b.at.x, 'x');
+        out.order_y = order(a.at.y, b.at.y, 'y');
+        return out;
+    }
+    out.bound = at_end(std::format("clearance({}, {}) >= ", a.ref, b.ref));
+    return out;
+}
+
+std::string prefill_label(const Prefill & p) {
+    const std::string_view text(p.text);
+    const std::string_view after = text.substr(p.caret);
+    return std::format("Add {}...{}{}", text.substr(0, p.caret), after,
+                       !after.empty() && after.ends_with(' ') ? "..." : "");
+}
+
 FormulaDraft::FormulaDraft(App & app)
     : app_(app), link_(app.changed().connect([this](Changes c) {
         if(!open_) return;
@@ -301,7 +380,12 @@ void FormulaDraft::open(Mode mode, std::string name, std::string text,
 void FormulaDraft::add_constraint() {
     const Document & doc = app_.document();
     if(!doc.has_instance()) return;
-    const Prefill p = constraint_prefill(doc, app_.selection().keys());
+    add_constraint(constraint_prefill(doc, app_.selection().keys()));
+}
+
+void FormulaDraft::add_constraint(const Prefill & p) {
+    const Document & doc = app_.document();
+    if(!doc.has_instance()) return;
     target_.clear();
     old_name_.clear();
     open(Mode::AddConstraint,
@@ -588,13 +672,25 @@ void FormulaDraft::complete() {
     if(!typed.empty() &&
        std::isdigit(static_cast<unsigned char>(typed.front())) != 0)
         return;
-    // After "A." or "(...).", but not after the "0." of a number.
+    // After "A." or "(...).", but not after the "0." of a number; after
+    // "tv.", tv a body, its members, but after "tv.c." the coordinates.
     if(from > 0 && text_[from - 1] == '.') {
         std::size_t b = from - 1;
         while(b > 0 && ident(text_[b - 1])) --b;
         const bool named =
             b < from - 1 &&
             std::isdigit(static_cast<unsigned char>(text_[b])) == 0;
+        if(named && (b == 0 || text_[b - 1] != '.') &&
+           app_.document().has_instance())
+            if(std::vector<Completion> found =
+                   members(app_.document(),
+                           std::string_view(text_).substr(b, from - 1 - b));
+               !found.empty()) {
+                for(Completion & c : found)
+                    if(c.name.starts_with(typed))
+                        candidates_.push_back(std::move(c));
+                return;
+            }
         if(named || (from >= 2 && text_[from - 2] == ')'))
             for(const char * c : {"x", "y"})
                 if(std::string_view(c).starts_with(typed))
@@ -671,7 +767,8 @@ void FormulaDraft::accept(std::size_t i) {
     const auto [from, to] = replaced_;
     text_.replace(from, to - from, c.name);
     caret_ = from + c.name.size();
-    if(c.kind == "function" || c.kind == "special form") {
+    if(c.kind == "function" || c.kind == "special form" ||
+       c.kind == "predicate") {
         if(caret_ >= text_.size() || text_[caret_] != '(')
             text_.insert(caret_, "(");
         ++caret_;

@@ -1,0 +1,8 @@
+# The same drag, then one Ctrl+Z: the drag was one step, and the document is
+# as it was opened.
+open docs/instances/sketch-basic.json
+wait 16
+drag L 386 202 436 202
+wait 4
+key Z ctrl
+wait 4

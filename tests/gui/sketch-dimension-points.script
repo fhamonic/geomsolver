@@ -1,0 +1,29 @@
+# Smart Dimension on two points. A, then B, then the label placed above them
+# and between them: the horizontal distance B.x - A.x, its value typed in
+# the editor that opens there (d1). Then on the selection of A and B, M to
+# the distance, and Esc in the editor keeps the measured value (d2).
+open tests/data/sketch-dimension.json
+wait 16
+action tool.dimension
+wait 2
+click L 305 522
+click L 488 430
+move 396 376 3
+wait 2
+click L 396 376
+wait 2
+text "1.2"
+wait 2
+key Enter
+wait 2
+key Escape
+wait 2
+select element A element B
+action tool.dimension
+wait 2
+action tool.method
+wait 2
+click L 579 576
+wait 2
+key Escape
+wait 2

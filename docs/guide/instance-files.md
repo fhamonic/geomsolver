@@ -31,7 +31,7 @@ The bin ends 83 cm from the sink, just above the work zone (`work_zone` is the a
 
 | Key | Content |
 | --- | --- |
-| **`format`** | `"geomsolver-instance/1"`, or `"geomsolver-instance/2"` in a file that uses a sweep's `samples` or `sampling`, or a criterion's `"enabled": false` (see [format versions](../reference/instance.md#format)). The only required key. |
+| **`format`** | `"geomsolver-instance/1"`, or `"geomsolver-instance/2"` in a file that uses a sweep's `samples` or `sampling`, a criterion's `"enabled": false`, a `sketch`, or a constraint's `frame`, `"driving": false` or `label` (see [format versions](../reference/instance.md#format)). The only required key. |
 | **`description`** | Free text, shown and edited in the GUI's Document panel. |
 | **`include`** | A list of geometry files, relative to this file. See [includes](#includes). |
 | **`params`** | Name → number or constant expression. See [params](#params). |
@@ -43,6 +43,7 @@ The bin ends 83 cm from the sink, just above the work zone (`work_zone` is the a
 | **`criteria`** | A list of `{name, expr, role, bound?, unit?, enabled?, note?}`. See [criteria](criteria.md). |
 | **`display`** | A list of `{expr, color?, fill?, width?, label?, ghosts?, trace?, visible?}`. See [display](display.md). |
 | **`solver`** | Default solver settings. See [solver settings](../reference/solver-settings.md). |
+| **`sketch`** | A drawing of named points and shapes, constant for the optimiser. See [sketch](../reference/instance.md#sketch). |
 
 The order of the sections does not matter. The order *inside* `design` does: it is the order of the solver's coordinates and of the printed design. The order of `constraints` and `criteria` gives their index in paths such as `criteria[0]`.
 
@@ -158,7 +159,7 @@ In the GUI, hovering a geometry entry shows its value, its note and the file it 
 
 ## Names {#names}
 
-Params, geometry entries, design variables, sweeps and lets share one namespace, together with the builtin constant `pi`. A name is made of letters, digits and `_`, and does not start with a digit:
+Params, geometry entries, design variables, sweeps, lets and the elements of a [sketch](../reference/instance.md#sketch) share one namespace, together with the builtin constant `pi`. A name is made of letters, digits and `_`, and does not start with a digit:
 
 ```text title="--set params.2x=1"
 params.2x: '2x' is not a valid name: use letters, digits and '_', not starting with a digit
@@ -178,9 +179,9 @@ Notes have no effect on the problem. Use them for what a reader needs and the ex
 
 ## Unknown keys {#unknown-keys}
 
-geomsolver keeps keys it does not know. The kitchen instance has an `x_reviewed` key at the top level: it compiles without a word and survives every save.
+geomsolver keeps keys it does not know. The kitchen instance, a `/1` file, has an `x_reviewed` key at the top level: it compiles without a word and survives every save.
 
-The compiler checks the keys of constraints and criteria, where a misspelt key would silently change the problem: an unknown key there gets a warning (see [constraints](constraints.md)). Elsewhere, for example inside a design variable or a display item, an unknown key is ignored without a warning. The CLI's `--set` warns when it creates a key the format does not list, which catches most typos in edits made from the command line:
+In a `/1` file the compiler checks the keys of constraints and criteria, where a misspelt key would silently change the problem: an unknown key there gets a warning (see [constraints](constraints.md)). Elsewhere, for example inside a design variable or a display item, an unknown key is ignored without a warning. A `/2` file refuses every key it does not know, at every level, `x_reviewed` included: see [unknown keys](../reference/instance.md#unknown-keys). The CLI's `--set` warns when it creates a key the format does not list, which catches most typos in edits made from the command line:
 
 ```text title="--set design.S.colour=red"
 warning: --set design.S.colour: the instance had no such key, so it was added (check the spelling)

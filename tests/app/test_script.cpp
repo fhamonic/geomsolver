@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <format>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -8,6 +9,7 @@
 #include <vector>
 
 #include "gs/app/app.hpp"
+#include "gs/app/picker.hpp"
 #include "gs/app/script.hpp"
 
 #include "helpers.hpp"
@@ -228,6 +230,15 @@ TEST_CASE("script: a wrong line is refused with its number") {
         {"wait 1\nsize 800 600",
          "line 2: size comes before the first command that takes frames"},
         {"size 100 600", "line 1: not an integer of at least 200: '100'"},
+        {"activate status",
+         "line 1: usage: activate status TEXT, or activate messages TEXT "
+         "[PART]"},
+        {"activate panel \"x\"",
+         "line 1: usage: activate status TEXT, or activate messages TEXT "
+         "[PART]"},
+        {"activate status \"a\" \"b\"",
+         "line 1: usage: activate status TEXT, or activate messages TEXT "
+         "[PART]"},
     };
     for(const auto & [text, error] : cases)
         CHECK_MESSAGE(parse_error(text) == error, text);
@@ -297,6 +308,67 @@ TEST_CASE("script: App commands run before the next frame") {
         const Played p = play(fresh, parsed(text));
         CHECK_MESSAGE((p.error == error && p.frames.empty()),
                       "a failed step ends the script: " << p.error);
+    }
+}
+
+TEST_CASE("script: a sketch's elements and bodies, and Solve sketch") {
+    App app(nullptr);
+    const fs::path body =
+        fs::path(GS_TEST_DATA_DIR) / "../../docs/instances/sketch-body.json";
+    const Played p =
+        play(app, parsed(std::format("open {}\n"
+                                     "select element tv.c body tv\n"
+                                     "action sketch.solve\n"
+                                     "wait 1\n",
+                                     body.string())));
+    CHECK(p.error.empty());
+    CHECK((app.selection().keys() ==
+           std::vector<SelKey>{{SelKey::Kind::Element, "tv.c"},
+                               {SelKey::Kind::Body, "tv"}}));
+    const Json dump = run_state(app, "");
+    CHECK((dump["selection"] == Json::parse(R"(["element tv.c", "body tv"])")));
+    CHECK_MESSAGE(app.document().undo_count() == 0,
+                  "a settled drawing: Solve sketch records no step");
+    App fresh(nullptr);
+    CHECK(play(fresh, parsed(std::format("open {}\nselect element tv.zz\n",
+                                         body.string())))
+              .error == "line 2: select: no element 'tv.zz'");
+}
+
+TEST_CASE("script: activate clicks a link of the status bar or Messages") {
+    const fs::path file = fs::temp_directory_path() / "script_activate.json";
+    std::ofstream(file) << R"J({
+  "format": "geomsolver-instance/2",
+  "sketch": {"elements": {"A": {"type": "point", "value": [0, 0]},
+                          "B": {"type": "point", "value": [1, 0]}}},
+  "constraints": [{"name": "d1", "expr": "dist(A, B) == 1"},
+                  {"name": "d2", "expr": "dist(A, B) == 2"}]
+})J";
+    App app(nullptr);
+    const std::string open =
+        std::format("open {}\naction sketch.solve\n", file.string());
+    Played p = play(app, parsed(open + "activate status \"Conflicting\"\n"));
+    CHECK(p.error.empty());
+    CHECK_MESSAGE((app.selection().keys() ==
+                   std::vector<SelKey>{{SelKey::Kind::Constraint, "d2"}}),
+                  "the message's first link: the constraint left out");
+    p = play(app, parsed(open + "activate messages \"Conflicting\" \"d1\"\n"));
+    CHECK(p.error.empty());
+    CHECK((app.selection().keys() ==
+           std::vector<SelKey>{{SelKey::Kind::Constraint, "d1"}}));
+    const std::pair<std::string, std::string_view> failures[] = {
+        {"activate status \"Nothing\"",
+         "line 3: activate: no status bar segment 'Nothing'"},
+        {"activate messages \"Nothing\"",
+         "line 3: activate: no message "
+         "'Nothing'"},
+        {"activate messages \"Conflicting\" \"zz\"",
+         "line 3: activate: 'zz' of 'sketch  Conflicting: d2 left out (with "
+         "d1)' is no link"},
+    };
+    for(const auto & [text, error] : failures) {
+        App fresh(nullptr);
+        CHECK(play(fresh, parsed(open + text + "\n")).error == error);
     }
 }
 
@@ -415,6 +487,66 @@ TEST_CASE("script: the state a run leaves, for --dump") {
            s["view"]["scale"] == app.canvas().view().scale &&
            s["formula"] == Json{{"title", "Add criterion"}, {"text", "l1"}} &&
            s["popup"] == "Add criterion"));
+    const View2d & v = app.canvas().view();
+    CHECK((s["view"]["rect"] == Json{v.ox, v.oy, v.w, v.h} &&
+           s["tool"].is_null()));
+
+    REQUIRE(app.tools().start("tool.segment"));
+    app.tools().event({.kind = ToolEvent::Kind::Press, .world = {0.0, 0.0}});
+    app.tools().event({.kind = ToolEvent::Kind::Move, .world = {1.0, 0.0}});
+    app.tools().typed("2");
+    s = run_state(app, "");
+    const std::string hint =
+        "Segment, two points: pick the second point, or type the length";
+    // A's x and y, positional, are of the state placed already.
+    auto field = [](const char * id, const char * text, bool positional) {
+        return Json{{"id", id},
+                    {"text", text},
+                    {"set", false},
+                    {"positional", positional},
+                    {"placed", positional},
+                    {"refusal", nullptr}};
+    };
+    CHECK(
+        s["tool"] ==
+        Json{{"id", "tool.segment"},
+             {"hint", hint},
+             {"method", "two points"},
+             {"in_progress", true},
+             {"fields",
+              Json::array({field("x", "0", true), field("y", "0", true),
+                           field("length", "1.000 m", false),
+                           field("angle", "0°", false)})},
+             {"editing", {{"id", "length"}, {"text", "2"}}},
+             {"preview",
+              Json::array(
+                  {{{"kind", "path"}, {"points", {{0.0, 0.0}, {1.0, 0.0}}}},
+                   {{"kind", "point"}, {"points", {{0.0, 0.0}}}, {"label", ""}},
+                   {{"kind", "point"},
+                    {"points", {{1.0, 0.0}}},
+                    {"label", ""}}})},
+             {"suggestions",
+              Json::array({{{"formula", "horizontal(L1)"}, {"glyph", "H"}}})},
+             {"picks", Json::array()}});
+    CHECK(s["status_bar"][1] == hint);
+}
+
+TEST_CASE("script: the dump lists a constraint tool's picks") {
+    App app(nullptr);
+    REQUIRE(app.open(fs::path(GS_TEST_DATA_DIR) /
+                     "../../docs/instances/sketch-basic.json"));
+    app.sync();
+    REQUIRE(app.tools().start("tool.coincident"));
+    const Scene & scene = app.scene(false);
+    app.tools().event({.kind = ToolEvent::Kind::Press,
+                       .world = {3.2, 0.0},
+                       .px_per_m = 100.0,
+                       .pick = Picker(scene, app.canvas().shown(scene))
+                                   .pick({3.2, 0.0}, 100.0,
+                                         app.tools().active()->pick_filter())});
+    const Json s = run_state(app, "");
+    CHECK(s["tool"]["picks"] == Json::array({"E"}));
+    CHECK(s["tool"]["hint"] == "Coincident: pick the point to make one with E");
 }
 
 }  // namespace gs::test

@@ -23,10 +23,13 @@
 #include "gs/app/scene_cache.hpp"
 #include "gs/app/selection.hpp"
 #include "gs/app/settings.hpp"
+#include "gs/app/sketch_edits.hpp"
+#include "gs/app/sketch_session.hpp"
 #include "gs/app/solver_backend.hpp"
 #include "gs/app/solver_session.hpp"
 #include "gs/app/status_bar.hpp"
 #include "gs/app/tone.hpp"
+#include "gs/app/tool_host.hpp"
 #include "gs/app/view.hpp"
 #include "gs/app/visibility.hpp"
 
@@ -51,13 +54,25 @@ public:
     Document & document() { return doc_; }
     Selection & selection() { return selection_; }
     SolverSession & solver() { return session_; }
+    // A sketch drag's live state, the monitored statuses and the diagnosis
+    // worker.
+    SketchSession & sketch() { return sketch_; }
     // One per sweep of the model, once tick() has run.
     std::vector<SweepPlayer> & players() { return players_; }
+    // The canvas's tools: the active one, its value fields, the options.
+    ToolHost & tools() { return tools_; }
+    const ToolHost & tools() const { return tools_; }
     const ActionRegistry & actions() const { return actions_; }
     std::span<const Menu> menus() const { return menus_; }
-    // The changes of the Document, the Selection and the canvas, Solver
-    // from tick(), Scene from scene(), Player from toggle_play(), Panels,
-    // Hover and Visibility; a slot must not change the App synchronously.
+    // The toolbar (plan 4.12): the tools' actions in the groups Create,
+    // Constrain and Body, then the toggles of Options, each a Menu of
+    // action ids. A tool's button is checked while it is active, and
+    // disabled, with a tooltip (Action::tip), until it is provided.
+    std::span<const Menu> toolbar() const { return toolbar_; }
+    // The changes of the Document, the Selection, the canvas and the
+    // SketchSession, Solver from tick(), Scene from scene(), Player from
+    // toggle_play(), Panels, Hover and Visibility; a slot must not change
+    // the App synchronously.
     // A list's Filters is on that list's own changed() only.
     Signal<Changes> & changed() { return changed_; }
 
@@ -72,7 +87,10 @@ public:
     // After an edit renamed the entry `from` names, or named an unnamed
     // one: the selection, the eyes and the hot key follow the name. Call it
     // after every rename the App did not make itself, or the renamed entry
-    // drops out of the selection at the next sync() and loses its eye.
+    // drops out of the selection at the next sync() and loses its eye. A
+    // body's element takes its new name within its body ("c2") or
+    // qualified ("tv.c2"); a body takes its elements along ("tv.c" becomes
+    // "screen.c"), and a constraint its glyph's eye.
     void entry_renamed(const SelKey & from, std::string_view to);
     // Erases the display items that draw the names of `keys`
     // (drawings_of()), one step. True when it erased some.
@@ -146,13 +164,21 @@ public:
     // keys act on its list.
     std::optional<PanelId> focused_panel() const { return focused_; }
     void set_focused_panel(std::optional<PanelId> id) { focused_ = id; }
+    // The focus to run the registry's keys in (ActionRegistry::run_pressed),
+    // from what the toolkit says: `typing` while a text field of its own has
+    // the keyboard, `popup` while a popup or a dialog is open. A tool's value
+    // field waiting for the keyboard adds KeyFocus::field, which only Enter,
+    // Tab, Backspace and Esc get through: a front-end that builds KeyFocus
+    // itself runs a tool's chord on the letter of a unit typed into it.
+    KeyFocus key_focus(KeyScope scope, bool typing, bool popup) const;
     // Asks the view that draws the text field of `path` to give it the
     // keyboard: a status bar link, Enter on a row. take_field_focus() is
     // true once, for that path; the request goes stale when a path moves.
     void request_field_focus(std::string path);
     bool take_field_focus(std::string_view path);
 
-    // Loads the instance and fits the view to its design.
+    // Loads the instance and fits the view to its sketch's extent, else to
+    // its design.
     bool open(const std::filesystem::path & file);
     // Command-line edits PATH=VALUE, applied as one step: a VALUE that is
     // not JSON is a string, null erases the key. Returns the outcome:
@@ -170,8 +196,12 @@ public:
     // Advances the sweep players by dt seconds and polls the solver job,
     // copying its new results before it emits Solver: a slot reads them in
     // results(), and the Solver view's own refresh would come too late.
+    // Then the SketchSession's tick(): the sketch diagnosis; then the tools
+    // learn of the document's changes (ToolHost::tick()).
     void tick(double dt);
-    // tick() still has work: a job runs or a sweep plays.
+    // tick() still has work: a job runs, a sweep plays, a sketch diagnosis
+    // waits or runs, or the monitored statuses wait for a commit, a move of
+    // x or a drag's end (SketchSession::busy()).
     bool busy() const;
     // Plays or pauses sweep k of the model, emitting Player; playing "once"
     // from the end starts over.
@@ -200,6 +230,45 @@ public:
     // "unsaved changes", "solving...": shown after the menus.
     std::vector<StatusText> menu_bar_status() const;
     void request_delete() { delete_.request(); }
+    // One step of the Esc chain (the action app.escape, plan 4.3), wherever
+    // the pointer is; a text field and a popup handle their own Esc before
+    // it. A tool drops the shape it has in progress, else quits
+    // (ToolHost::escape()); without a tool, the selection is cleared. Esc
+    // never leaves Edit body.
+    void escape();
+    // escape() has a step to take.
+    bool escapable() const;
+
+    // What the last edit of the sketch has to say: why it was refused, or
+    // what it deleted with it. The status bar shows it until the selection
+    // or the document changes; Messages' log keeps it.
+    struct Notice {
+        Tone tone = Tone::Normal;
+        std::string text;
+    };
+    std::optional<Notice> notice() const;
+    // Shows `text` as the notice and logs it, as a warning when `tone` is
+    // Tone::Warn (a refusal).
+    void notify(Tone tone, std::string text);
+    // Applies a sketch edit worked out from the document (sketch_edits.hpp)
+    // as one step, then selects the entries it created (SketchEdit::created:
+    // points, an element, a constraint) and drops the point it merged away;
+    // a refused one changes nothing and says why in the notice. With `reveal`,
+    // the first entry it created is revealed (Selection::reveal()) before its
+    // report is set: a reveal moves the selection's generation, which the
+    // notice lasts for. True when the document changed.
+    bool apply_sketch_edit(SketchEdit edit, bool reveal = false);
+    // Whether the selection is still the one the last tool commit made (a
+    // revealed apply_sketch_edit(), ToolContext::commit()): a constraint
+    // tool started on it starts tool first, as on no selection (the Steps
+    // 9-10 ruling), and its own key starts it again only on another one.
+    bool selection_from_tool() const {
+        return tool_selection_ == selection_.generation();
+    }
+    // Splits edge `edge` of the polyline or polygon `element` at `at`, in
+    // its frame (insert_vertex()), and selects the new point: the canvas's
+    // tool calls it from plan step 8.
+    bool insert_vertex(const SelKey & element, int edge, Vec2d at);
 
     PathDialog & path_dialog() { return path_dialog_; }
     // The formula pop-up: the Adds of constraints, criteria and lets, and
@@ -221,6 +290,23 @@ private:
     };
 
     void add_actions();
+    // The sketch edits of the context menu: merge, detach, delete vertex,
+    // unfix, driving and reference, flip side.
+    void add_sketch_actions();
+    // The tools of the toolbar, the keys they need no pointer for and the
+    // toolbar's toggles.
+    void add_tool_actions();
+    // Enter, Backspace, Tab and M are the active tool's, and not the list
+    // that has the keyboard, while the pointer is over the canvas, as the
+    // Canvas chords and the typed digits are. A list keeps the keyboard
+    // after the pointer leaves it: gated on the focus alone, M and Tab over
+    // the canvas would do nothing until a click, which places a point.
+    bool tool_has_keys() const;
+    // The selection as a pre-fill's operands (sketch_prefills()): every
+    // entry an element of the sketch a formula names, a point or a line as
+    // a constraint tool picks it in the last scene, a polyline, a polygon or
+    // a box whole as a shape; empty for any other selection.
+    std::vector<SketchOperand> sketch_operands() const;
     // Whether the model's display items sit where the document has them: a
     // stale model's may sit elsewhere, and an edit at their places would
     // hit another item.
@@ -248,9 +334,11 @@ private:
     Visibility visibility_{*settings_};
     HotKey hot_;
     SceneCache cache_;
+    SketchSession sketch_{doc_};
     SolverSession session_;
     std::vector<SweepPlayer> players_;
     CanvasController canvas_{*this};
+    ToolHost tools_{*this};
     // Declared after doc_: its PanelHost connects to the document's signal
     // when it is constructed.
     Panels panels_{*this};
@@ -258,12 +346,21 @@ private:
     std::optional<FieldFocus> field_focus_;
     std::optional<PanelId> focused_;
     std::optional<Vec2d> context_menu_;
+    struct HeldNotice {
+        Notice notice;
+        // While both are as they were when it was set.
+        std::uint64_t selection = 0, compile = 0;
+    };
+    std::optional<HeldNotice> notice_;
+    // selection_.generation() after the last tool commit.
+    std::optional<std::uint64_t> tool_selection_;
     std::array<bool, kPanelCount> panels_open_;
     std::vector<PanelId> panel_focus_;
     bool layout_reset_ = false;
     bool quit_ok_ = false;
     ActionRegistry actions_;
     std::vector<Menu> menus_;
+    std::vector<Menu> toolbar_;
     PathDialog path_dialog_{*this};
     UnsavedChanges unsaved_{doc_};
     DeleteRequest delete_{*this};
@@ -271,7 +368,7 @@ private:
     StatusBarPresenter status_bar_{*this};
     Signal<Changes> changed_;
     Signal<Changes>::Connection document_link_, selection_link_, canvas_link_,
-        visibility_link_, hot_link_;
+        visibility_link_, hot_link_, sketch_link_, tools_link_;
     // Declared after changed_, to which it connects when it is constructed.
     FormulaDraft formula_{*this};
 };

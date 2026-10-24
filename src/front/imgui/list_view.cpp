@@ -3,6 +3,7 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "front/imgui/detail_view.hpp"
@@ -17,7 +18,7 @@ const ImU32 kHotRow = rgba(90, 110, 140, 70);
 // An eye as large as a checkbox, open (an outline and its pupil) or shut
 // (faded and struck through): a tick would read as "enabled", which is what
 // the Check of the next tab means. True when clicked.
-bool eye_button(bool open) {
+bool eye_button(bool open, bool dim) {
     const float fs = ImGui::GetFontSize();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const bool pressed = ImGui::InvisibleButton("##toggle", ImVec2(fs, fs));
@@ -26,8 +27,8 @@ bool eye_button(bool open) {
         draw->AddRectFilled(p, ImVec2(p.x + fs, p.y + fs),
                             ImGui::GetColorU32(ImGuiCol_FrameBgHovered),
                             ImGui::GetStyle().FrameRounding);
-    const ImU32 col =
-        ImGui::GetColorU32(open ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    const ImU32 col = ImGui::GetColorU32(open && !dim ? ImGuiCol_Text
+                                                      : ImGuiCol_TextDisabled);
     const ImVec2 c(p.x + 0.5f * fs, p.y + 0.5f * fs);
     draw->AddEllipse(c, ImVec2(0.45f * fs, 0.27f * fs), col, 0.0f, 0, 1.5f);
     if(open)
@@ -47,13 +48,14 @@ void toolbar(App & app, const std::vector<std::string> & ids) {
         const std::string label = std::format("{}###{}", text, a.id);
         if(ImGui::SmallButton(label.c_str())) a.run();
         ImGui::EndDisabled();
-        // A caption stands for a label that names the selection.
+        // A caption stands for a label that names the selection, which
+        // costs a Picker of the scene (formula.add_constraint): read only
+        // under the pointer, never every frame.
+        if(!ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) continue;
         const std::string tip = !a.chords.empty() ? chord_text(a.chords.front())
                                 : a.caption.empty() ? std::string()
                                                     : a.label();
-        if(!tip.empty() &&
-           ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", tip.c_str());
+        if(!tip.empty()) ImGui::SetTooltip("%s", tip.c_str());
     }
 }
 
@@ -118,18 +120,23 @@ public:
         const float fs = ImGui::GetFontSize();
         const float footer_h = static_cast<float>(footer.size()) *
                                ImGui::GetTextLineHeightWithSpacing();
-        if(ImGui::BeginTable("##rows", static_cast<int>(columns.size()),
+        int shown = 0;
+        for(std::size_t c = 0; c < columns.size(); ++c)
+            shown += list_.column_shown(c) ? 1 : 0;
+        if(ImGui::BeginTable("##rows", shown,
                              ImGuiTableFlags_RowBg |
                                  ImGuiTableFlags_BordersInnerH |
                                  ImGuiTableFlags_ScrollY,
                              ImVec2(0.0f, -footer_h))) {
             ImGui::TableSetupScrollFreeze(0, 1);
-            for(const Column & c : columns)
-                ImGui::TableSetupColumn(
-                    c.label.c_str(),
-                    c.ems > 0.0f ? ImGuiTableColumnFlags_WidthFixed
-                                 : ImGuiTableColumnFlags_WidthStretch,
-                    c.ems * fs);
+            for(std::size_t c = 0; c < columns.size(); ++c)
+                if(list_.column_shown(c))
+                    ImGui::TableSetupColumn(
+                        columns[c].label.c_str(),
+                        columns[c].ems > 0.0f
+                            ? ImGuiTableColumnFlags_WidthFixed
+                            : ImGuiTableColumnFlags_WidthStretch,
+                        columns[c].ems * fs);
             ImGui::TableHeadersRow();
             rows(std::nullopt);
             ImGui::EndTable();
@@ -206,16 +213,18 @@ private:
         ImGui::SetCursorPos(at);
         const RenameEditor & editor = host_.renamer();
         const bool renaming = editor.editing(r.path, panel_);
-        bool renamed = false, refusal_shown = false;
+        bool renamed = false, refusal_shown = false, after_name = false;
         for(std::size_t c = 0; c < r.cells.size() && !renamed; ++c) {
+            if(!list_.column_shown(c)) continue;
             if(c > 0) ImGui::TableNextColumn();
             const ListCell & cell = r.cells[c];
             ImGui::PushID(static_cast<int>(c));
+            const bool name_before =
+                std::exchange(after_name, cell.kind == ListCell::Kind::Name);
             if(cell.kind == ListCell::Kind::Name && renaming) {
                 renamed = name_field(app_, key, r.path, key.name, -FLT_MIN);
                 if(ImGui::IsItemHovered()) hovered_ = key;
-            } else if(renaming && !refusal_shown && c > 0 &&
-                      r.cells[c - 1].kind == ListCell::Kind::Name &&
+            } else if(renaming && !refusal_shown && name_before &&
                       !editor.refusal(r.path).empty()) {
                 const std::string why(editor.refusal(r.path));
                 text_cell({ListCell::Kind::Text, why, Tone::Bad, why});
@@ -224,19 +233,41 @@ private:
                       cell.kind == ListCell::Kind::Eye) {
                 toggle(r, c);
             } else {
+                if(cell.kind == ListCell::Kind::Name) expander(r);
                 text_cell(cell);
             }
             ImGui::PopID();
         }
         if(r.dim) ImGui::PopStyleVar();
-        return !renamed;
+        if(renamed) return false;
+        return !r.expandable || !list_.expanded(r.id) || rows(r.id);
+    }
+
+    // Before the name of a row with rows under it, its arrow; the name of
+    // a row under another, indented. In the Name column: a first column of
+    // toggles has no room for either.
+    void expander(const ListRow & r) {
+        const ListCell::Kind first = list_.columns().front().kind;
+        if(first != ListCell::Kind::Check && first != ListCell::Kind::Eye)
+            return;
+        const float fs = ImGui::GetFontSize();
+        if(r.depth > 1)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                                 static_cast<float>(r.depth - 1) * fs);
+        if(!r.expandable) return;
+        ImGui::SetNextItemOpen(list_.expanded(r.id));
+        const bool open =
+            ImGui::TreeNodeEx("##rows", ImGuiTreeNodeFlags_NoTreePushOnOpen);
+        list_.set_expanded(r.id, open);
+        ImGui::SameLine(0.0f, 0.0f);
     }
 
     // A toggle as large as the text: the rows keep the height of a line.
     void toggle(const ListRow & r, std::size_t c) {
         const ListCell & cell = r.cells[c];
         if(cell.kind == ListCell::Kind::Eye) {
-            if(eye_button(cell.on)) list_.toggle(r.id, c);
+            if(eye_button(cell.on, cell.tone == Tone::Dim))
+                list_.toggle(r.id, c);
         } else {
             bool on = cell.on;
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
@@ -254,11 +285,8 @@ private:
     void interact(const ListRow & r, bool pressed) {
         const SelKey & key = r.id.key;
         if(pressed && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-            const int column = ImGui::TableGetHoveredColumn();
-            app_.panels().activate(
-                panel_, r.id,
-                column >= 0 ? std::optional(static_cast<std::size_t>(column))
-                            : std::nullopt);
+            app_.panels().activate(panel_, r.id,
+                                   column(ImGui::TableGetHoveredColumn()));
         } else if(pressed) {
             host_.click(key, held_mods());
         }
@@ -268,6 +296,14 @@ private:
             const ImVec2 at = ImGui::GetMousePos();
             app_.context_click(key, {at.x, at.y});
         }
+    }
+
+    // The list's column drawn as the table's column `drawn`: the hidden
+    // ones take no table column.
+    std::optional<std::size_t> column(int drawn) const {
+        for(std::size_t c = 0; drawn >= 0 && c < list_.columns().size(); ++c)
+            if(list_.column_shown(c) && drawn-- == 0) return c;
+        return std::nullopt;
     }
 
     App & app_;

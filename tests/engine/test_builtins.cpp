@@ -67,6 +67,13 @@ std::vector<Diagnostic> probe_diagnostics(const std::string & expr) {
     return compile(*instance_from(base_doc()), o).diagnostics;
 }
 
+std::vector<Diagnostic> constraint_diagnostics(const std::string & expr) {
+    Json d = base_doc();
+    d["constraints"] =
+        Json::array({Json::object({{"name", "c"}, {"expr", expr}})});
+    return compile(*instance_from(d)).diagnostics;
+}
+
 bool mentions(const std::vector<Diagnostic> & ds, std::string_view fragment) {
     return std::ranges::any_of(ds, [&](const Diagnostic & d) {
         return d.message.find(fragment) != std::string::npos;
@@ -118,6 +125,26 @@ TEST_CASE(
                       std::vector<double>{b.value});
                 CHECK(mentions(probe_diagnostics(call(b.name, 1)),
                                std::format("unknown function '{}'", b.name)));
+                break;
+            }
+            case Builtin::Kind::Predicate: {
+                // A whole constraint reaches the predicate's dispatch (its
+                // Scalar arguments are type errors); a value is refused.
+                const std::vector<Diagnostic> ds =
+                    constraint_diagnostics(call(b.name, b.min_args));
+                CHECK_FALSE(mentions(ds, "unknown function"));
+                CHECK_FALSE(mentions(ds, arity));
+                CHECK_FALSE(mentions(ds, "needs a comparison"));
+                CHECK(mentions(probe_diagnostics(call(b.name, b.min_args)),
+                               std::format("{}() is a predicate: it is only "
+                                           "allowed as a whole constraint",
+                                           b.name)));
+                CHECK(mentions(
+                    constraint_diagnostics(call(b.name, b.min_args - 1)),
+                    arity));
+                CHECK(mentions(
+                    constraint_diagnostics(call(b.name, b.max_args + 1)),
+                    arity));
                 break;
             }
         }
@@ -239,6 +266,101 @@ TEST_CASE("builtins: shape constructors, transforms and accessors") {
     });
 }
 
+TEST_CASE("builtins: accessors of segments, polylines and circles") {
+    const double lpq = std::sqrt(3.25), lqr = std::sqrt(22.25);
+    // P -> R: d = (1, -3); P -> Q: d = (-1.5, 1).
+    const double cross = 3.5, dot = -4.5;
+    const double rx = std::cos(a_) * -0.5 - std::sin(a_) * 3,
+                 ry = std::sin(a_) * -0.5 + std::cos(a_) * 3;
+    check_cases({
+        {"start(segment(P, Q))", {1, 2}},
+        {"end(segment(P, Q))", {-0.5, 3}},
+        {"start(polyline(P, Q, R))", {1, 2}},
+        {"end(polyline(P, Q, R))", {2, -1}},
+        {"end(place(segment(P, Q), R, a))", {rx + 2, ry - 1}},
+        {"mid(segment(P, Q))", {0.25, 2.5}},
+        {"len(segment(P, Q))", {lpq}},
+        {"len(polyline(P, Q, R))", {lpq + lqr}},
+        {"dir(segment(P, Q))", {-1.5 / lpq, 1 / lpq}},
+        {"angle(segment(P, Q))", {std::atan2(1.0, -1.5)}},
+        {"angle(segment(P, Q), segment(P, R))", {std::atan2(cross, dot)}},
+        {"angle(segment(P, R), segment(P, Q))", {-std::atan2(cross, dot)}},
+        // Finding 0: the first read backwards, the angle at a corner of
+        // segments drawn head to tail; +1 is the drawn directions.
+        {"angle(segment(Q, P), segment(P, R), -1)", {std::atan2(cross, dot)}},
+        {"angle(segment(P, Q), segment(P, R), 1)", {std::atan2(cross, dot)}},
+        {"angle(segment(vec(1, 0), vec(0, 0)), segment(vec(0, 0), vec(0, 2)), "
+         "-1)",
+         {std::numbers::pi / 2}},
+        {"edge(polygon(P, Q, R), 2)", {2, -1, 1, 2}},
+        {"edge(polyline(P, Q, R), 1)", {-0.5, 3, 2, -1}},
+        {"edge(box(0, 0, 2, 1), 3)", {0, 1, 0, 0}},
+        {"edge(place(box(0, 0, 2, 1), P, 90deg), 0)", {1, 2, 1, 4}},
+        {"radius(circle(P, c))", {c_}},
+        {"radius(place(circle(Q, c), P, a))", {c_}},
+        {"line_dist(R, segment(P, Q))", {cross / lpq}},
+        {"line_dist(R, segment(P, Q), 1)", {cross / lpq}},
+        {"line_dist(R, segment(P, Q), -1)", {-cross / lpq}},
+        {"line_dist(Q, segment(P, Q))", {0}},
+        // The existing overloads, unchanged.
+        {"dir(a)", {std::cos(a_), std::sin(a_)}},
+        {"angle(Q - P)", {std::atan2(1.0, -1.5)}},
+        {"center(circle(Q, c))", {-0.5, 3}},
+    });
+}
+
+TEST_CASE("builtins: what each accessor takes") {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"start(box(0, 0, 1, 1))",
+         "argument 1 of start() must be a segment or a polyline, got Polygon"},
+        {"len(circle(vec(0, 0), 1))",
+         "argument 1 of len() must be a segment or a polyline, got Circle"},
+        {"mid(polyline(vec(0, 0), vec(1, 0), vec(1, 1)))",
+         "argument 1 of mid() must be a segment or an arc, got Polyline of 3 "
+         "points"},
+        {"dir(box(0, 0, 1, 1))",
+         "argument 1 of dir() must be a segment, got Polygon"},
+        {"angle(polygon(vec(0, 0), vec(1, 0), vec(1, 1)))",
+         "argument 1 of angle() must be a segment, got Polygon"},
+        {"angle(vec(1, 0), segment(vec(0, 0), vec(1, 0)))",
+         "argument 1 of angle() must be a segment, got Vec"},
+        {"radius(box(0, 0, 1, 1))",
+         "argument 1 of radius() must be a circle or an arc, got Polygon"},
+        {"edge(circle(vec(0, 0), 1), 0)",
+         "argument 1 of edge() must be a polygon or a polyline, got Circle"},
+        {"edge(box(0, 0, 1, 1), 4)", "edge index 4 out of range [0, 4)"},
+        {"edge(segment(vec(0, 0), vec(1, 0)), 1)",
+         "edge index 1 out of range [0, 1)"},
+        {"edge(box(0, 0, 1, 1), 0.5)",
+         "the index of edge() must be a constant integer"},
+        {"edge(box(0, 0, 1, 1), tau)",
+         "the index of edge() must be a constant integer"},
+        {"line_dist(segment(vec(0, 0), vec(1, 0)), segment(vec(0, 0), vec(1, "
+         "0)))",
+         "argument 1 of line_dist() must be a Vec, got Polyline"},
+        {"line_dist(vec(0, 0), segment(vec(0, 0), vec(1, 0)), 2)",
+         "the side of line_dist() must be a constant +1 or -1"},
+        {"line_dist(vec(0, 0), segment(vec(0, 0), vec(1, 0)), tau)",
+         "the side of line_dist() must be a constant +1 or -1"},
+        {"angle(segment(vec(0, 0), vec(1, 0)), segment(vec(0, 0), vec(0, 1)), "
+         "2)",
+         "the orientation of angle() must be a constant +1 or -1"},
+        // The existing overloads keep their errors.
+        {"dir(vec(1, 0))", "argument 1 of dir() must be a Scalar, got Vec"},
+        {"angle(1)", "argument 1 of angle() must be a Vec, got Scalar"},
+    };
+    for(const auto & [expr, message] : cases) {
+        INFO(expr);
+        const std::vector<Diagnostic> ds = probe_diagnostics(expr);
+        CHECK(mentions(ds, message));
+        CHECK(ds.size() == 1);
+    }
+    const std::vector<Diagnostic> both =
+        probe_diagnostics("angle(vec(1, 0), vec(0, 1))");
+    CHECK(both.size() == 2);
+    CHECK(mentions(both, "argument 2 of angle() must be a segment, got Vec"));
+}
+
 TEST_CASE("builtins: extremes and projections") {
     check_cases({
         {"min_x(polygon(P, Q, R), circle(Q, 1), vec(a, b))", {-1.5}},
@@ -301,6 +423,17 @@ TEST_CASE(
         "dyad(P, c, Q, 2, 1).x",
         "dyad(P, c, Q, 2, -1).y",
         "center(translate(circle(Q, a), P)).x",
+        "len(polyline(P, Q, R))",
+        "len(edge(polygon(P, Q, R), 2))",
+        "angle(segment(P, Q))",
+        "angle(segment(P, Q), segment(P, R))",
+        "dir(segment(Q, R)).y",
+        "mid(segment(P, Q)).x",
+        "end(place(segment(P, Q), R, a)).y",
+        "start(polyline(Q, R, P)).x",
+        "radius(circle(P, c))",
+        "radius(place(circle(P, c), Q, a))",
+        "line_dist(R, segment(P, Q), -1)",
     };
     Json d = builtin_doc(false);
     Json cons = Json::array();

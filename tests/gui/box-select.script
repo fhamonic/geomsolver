@@ -2,5 +2,5 @@
 # holds: the corner, pivot_zone, A, B and d.
 open tests/data/tv_corner_ref.json
 wait 16
-drag L 320 545 400 620
+drag L 388 545 468 620
 wait 3

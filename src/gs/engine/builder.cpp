@@ -28,11 +28,21 @@ int Builder::push(Node n, std::span<const int> args, const std::string & key) {
 }
 
 int Builder::constant(ValueType type, ShapeKind kind,
-                      std::span<const double> data) {
+                      std::span<const double> data, const ShapeMeta * from) {
     std::string key = "C";
     put(key, type);
     put(key, kind);
     put_bytes(key, data.data(), data.size_bytes());
+    const ArcParams arc = from ? from->arc : ArcParams{};
+    const std::optional<Op> moved = from ? from->moved_arc : std::nullopt;
+    if(arc.center >= 0) {
+        key += 'A';
+        put(key, arc);
+    }
+    if(moved) {
+        key += 'M';
+        put(key, *moved);
+    }
     if(auto it = cse_.find(key); it != cse_.end()) return it->second;
     Node n;
     n.op = Op::Const;
@@ -55,6 +65,8 @@ int Builder::constant(ValueType type, ShapeKind kind,
                 if(m.convex == 0) m.pieces = convex_decomposition(pts);
             }
         }
+        m.arc = arc;
+        m.moved_arc = moved;
         n.meta = static_cast<int>(P.metas.size());
         P.metas.push_back(std::move(m));
     }
@@ -71,6 +83,20 @@ int Builder::var(int index, ValueType type) {
     n.dep = DepKind::Design;
     n.aux = index;
     n.size = type == ValueType::Scalar ? 1 : 2;
+    n.reads_var = true;
+    return push(n, {}, key);
+}
+
+int Builder::sketch_var(int column) {
+    std::string key = "Q";
+    put(key, column);
+    if(auto it = cse_.find(key); it != cse_.end()) return it->second;
+    Node n;
+    n.op = Op::SketchVar;
+    n.type = ValueType::Scalar;
+    n.dep = DepKind::Design;
+    n.aux = column;
+    n.size = 1;
     return push(n, {}, key);
 }
 
@@ -88,7 +114,8 @@ int Builder::sweep(int index) {
     return push(n, {}, key);
 }
 
-Builder::Inferred Builder::infer(Op op, std::span<const int> args) const {
+Builder::Inferred Builder::infer(Op op, std::span<const int> args,
+                                 int aux) const {
     Inferred r;
     auto shape = [&](ShapeKind k, int nv) {
         r.type = ValueType::Shape;
@@ -132,6 +159,10 @@ Builder::Inferred Builder::infer(Op op, std::span<const int> args) const {
         case Op::MakeCircle:
             shape(ShapeKind::Circle, 0);
             break;
+        case Op::Arc:
+            shape(ShapeKind::Polyline, aux + 1);
+            r.meta.arc = {args[0], args[1], args[2], args[3]};
+            break;
         case Op::Place:
         case Op::Translate: {
             const Node & g = node(args[0]);
@@ -145,6 +176,12 @@ Builder::Inferred Builder::infer(Op op, std::span<const int> args) const {
                 // A rigid motion keeps orientation, convexity and the convex
                 // pieces: a placed constant polygon reuses its decomposition.
                 r.meta = P.metas[uz(g.meta)];
+                // Not an arc's: its parameters are the unmoved ones, and
+                // radius() of it would read them where its points moved.
+                if(r.meta.arc.center >= 0) {
+                    r.meta.arc = {};
+                    r.meta.moved_arc = op;
+                }
             }
             break;
         }
@@ -181,14 +218,24 @@ int Builder::fold(Op op, std::span<const int> args, int aux,
     }
     const int keep = op == Op::Dyad ? 2 : inf.size;
     return constant(inf.type, inf.meta.kind,
-                    std::span<const double>(buf.data() + I.out, uz(keep)));
+                    std::span<const double>(buf.data() + I.out, uz(keep)),
+                    inf.has_meta ? &inf.meta : nullptr);
 }
 
 int Builder::make(Op op, std::span<const int> args, int aux) {
+    // A free sketch point is MakeVec of two columns: its x is the column
+    // itself, so that a row reading A.x does not list A.y among its columns.
+    if((op == Op::GetX || op == Op::GetY) && node(args[0]).op == Op::MakeVec) {
+        const std::span<const int> xy = this->args(args[0]);
+        if(node(xy[0]).op == Op::SketchVar && node(xy[1]).op == Op::SketchVar)
+            return xy[op == Op::GetX ? 0 : 1];
+    }
     DepKind dep = DepKind::Const;
     int sw = -1;
+    bool reads_var = false;
     for(const int a : args) {
         const Node & n = node(a);
+        reads_var = reads_var || n.reads_var;
         if(n.dep == DepKind::Sweep) {
             if(sw >= 0 && sw != n.sweep) {
                 conflict_ = {sw, n.sweep};
@@ -200,7 +247,7 @@ int Builder::make(Op op, std::span<const int> args, int aux) {
             dep = DepKind::Design;
         }
     }
-    const Inferred inf = infer(op, args);
+    const Inferred inf = infer(op, args, aux);
     if(dep == DepKind::Const) return fold(op, args, aux, inf);
 
     std::string key = "N";
@@ -216,6 +263,7 @@ int Builder::make(Op op, std::span<const int> args, int aux) {
     n.sweep = sw;
     n.aux = aux;
     n.size = inf.size;
+    n.reads_var = reads_var;
     if(inf.has_meta) {
         n.meta = static_cast<int>(P.metas.size());
         P.metas.push_back(inf.meta);

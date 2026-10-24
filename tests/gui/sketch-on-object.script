@@ -1,0 +1,28 @@
+# Point on object on an empty sketch: a slanted segment L1 and two points.
+# Tool first, P3, then M for the method "on the segment", then L1:
+# on_segment(P3, L1). On the selection of P4 and L1: on_line(P4, L1).
+open tests/data/sketch-blank.json
+wait 16
+action tool.segment
+wait 2
+click L 360 339
+click L 798 306
+action tool.point
+wait 2
+click L 579 175
+click L 469 503
+key Escape
+key Escape
+wait 2
+action tool.point_on_object
+wait 2
+click L 579 175
+key M
+wait 2
+click L 689 314
+wait 2
+key Escape
+wait 2
+select element P4 element L1
+action tool.point_on_object
+wait 4

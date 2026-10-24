@@ -1,6 +1,6 @@
 # Builtin functions
 
-This page lists every function the expression language knows, grouped as in the compiler (`src/gs/engine/compiler.cpp`): scalar functions, vectors, shapes, measures, visibility and kinematics, then the three special forms. Each entry gives the argument types, the result, what it computes and how its derivative behaves.
+This page lists every function the expression language knows, grouped as in the compiler (`src/gs/engine/compiler.cpp`): scalar functions, vectors, shapes, the parts of segments and circles, arcs, the poses of bodies, measures, visibility and kinematics, then the predicates, which are whole constraints, and the three special forms. Each entry gives the argument types, the result, what it computes and how its derivative behaves.
 
 Every value on this page was computed by `geomsolver-cli` on the playground instance, as a probe unless the text says otherwise:
 
@@ -18,7 +18,7 @@ The playground defines the point `P` = (3, 4), the unit square `sq`, the non-con
 
 ## Conventions
 
-- **Types.** S is a Scalar, V a Vec, and *shape* a Polygon, Polyline or Circle. Where a function takes "V or shape", a Vec counts as a single point. See [Types](expressions.md#types).
+- **Types.** S is a Scalar, V a Vec, and *shape* a Polygon, Polyline or Circle. A *segment* is a Polyline of 2 points. An *arc* is a Polyline that keeps its exact parameters: see [arcs](#arcs). Where a function takes "V or shape", a Vec counts as a single point. See [Types](expressions.md#types).
 - **Units.** Arguments and results are SI: metres and radians. `dir(90deg)` and `dir(pi / 2)` are the same call.
 - **Arity.** A wrong number of arguments is a compile error that states the expected count: `sqrt() takes 1 argument, got 2`, `min() takes at least 1 argument, got 0`, `polygon() takes at least 3 arguments, got 2`.
 - **Argument types.** A wrong type names the argument: `argument 1 of dist() must be a Vec, got Scalar`.
@@ -128,6 +128,7 @@ Arguments may depend on design variables and sweeps: a shape built from design p
 | **`polyline(p1, p2, ...)`** | V, at least 2 | Polyline | In the given order, open. |
 | **`segment(p, q)`** | V, V | Polyline | A polyline of 2 points. |
 | **`circle(c, r)`** | V, S | Circle | |
+| **`arc(c, r, a0, a1)`** | V, S, S, S | Polyline: an [arc](#arcs) | n + 1 points on the circle of centre c and radius r, counter-clockwise from angle a0 to a1, evenly spaced, the first and the last exact. As for the arc element, r > 0 and a1 - a0 in (0, 2π), or the file does not compile: a clockwise arc is written from its other end. A radius or a span that reads a design variable or a sweep is not checked. |
 
 !!! note "Angles in `rect()` and in `rect` geometry"
     The angle of `rect()` is an expression in radians (write `30deg` for degrees). The `angle` of a `rect` geometry entry is a JSON number in **degrees**. Both turn counter-clockwise.
@@ -150,7 +151,7 @@ circle(vec(1, 2), 0.5) = 1, 2, 0.5
 | **`place(g, p, a)`** | V or shape, V, S | same as g | Rotates g by a about the origin, then moves it by p. A circle keeps its radius. Write a part in its own frame (origin at its pivot), then `place` it. |
 | **`translate(g, v)`** | V or shape, V | same as g | Moves g by v. On a Vec it is g + v. |
 | **`vertex(s, i)`** | Polygon or Polyline, S | V | Vertex i, counting from 0 in the order the shape was written. i must be a constant integer in [0, n). |
-| **`center(g)`** | V or shape | V | A Vec is returned as is; a circle gives its centre; a polygon of non-zero area gives its area centroid; a polyline, or a polygon of zero area, gives the mean of its vertices. |
+| **`center(g)`** | V or shape | V | A Vec is returned as is; a circle gives its centre; a polygon of non-zero area gives its area centroid; a polyline, or a polygon of zero area, gives the mean of its vertices. The polyline of a placed or translated [arc](#arcs) is refused. |
 
 ```text title="Probes"
 place(box(0, 0, 1, 1), vec(5, 0), 90deg) = 5, 0, 5, 1, 4, 1, 4, 6.123233996e-17
@@ -174,6 +175,149 @@ probes[9] at column 11: the index of vertex() must be a constant integer
 probes[10] at column 11: vertex index 4 out of range [0, 4)
 probes[12] at column 7: vertex() needs a polygon or a polyline, got Circle
 ```
+
+## Segments, polylines and circles
+
+These read the parts of a shape. A segment is a Polyline of 2 points: `segment(p, q)`, a 2-point `polyline` geometry entry such as the playground's `wall`, a sketch `segment` element, or an `edge()`.
+
+| Function | Arguments | Result | Notes |
+| --- | --- | --- | --- |
+| **`start(s)`, `end(s)`** | segment or Polyline | V | Its first and its last point. |
+| **`mid(s)`** | segment | V | (start(s) + end(s)) / 2. Of an arc, its middle: see [arcs](#arcs). |
+| **`len(s)`** | segment or Polyline | S | The sum of its pieces' lengths. Derivative 0 for a piece of zero length. |
+| **`dir(s)`** | segment | V | The unit direction from start to end. NaN for a segment of zero length. `dir(a)` of a Scalar is (cos a, sin a), as above. |
+| **`angle(s)`** | segment | S | The angle of `dir(s)` from the x axis, in (-π, π]. NaN for zero length. `angle(v)` of a Vec is unchanged, 0 for the zero vector. |
+| **`angle(s1, s2)`** | segment, segment | S | The signed angle from s1 to s2, in (-π, π]. NaN when either has zero length. Of two Vecs, use `angle_between`. |
+| **`angle(s1, s2, o)`** | segment, segment, ±1 | S | The same, s1 read from its end to its start when o is -1 (a constant +1 or -1, as `parallel()`'s orientation): the angle at a corner of two segments drawn head to tail, s1 ending where s2 starts. `angle(segment(vec(1, 0), vec(0, 0)), segment(vec(0, 0), vec(0, 2)), -1)` is π/2, where `angle()` of the same two is -π/2. Reading both backwards changes nothing, so one orientation is enough. Smart Dimension writes it at such a corner. |
+| **`edge(g, i)`** | Polygon or Polyline, S | segment | From vertex i to vertex i + 1, or back to vertex 0 from a polygon's last vertex. i is a constant integer in [0, n) for a polygon of n vertices, in [0, n - 1) for a polyline. |
+| **`radius(k)`** | Circle or arc | S | |
+| **`line_dist(p, s)`** | V, segment | S | Signed distance from p to the line through s, positive on its left (counter-clockwise from its direction): cross(dir(s), p - start(s)). NaN for zero length. |
+| **`line_dist(p, s, side)`** | V, segment, ±1 | S | side × `line_dist(p, s)`: the distance on the side named, +1 left or -1 right. `side` is a constant +1 or -1. |
+
+`center(k)` gives a circle's centre, as for any shape.
+
+!!! note "A segment of zero length has no direction"
+    `dir`, `angle`, `line_dist` and the predicates below normalise the direction of a segment, so a segment whose ends coincide gives NaN, never 0: no constraint on a direction is satisfied by a collapsed segment. `angle(B - A)` of the same points is 0. In the report such a constraint's margin is `n/a`, its status `NON-FINITE`, and the verdict is not feasible.
+
+```text title="Probes"
+start(wall) = 0, 3
+end(wall) = 4, 3
+mid(wall) = 2, 3
+len(wall) = 4
+len(polyline(vec(0, 0), vec(3, 0), vec(3, 4))) = 7
+dir(wall) = 1, 0
+dir(segment(vec(0, 0), vec(3, 4))) = 0.6, 0.8
+angle(segment(vec(4, 3), vec(0, 3))) = 3.141592654
+angle(wall, segment(vec(0, 0), vec(0, 1))) = 1.570796327
+edge(sq, 1) = 1, 0, 1, 1
+edge(sq, 3) = 0, 1, 0, 0
+edge(L, 4) = 1, 2, 0, 2
+radius(disk) = 1
+center(disk) = 4, 0
+line_dist(P, wall) = 1
+line_dist(P, wall, -1) = -1
+line_dist(vec(1, 2), wall) = -1
+dir(segment(P, P)) = -nan, -nan
+angle(segment(P, P)) = -nan
+line_dist(vec(0, 0), segment(P, P)) = -nan
+```
+
+`P` = (3, 4) lies 1 m above the wall, which runs along +x: on its left. The errors:
+
+```text
+probes[0] at column 4: argument 1 of mid() must be a segment or an arc, got Polygon
+probes[1] at column 7: argument 1 of radius() must be a circle or an arc, got Polygon
+probes[2] at column 9: edge index 4 out of range [0, 4)
+probes[3] at column 19: the side of line_dist() must be a constant +1 or -1
+probes[4] at column 6: argument 1 of angle() must be a segment, got Vec
+probes[4] at column 17: argument 2 of angle() must be a segment, got Vec
+```
+
+The probes are `mid(L)`, `radius(sq)`, `edge(sq, 4)`, `line_dist(P, wall, 2)` and `angle(vec(1, 0), vec(0, 1))`. An argument that is a polyline of more points is named so: `got Polyline of 3 points`.
+
+## Arcs {#arcs}
+
+An arc is the value of `arc(c, r, a0, a1)` and of a sketch's [`arc` element](instance.md#arcs): a Polyline, its tessellation below, that keeps the arc's centre, radius and angles. A let or a name that holds an arc holds it whole (`let d = door`). These probes run on `docs/instances/sketch-arc.json`, whose `door` of radius 0.8 swings on (0.4, 0) from 0 to 90°, and whose `bar` turns from 90° to 180°.
+
+| Function | Arguments | Result | Notes |
+| --- | --- | --- | --- |
+| **`start(k)`, `end(k)`** | arc | V | c + r dir(a0), c + r dir(a1): the polyline's first and last points, to the bit. |
+| **`mid(k)`** | arc | V | c + r dir((a0 + a1) / 2). |
+| **`center(k)`**, **`radius(k)`** | arc | V, S | c and r. |
+| **`len(k)`** | arc | S | r (a1 - a0), the arc's length, not its polyline's. |
+| **`start_angle(k)`**, **`end_angle(k)`** | arc | S | a0 and a1, as written: no wrap, and the sketch solver keeps the turn they were drawn in. `start_angle(k) == a` is a [wrapped relation](expressions.md#wrapped-angle-relations); an inequality is not. |
+| **`span(k)`** | arc | S | a1 - a0. `span(k) == s` is an angle row, not wrapped. |
+
+```text title="Probes"
+start(door) = 1.2, 0
+end(door) = 0.4, 0.8
+mid(door) = 0.9656854249, 0.5656854249
+center(door) = 0.4, 0
+radius(door) = 0.8
+len(door) = 1.256637061
+start_angle(bar) = 1.570796327
+end_angle(bar) = 3.141592654
+span(bar) = 1.570796327
+vertex(door, 50) = 0.4, 0.8
+```
+
+Every other function reads the polyline: `vertex(door, 50)` is its last point, `clearance(door, couch)` its distance to the couch. `place()` and `translate()` of an arc give that polyline, moved, and no longer an arc, whose parameters would not have moved with it. `center()` of it would be the mean of its points, not the moved centre, and is refused too:
+
+```text
+probes[0] at column 7: argument 1 of radius() must be a circle or an arc, got Polyline of 51 points: place() of an arc is a polyline
+probes[1] at column 5: argument 1 of span() must be an arc, got Polyline
+probes[2] at column 7: center() of translate(door, vec(1, 0)) would be the mean of its points: translate() of an arc is a polyline; write translate(center(k), v)
+```
+
+The probes are `radius(place(door, vec(1, 0), 0))`, `span(wall)` and `center(translate(door, vec(1, 0)))`.
+
+**The tessellation.** The polyline's points are on the arc, so the gap between it and the arc, at the middle of each of its n segments, is r (1 - cos(span / 2n)). n is the least that keeps the gap within ε, `sketch.chord_error` (0.1 mm by default): n = ⌈span / (2 acos(1 - ε / r))⌉, at least 2 and at most 512.
+
+| Arc | Segments | Largest gap |
+| --- | --- | --- |
+| 90° at r = 0.5 m | 40 | 0.096 mm |
+| 90° at 0.8 m (`door`) | 50 | 0.099 mm |
+| 180° at 2 m | 158 | 0.099 mm |
+| 90° at 5 cm | 13 | 0.091 mm |
+
+- n is fixed when the instance compiles, from the drawn radius and span: the sketch solver compiles again after each change. An `arc()` whose radius or span reads a design variable or a sweep takes n for a full turn at twice its radius at the start, and says so in a note. Its n segments stay as its radius grows past that, and so does their gap: r (1 - cos(span / 2n)) at each evaluation.
+- Below r = ε / 2 the whole arc lies within ε of its chord: 2 segments. Past 512 segments, the gap exceeds ε, and a note says by how much: `note: arc(vec(0, 0), 50, 0, 6): 512 segments, the most, leave a chord error of up to 0.858304 mm, over chord_error (0.1 mm)`.
+
+**The bounds over an arc.** A distance, a clearance or an extreme of the polyline is within the gap of the arc's, on either side, and `max_proj(g, v)` or `min_proj(g, v)` within the gap times norm(v). So a row `f(...) >= c` or `f(...) <= c`, and either bound of `lo <= f(...) <= hi`, is tightened towards its feasible side when f is `clearance`, `min_x`, `max_x`, `min_y`, `max_y`, `min_proj` or `max_proj` with an arc as a direct argument, f reads no other arc's polyline, neither directly nor through an argument (`clearance(door, place(door, p, a))` reads two), and the other side reads none: by the gap of each arc f reads, ε, or more at 512 segments, times norm(v) for a projection. For an `arc()` whose radius or span moves, the gap is taken at each evaluation, at least ε, and the note adds `, and by more once a moving radius outgrows its segments`; for a v that moves, it says `times the length of its direction`. A criterion's bound is tightened alike. The report says so in a note, not a warning:
+
+```text
+note: arc door: bound of swing tightened by 0.1 mm
+note: vtx reads arc door (tessellated, at most 0.1 mm off), not tightened
+```
+
+The second note is that of any other constraint that reads an arc's polyline: an equality, a measure of a placed arc, `vertex(door, 2).x <= 3`, a bound that reads an arc itself. Lowering `chord_error` reduces both.
+
+## Bodies {#bodies}
+
+The pose of a [body](instance.md#bodies) and its frame. Their argument b is a body's name, which is no value of its own. These probes run on `docs/instances/sketch-body.json`, whose TV hangs with its origin at (0.45, 1.2), turned by -90°.
+
+| Function | Arguments | Result | Notes |
+| --- | --- | --- | --- |
+| **`origin(b)`** | body | V | The origin of b's frame, in the world. |
+| **`angle(b)`** | body | S | The angle of b's frame from the world's x axis, in radians, as its pose holds it. `angle(b) == a` is a [wrapped relation](expressions.md#wrapped-angle-relations). `angle(s)` of a segment and `angle(v)` of a Vec keep their meaning. |
+| **`local(p, b)`** | V, body | V | p in b's frame: `rotate(p - origin(b), -angle(b))`. The inverse of the placement of b's elements: `local(tv.c, tv)` is the value written for `tv.c`. |
+
+```text title="Probes"
+origin(tv) = 0.45, 1.2
+angle(tv) = -1.570796327
+tv.c = 0.42, 1.3
+local(tv.c, tv) = -0.1, -0.03
+local(A, tv) = -0.1, -0.45
+```
+
+An element of a body may use none of them: they read the world, and a body stays rigid. A [frame formula](instance.md#frames) reaches a world point through `local(p, b)`, b being its frame's body, and may not use `origin` or `angle`. Any other argument than a body's name is an error:
+
+```text
+probes[0] at column 7: argument 1 of origin() must be a body
+probes[0] at column 9: argument 2 of local() must be a body
+```
+
+The probes are `origin(A)` and `local(A, B)`.
 
 ## Measures
 
@@ -333,6 +477,103 @@ branch_of(vec(0, 0), vec(1, 0), vec(0.5, 2)) = 1
 branch_of(vec(0, 0), vec(1, 0), vec(0.5, -2)) = -1
 branch_of(vec(0, 0), vec(1, 0), vec(3, 0)) = 1
 ```
+
+## Predicates
+
+A predicate is a constraint by itself. It is written as the whole `expr` of a constraint, with no comparison, and compiles to its own rows:
+
+```json
+{"name": "base_h", "expr": "horizontal(base)"}
+```
+
+It is refused anywhere else, as a value or as one side of a comparison:
+
+```text
+probes[5] at column 0: parallel() is a predicate: it is only allowed as a whole constraint
+constraints[4].expr at column 0: horizontal() is a predicate: it is only allowed as a whole constraint
+```
+
+The second line is `horizontal(base) == 0`. Every row is in natural units, never squared, and is 0 when the predicate holds.
+
+| Predicate | Arguments | Rows | Each row | Unit |
+| --- | --- | --- | --- | --- |
+| **`coincident(p, q)`** | V, V | 2, `(x)` and `(y)` | p - q | m |
+| **`on_line(p, s)`** | V, segment | 1 | `line_dist(p, s)` | m |
+| **`on_segment(p, s)`** | V, segment | 1, and a group `NAME:span` of 2 inequality rows | `line_dist(p, s)`; then 0 <= t <= `len(s)`, with t = dot(p - start(s), dir(s)) the distance along s | m |
+| **`on(p, k)`** | V, Circle or arc | 1; for an arc, and a group `NAME:span` of 2 inequality rows | dist(p, center(k)) - radius(k); then -span/2 <= w <= span/2, with w = wrap(angle(p - center(k)) - (a0 + a1)/2), times r | m |
+| **`horizontal(s)`, `horizontal(p, q)`** | segment, or V, V | 1 | end(s).y - start(s).y, or q.y - p.y | m |
+| **`vertical(s)`, `vertical(p, q)`** | segment, or V, V | 1 | the same in x | m |
+| **`parallel(s1, s2)`** | segment, segment | 1 | cross(dir(s1), dir(s2)), the sine of the angle | none |
+| **`parallel(s1, s2, o)`** | segment, segment, ±1 | 1 | the angle from s1 to s2, minus 0 (o = +1, the same direction) or π (o = -1, opposite), wrapped into (-π, π] | rad |
+| **`perpendicular(s1, s2)`** | segment, segment | 1 | dot(dir(s1), dir(s2)), the cosine of the angle | none |
+| **`perpendicular(s1, s2, o)`** | segment, segment, ±1 | 1 | the angle from s1 to s2, minus o × 90°, wrapped: o = +1 when s2 turns left of s1, -1 right | rad |
+| **`tangent(s, k, side)`** | segment, Circle or arc, ±1 | 1 | `line_dist(center(k), s)` - side × radius(k): the circle on the left of s (+1) or on its right (-1) | m |
+| **`tangent(k1, k2, side)`** | Circle or arc, Circle or arc, ±1 | 1 | +1, outside each other: dist(c1, c2) - (r1 + r2); -1, k2 inside k1: dist(c1, c2) - (r1 - r2) | m |
+| **`tangent_at(x, y, p, o)`** | segment, Circle or arc, the same, V, ±1 | 1 | the angle from the tangent of x at p to o × the tangent of y at p, in (-π, π] | rad |
+| **`symmetric(p, q, s)`** | V, V, segment | 2, `(mid)` and `(perp)` | `line_dist(mid, s)` with mid = (p + q) / 2; dot(q - p, dir(s)) | m |
+| **`symmetric(p, q, m)`** | V, V, V | 2, `(x)` and `(y)` | (p + q) / 2 - m | m |
+
+- **Groups.** A predicate's rows form one row group, named after the constraint, its rows labelled as in the table when there are two. Its rows are equalities. `on_segment`, and `on` of an arc, add a second group, `NAME:span`, of the two inequality rows `(lo)` and `(hi)`: an equality and an inequality cannot share a group. An arc's span rows hold across the -x axis and for a span past π: the angle they wrap jumps opposite the arc's middle, outside it.
+- **Orientation in the text.** The last argument of `line_dist`, `tangent`, `tangent_at` and the 3-argument `parallel` and `perpendicular` is a constant +1 or -1: a number or a param. Anything else is an error, and so is a predicate whose first two arguments are written alike (`coincident(B, B)`, `parallel(edge(G, 0), edge(G, 0))`), which relates a point or a curve to itself:
+
+    ```text
+    constraints[1].expr at column 20: the orientation of parallel() must be a constant +1 or -1
+    constraints[0].expr at column 14: coincident() relates 'B' to itself
+    constraints[2].expr at column 0: tangent() needs a segment and a circle or an arc, or two circles or arcs, got Circle and Polyline
+    constraints[3].expr at column 6: argument 2 of on() must be a circle or an arc, got Polyline
+    ```
+
+- **The oriented forms.** The 2-argument `parallel` and `perpendicular` hold for either orientation of s2. The 3-argument forms name one. Their row is an angle whose jump of 2π lies 180° away from the target, where a drawing close to the target never goes.
+- **Tangents.** A segment's tangent is end - start; a circle's or an arc's tangent at p is perp(p - center), counter-clockwise. `tangent_at` is tangency where two curves meet: x and y both pass through p, a point they share or one a constraint puts on both. There the distance forms tell nothing the joint does not: their gradient vanishes at a shared point, and lies in the pin's at a pinned one. So a tangency at a joint is written with `tangent_at`. The distance form is refused for a segment that ends on an arc's end, and for two curves joined by an enabled, driving `coincident()`, `on()`, `on_line()` or `on_segment()` of a point of one (a segment's slot or end, an arc's end) and a point of, or the whole of, the other: two arcs always meet that way, since their ends cannot be one point. `on()` of an arc's own end is refused too, its row zero whatever the drawing:
+
+    ```text
+    constraints[10].expr at column 8: tangent at a shared point: write tangent_at(leaf, door, end(door), s)
+    constraints[11].expr at column 8: tangent at a point that 'pin' puts on both: write tangent_at(k1, k2, end(k1), s)
+    constraints[10].expr at column 3: on() of end(door) and door holds whatever the drawing: an arc passes through its own end
+    ```
+
+    A joint the text does not show, through a let, is left to the sketch solver: a shared point makes a distance tangency [Malformed](cli.md#sketch-solve), its gradient vanishing; a pinned one a singular configuration, a warning. `on()` of an arc's own end through a let, or through a segment's slot, is an identity: satisfied whatever the drawing, it removes no DOF and gets no message.
+- **Arcs.** The rows that read an arc read its exact centre and radius, never its polyline. A radius of 0 or less, or a span outside (0, 2π), makes the constraint Malformed for the sketch solver.
+- **Internal tangency** asks r1 > r2: with r1 <= r2 the row has zeros, but k1 is then inside k2, or the circles are equal. When the centres are closer than 1e-7 × (r1 + r2), the row is r2 - r1: the same value where the centres coincide, without the gradient of `dist`, whose direction is noise there.
+- **Zero lengths.** The rows that read a direction (`parallel`, `perpendicular`, `tangent_at`, and those that read a line: `on_line`, `on_segment`, `tangent(s, k, side)`, `symmetric(p, q, s)`) are NaN for a segment of zero length, never 0.
+- **The constraint's value**, which the GUI shows, is the row, or for two rows the length of (row 1, row 2).
+- **Its kind.** Each predicate is a [kind](expressions.md#kinds) of its own, whatever its arguments: the Constraints panel shows `coinc.`, `on`, `horiz.`, `vert.`, `par.`, `perp.`, `tang.` or `sym.` in its Kind column.
+- **Sweeps.** A predicate over a sweep needs `"forall"` on its constraint, like a relation; `max_over` and `min_over` do not apply to it.
+
+The playground `docs/instances/ref-predicates.json` is a drawing that satisfies one constraint of each predicate:
+
+??? example "docs/instances/ref-predicates.json"
+
+    ```json title="docs/instances/ref-predicates.json"
+    --8<-- "docs/instances/ref-predicates.json"
+    ```
+
+Its `--eval` reports every group satisfied (`--verbose-sketch` lists them). With the corner C moved from (2, 1) to (2.1, 1.05), the rows that read C report their violations, each in its own unit:
+
+```bash
+geomsolver-cli docs/instances/ref-predicates.json --eval --set 'sketch.elements.C.value=[2.1, 1.05]'
+```
+
+```text title="Output (constraints)"
+constraints (margin = -violation, natural units; VIOLATED when the violation exceeds 1e-07)
+  name                           margin             status     worst at
+  corner                         -0.1               VIOLATED   
+  M_on_base:span                 1                  ok         
+  side_v                         -0.1               VIOLATED   
+  DC_h                           -0.05              VIOLATED   
+  par                            -0.02380278        VIOLATED   
+  par_same                       -0.02380503        VIOLATED   
+  perp                           -0.09480909        VIOLATED   
+  perp_left                      -0.09495171        VIOLATED   
+  wheel_on_top                   -0.02394444        VIOLATED   
+  smooth_at_T                    -0.02380503        VIOLATED   
+  mirror                         -0.05              VIOLATED   
+  right_angle                    -0.09495171        VIOLATED   
+  level                          -0.02380503        VIOLATED   
+  8 geometry constraints satisfied
+```
+
+`top` now rises at 1.364° (0.02380503 rad): `par_same`, `smooth_at_T` and `level` report that angle, `par` its sine. `side` leans 5.44° off the vertical: `perp_left` and `right_angle` report it in radians, `perp` as a cosine. The span of `on_segment`, an inequality, keeps its margin of 1 m: M lies 1 m from either end of `base`.
 
 ## Special forms
 

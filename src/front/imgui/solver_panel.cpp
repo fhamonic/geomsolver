@@ -51,7 +51,7 @@ void SolverPanel::actions_ui() {
     const bool can_stop = stop.is_enabled();
     ImGui::BeginDisabled(!can_start);
     if(ImGui::Button(solve.label().c_str())) solve.run();
-    tooltip_text(SolverPresenter::kSolveTip);
+    tooltip_text(presenter_.solve_tip());
     ImGui::SameLine();
     if(ImGui::Button(polish.label().c_str())) polish.run();
     tooltip_text(SolverPresenter::kPolishTip);

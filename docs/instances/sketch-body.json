@@ -1,0 +1,40 @@
+{
+  "format": "geomsolver-instance/2",
+  "description": "A TV hung from a wall on two arms, drawn as a sketch. The TV is a body: its screen and its two brackets are drawn in its own frame and placed by its pose. One arm ends at a bracket (a link arm), the other is pinned to one. Its constraints are checked against the drawing, not solved.",
+  "params": {"W": 1.23, "T": 0.07, "arm": 0.42},
+  "sketch": {
+    "elements": {
+      "O":    {"type": "point", "value": [0, 0], "fixed": true, "note": "the foot of the wall"},
+      "N":    {"type": "point", "value": [0, 2]},
+      "wall": {"type": "segment", "from": "O", "to": "N"},
+      "A":    {"type": "point", "value": [0, 1.3]},
+      "B":    {"type": "point", "value": [0, 0.956]},
+      "E":    {"type": "point", "value": [0.42, 1.1]},
+      "top":  {"type": "segment", "from": "A", "to": "tv.c", "note": "a link arm: it ends at the bracket tv.c"},
+      "low":  {"type": "segment", "from": "B", "to": "E", "note": "its end E is pinned to the bracket tv.d"}
+    },
+    "bodies": {
+      "tv": {
+        "pose": {"origin": {"value": [0.45, 1.2]}, "angle": {"value": "-90deg"}},
+        "elements": {
+          "screen": {"type": "box", "corners": ["vec(-W/2, 0)", "vec(W/2, T)"]},
+          "c":      {"type": "point", "value": [-0.1, -0.03]},
+          "d":      {"type": "point", "value": [0.1, -0.03]}
+        }
+      }
+    }
+  },
+  "constraints": [
+    {"name": "upright", "expr": "vertical(wall)"},
+    {"name": "pivot_a", "expr": "on_line(A, wall)"},
+    {"name": "pivot_b", "expr": "on_line(B, wall)"},
+    {"name": "same_height", "expr": "tv.c.y == tv.d.y", "frame": "tv"},
+    {"name": "brackets", "expr": "dist(tv.c, tv.d) == 0.2", "frame": "tv"},
+    {"name": "pin", "expr": "coincident(E, tv.d)"},
+    {"name": "arm_top", "expr": "len(top) == arm"},
+    {"name": "arm_low", "expr": "len(low) == 0.444"},
+    {"name": "flat", "expr": "horizontal(top)"},
+    {"name": "facing", "expr": "angle(tv) == -90deg"},
+    {"name": "gap", "expr": "clearance(tv.screen, wall) >= 0.4"}
+  ]
+}

@@ -1,9 +1,16 @@
 #include "schema.hpp"
 
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <format>
 #include <mutex>
+#include <optional>
+#include <string_view>
 
 #include <nlohmann/json-schema.hpp>
+
+#include "gs/engine/keys.hpp"
 
 namespace gs::detail {
 namespace {
@@ -38,9 +45,66 @@ constexpr const char * kDefinitions = R"JSON({
       {"if": {"properties": {"type": {"const": "polyline"}}}, "then": {"required": ["points"]}}
     ]
   },
-  "geometry": {"type": "object", "patternProperties": {"": {"$ref": "#/definitions/geometry_entry"}}}
+  "geometry": {"type": "object", "patternProperties": {"": {"$ref": "#/definitions/geometry_entry"}}},
+  "sketch_value": {"anyOf": [{"type": "array", "items": {"$ref": "#/definitions/number_or_expr"},
+                              "minItems": 2, "maxItems": 2},
+                             {"type": "string"}]},
+  "sketch_element": {
+    "type": "object",
+    "required": ["type"],
+    "properties": {
+      "type": {"enum": ["point", "segment", "polyline", "polygon", "box", "circle", "arc"]},
+      "value": {"$ref": "#/definitions/sketch_value"},
+      "from": {"type": "string"},
+      "to": {"type": "string"},
+      "points": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+      "corners": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2},
+      "center": {"type": "string"},
+      "radius": {"$ref": "#/definitions/number_or_expr"},
+      "start": {"$ref": "#/definitions/number_or_expr"},
+      "end": {"$ref": "#/definitions/number_or_expr"},
+      "helper": {"type": "boolean"},
+      "fixed": {"type": "boolean"},
+      "note": {"type": "string"}
+    }
+  },
+  "sketch_elements": {"type": "object", "patternProperties": {"": {"$ref": "#/definitions/sketch_element"}}},
+  "sketch": {
+    "type": "object",
+    "properties": {
+      "extent": {"type": "string"},
+      "chord_error": {"$ref": "#/definitions/number_or_expr"},
+      "elements": {"$ref": "#/definitions/sketch_elements"},
+      "bodies": {
+        "type": "object",
+        "patternProperties": {"": {
+          "type": "object",
+          "required": ["pose", "elements"],
+          "properties": {
+            "pose": {
+              "type": "object",
+              "required": ["origin", "angle"],
+              "properties": {
+                "origin": {"type": "object", "required": ["value"],
+                           "properties": {"value": {"$ref": "#/definitions/sketch_value"}}},
+                "angle": {"type": "object", "required": ["value"],
+                          "properties": {"value": {"$ref": "#/definitions/number_or_expr"}}}
+              }
+            },
+            "fixed": {"type": "boolean"},
+            "elements": {"$ref": "#/definitions/sketch_elements"}
+          }
+        }}
+      }
+    }
+  }
 })JSON";
 
+// Every key of the key table (gs/engine/keys.hpp) is declared here, in an
+// object's base "properties" even when only some types take it: node_at()
+// does not look under allOf/if/then, and test_keys.cpp fails on a key one
+// declares and the other does not. The solver's keys have empty schemas:
+// gs_solve checks their values, and only warns.
 constexpr const char * kInstance = R"JSON({
   "type": "object",
   "required": ["format"],
@@ -82,7 +146,8 @@ constexpr const char * kInstance = R"JSON({
           "min": {"$ref": "#/definitions/number_or_expr"},
           "max": {"$ref": "#/definitions/number_or_expr"},
           "samples": {"type": "integer", "minimum": 1, "maximum": 1000000},
-          "sampling": {"enum": ["adaptive", "fixed"]}
+          "sampling": {"enum": ["adaptive", "fixed"]},
+          "note": {"type": "string"}
         }
       }}
     },
@@ -97,7 +162,11 @@ constexpr const char * kInstance = R"JSON({
           "expr": {"type": "string"},
           "forall": {"type": "string"},
           "enabled": {"type": "boolean"},
-          "note": {"type": "string"}
+          "note": {"type": "string"},
+          "frame": {"type": "string"},
+          "driving": {"type": "boolean"},
+          "label": {"type": "object", "required": ["offset"],
+                    "properties": {"offset": {"$ref": "#/definitions/point2"}}}
         }
       }
     },
@@ -133,11 +202,18 @@ constexpr const char * kInstance = R"JSON({
           "label": {"type": "string"},
           "ghosts": {"type": "integer", "minimum": 0, "maximum": 1000},
           "trace": {"type": "boolean"},
-          "visible": {"type": "boolean"}
+          "visible": {"type": "boolean"},
+          "note": {"type": "string"}
         }
       }
     },
-    "solver": {"type": "object"}
+    "solver": {"type": "object", "properties": {
+      "algorithm": {}, "starts": {}, "seed": {}, "threads": {}, "phase1": {}, "initial_samples": {},
+      "verify_samples": {}, "max_exchange_iterations": {}, "feas_tol": {}, "maxeval": {}, "maxtime": {},
+      "xtol_rel": {}, "constraint_tol": {}, "include_current": {}, "cluster_x_tol": {},
+      "cluster_f_tol": {}, "pareto_starts": {}
+    }},
+    "sketch": {"$ref": "#/definitions/sketch"}
   }
 })JSON";
 
@@ -308,26 +384,126 @@ std::vector<Diagnostic> run(const char * body,
     std::vector<Diagnostic> out;
     Collector collector(out, prefix,
                         body == kInstance ? instance_schema : geometry_schema);
-    std::string text;
-    try {
-        text = doc.dump();
-    } catch(const nlohmann::json::exception & e) {
-        // Only a document built in memory can get here (the parser rejects
-        // invalid UTF-8): report it rather than throw out of compile().
-        out.push_back({Diagnostic::Severity::Error, prefix, -1,
-                       std::string("the document contains text that is not "
-                                   "valid UTF-8: ") +
-                           e.what()});
-        return out;
+    std::optional<nlohmann::json> plain = plain_copy(doc);
+    if(!plain) {
+        std::string text;
+        try {
+            text = doc.dump();
+        } catch(const nlohmann::json::exception & e) {
+            // Only a document built in memory can get here (the parser
+            // rejects invalid UTF-8): report it rather than throw out of
+            // compile().
+            out.push_back({Diagnostic::Severity::Error, prefix, -1,
+                           std::string("the document contains text that is "
+                                       "not valid UTF-8: ") +
+                               e.what()});
+            return out;
+        }
+        plain = nlohmann::json::parse(text);
     }
-    const nlohmann::json plain = nlohmann::json::parse(text);
     const std::lock_guard<std::mutex> lock(mutex);
     (body == kInstance ? instance_validator : geometry_validator)
-        .validate(plain, collector);
+        .validate(*plain, collector);
     return out;
 }
 
+// Well-formed UTF-8 (the Unicode standard's table 3-7: no overlong form, no
+// surrogate, nothing above U+10FFFF), which dump() checks before it writes.
+bool utf8(std::string_view s) {
+    std::size_t i = 0;
+    while(i < s.size()) {
+        const auto b = static_cast<unsigned char>(s[i]);
+        if(b < 0x80) {
+            ++i;
+            continue;
+        }
+        int n = 0;
+        unsigned char lo = 0x80, hi = 0xbf;
+        if(b >= 0xc2 && b <= 0xdf) {
+            n = 1;
+        } else if(b >= 0xe0 && b <= 0xef) {
+            n = 2;
+            if(b == 0xe0) lo = 0xa0;
+            if(b == 0xed) hi = 0x9f;
+        } else if(b >= 0xf0 && b <= 0xf4) {
+            n = 3;
+            if(b == 0xf0) lo = 0x90;
+            if(b == 0xf4) hi = 0x8f;
+        } else {
+            return false;
+        }
+        if(s.size() - i <= static_cast<std::size_t>(n)) return false;
+        for(int k = 1; k <= n; ++k) {
+            const auto c =
+                static_cast<unsigned char>(s[i + static_cast<std::size_t>(k)]);
+            if(c < (k == 1 ? lo : 0x80) || c > (k == 1 ? hi : 0xbf))
+                return false;
+        }
+        i += static_cast<std::size_t>(n) + 1;
+    }
+    return true;
+}
+
+bool copy_into(const nlohmann::ordered_json & in, nlohmann::json & out) {
+    using T = nlohmann::ordered_json::value_t;
+    switch(in.type()) {
+        case T::null:
+            out = nullptr;
+            return true;
+        case T::boolean:
+            out = in.get<bool>();
+            return true;
+        case T::number_integer: {
+            const auto v = in.get<std::int64_t>();
+            if(v >= 0)
+                out = static_cast<std::uint64_t>(v);
+            else
+                out = v;
+            return true;
+        }
+        case T::number_unsigned:
+            out = in.get<std::uint64_t>();
+            return true;
+        case T::number_float: {
+            const double v = in.get<double>();
+            if(std::isfinite(v))
+                out = v;
+            else
+                out = nullptr;
+            return true;
+        }
+        case T::string: {
+            const std::string & v = in.get_ref<const std::string &>();
+            if(!utf8(v)) return false;
+            out = v;
+            return true;
+        }
+        case T::array:
+            out = nlohmann::json::array();
+            for(const nlohmann::ordered_json & v : in) {
+                out.push_back(nullptr);
+                if(!copy_into(v, out.back())) return false;
+            }
+            return true;
+        case T::object:
+            out = nlohmann::json::object();
+            for(const auto & [key, v] : in.items()) {
+                if(!utf8(key)) return false;
+                if(!copy_into(v, out[key])) return false;
+            }
+            return true;
+        default:
+            return false;
+    }
+}
+
 }  // namespace
+
+std::optional<nlohmann::json> plain_copy(const nlohmann::ordered_json & doc) {
+    nlohmann::json out;
+    if(!copy_into(doc, out)) return std::nullopt;
+    return out;
+}
 
 std::string pointer_to_path(const std::string & pointer) {
     std::string out;
@@ -360,33 +536,19 @@ std::string pointer_to_path(const std::string & pointer) {
     return out;
 }
 
-bool schema_lists_key(const std::string & parent_pointer,
-                      const std::string & key) {
-    const nlohmann::json * node = node_at(
-        instance_schema(), nlohmann::json::json_pointer(parent_pointer));
-    if(!node) return true;
-    if(node->contains("properties") && (*node)["properties"].contains(key))
-        return true;
-    return !node->contains("properties") &&
-           !node->contains("patternProperties");
+const nlohmann::json * schema_node(const std::string & pointer) {
+    return node_at(instance_schema(), nlohmann::json::json_pointer(pointer));
 }
 
 std::vector<std::string> format2_keys(const nlohmann::ordered_json & doc) {
     std::vector<std::string> out;
-    if(!doc.is_object()) return out;
-    if(doc.contains("sweeps") && doc["sweeps"].is_object())
-        for(const auto & [name, s] : doc["sweeps"].items()) {
-            if(!s.is_object()) continue;
-            for(const char * key : {"samples", "sampling"})
-                if(s.contains(key))
-                    out.push_back(std::format("sweeps.{}.{}", name, key));
-        }
-    if(doc.contains("criteria") && doc["criteria"].is_array())
-        for(std::size_t i = 0; i < doc["criteria"].size(); ++i) {
-            const nlohmann::ordered_json & c = doc["criteria"][i];
-            if(c.is_object() && c.contains("enabled") &&
-               c["enabled"].is_boolean() && !c["enabled"].get<bool>())
-                out.push_back(std::format("criteria[{}].enabled", i));
+    for(const SectionObject & o : section_objects(doc, ""))
+        for(const auto & [key, v] : o.object->items()) {
+            const InstanceKey * k = o.section->find(key);
+            if(k && (k->needs2 == Needs2::Always ||
+                     (k->needs2 == Needs2::WhenFalse && v.is_boolean() &&
+                      !v.get<bool>())))
+                out.push_back(o.path.empty() ? key : o.path + "." + key);
         }
     return out;
 }

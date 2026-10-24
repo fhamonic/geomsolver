@@ -53,8 +53,9 @@ TEST_CASE("app: open, reload and quit ask about unsaved changes") {
     app.canvas().fit_all();
     path.path() = file.string();
     CHECK_MESSAGE((path.submit() && doc.model() &&
-                   app.canvas().fit_request() == FitRequest::Design),
-                  "Open loads the instance and fits the view to its design");
+                   app.canvas().fit_request() == FitRequest::Extent),
+                  "Open loads the instance and fits the view to its sketch's "
+                  "extent, which does Design without one");
     CHECK((app.window_title() ==
            std::format("geomsolver - {}", file.filename().string())));
 

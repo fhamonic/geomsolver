@@ -15,6 +15,11 @@ using namespace gs::app;
 void detail_view(App & app);
 // The Document panel: its sheet (DocumentPresenter), drawn the same way.
 void document_view(App & app);
+// Sends what was typed into a Properties drag field and not yet sent, which
+// goes at the field's release. A frame with no active item calls it before
+// PropertiesPresenter::finish_drag(): Tab to a pair's next component leaves
+// none active for a moment, and the drag would end without the value.
+void send_typed_value(App & app);
 
 // The text field of `f`, over the App's FieldDrafts: the draft's text, its
 // frame red under an error and amber while an edit is pending. It takes the

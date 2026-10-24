@@ -1,0 +1,32 @@
+# A third dimension that conflicts. On a triangle whose corner T1 is fixed
+# and whose base S1 is level, Smart Dimension adds the length of S1 and of
+# S2 at their measured values (d1, d2), then that of S3 typed 5, longer than
+# the two others together: the commit leaves d3 out, and the sketch message
+# names it. Esc quits the tool, a selection of S1 replaces d3's, and a click
+# on the message's link selects d3 again.
+open tests/data/sketch-triangle.json
+wait 16
+action tool.dimension
+wait 2
+click L 579 503
+click L 579 547
+wait 2
+key Enter
+wait 2
+click L 689 339
+click L 754 284
+wait 2
+key Enter
+wait 2
+click L 469 339
+click L 404 284
+wait 2
+text "5"
+wait 2
+key Enter
+wait 4
+key Escape
+wait 2
+select element S1
+activate status "Conflicting"
+wait 2

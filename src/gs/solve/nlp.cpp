@@ -249,8 +249,6 @@ Check check(Evaluator & ev, std::span<const double> x, const SolverSettings & s,
         for(double & v : g.curve) v += shift;
         if(g.between) g.between->value += shift;
     }
-    // A curve sample of -inf means every row of the group was NaN there:
-    // the engine's std::max skips NaN.
     for(const GroupCheck & g : V.groups) {
         if(!std::isfinite(g.violation)) c.finite = false;
         for(const double v : g.curve)
@@ -265,8 +263,12 @@ Check check(Evaluator & ev, std::span<const double> x, const SolverSettings & s,
     if(scan_rows && c.finite) c.finite = rows_finite(ev, x, s);
     V.max_violation = -kInf;
     V.worst_group = -1;
+    // A NaN group is the worst only when every group is: the report names
+    // the worst finite one, and !c.finite says the rest.
     for(uz g = 0; g < V.groups.size(); ++g)
-        if(V.groups[g].violation > V.max_violation || V.worst_group < 0) {
+        if(const double v = V.groups[g].violation;
+           V.worst_group < 0 || v > V.max_violation ||
+           (std::isnan(V.max_violation) && !std::isnan(v))) {
             V.max_violation = V.groups[g].violation;
             V.worst_group = static_cast<int>(g);
         }

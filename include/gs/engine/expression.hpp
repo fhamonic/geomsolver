@@ -15,8 +15,14 @@ struct Ast {
     Kind kind = Kind::Number;
     // Column of the token that defines the node (operator, name, number).
     int column = 0;
+    // The node's text, [begin, end) in bytes, with the parentheses written
+    // around it: replacing it by another operand keeps the expression's
+    // structure, which a span cut at `column` or at a leaf would not do in
+    // "2 * (W + 1)".
+    int begin = 0, end = 0;
     double number = 0.0;
-    // Name / Call: identifier. Member: "x" or "y". Binary: "+ - * / ^".
+    // Name: an identifier, or a body's member "tv.c" (column: the body's,
+    // "tv"). Call: identifier. Member: "x" or "y". Binary: "+ - * / ^".
     // Relation: "<=", ">=" or "==" ("<" and ">" are stored as "<=" / ">=").
     std::string text;
     // A Relation has 2 args, or 3 for a chain `a <= b <= c` (`>=` chains keep

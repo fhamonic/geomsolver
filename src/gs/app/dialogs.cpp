@@ -71,7 +71,8 @@ DeleteRequest::DeleteRequest(App & app)
 void DeleteRequest::request() {
     if(!doc_.has_instance() || selection_.empty()) return;
     DeletePlan plan = plan_delete(*doc_.instance(), selection_);
-    if(plan.broken.empty() && plan.unparsed.empty()) {
+    if(plan.broken.empty() && plan.unparsed.empty() && plan.taken.empty() &&
+       plan.check.empty()) {
         perform(std::move(plan));
         return;
     }
@@ -88,7 +89,7 @@ bool DeleteRequest::valid() {
 std::string DeleteRequest::question() const {
     std::string names;
     for(const SelKey & k : plan_->deleted)
-        names += (names.empty() ? "" : ", ") + key_name(k);
+        names += (names.empty() ? "" : ", ") + deleted_name(k);
     return std::format("Delete {}?", names);
 }
 
@@ -114,6 +115,24 @@ std::vector<DeleteRequest::Group> DeleteRequest::groups() const {
           plan_->broken);
     group("These expressions do not parse, so they may use a deleted name too:",
           plan_->unparsed);
+    auto listed = [&](const char * intro,
+                      const std::vector<std::string> & lines) {
+        if(lines.empty()) return;
+        Group & g = out.emplace_back(Group{intro, {}});
+        for(const std::string & line : lines) g.lines.push_back("  " + line);
+    };
+    listed("These elements use what is deleted, and are deleted with it:",
+           plan_->taken);
+    listed("These vertices are removed from their polylines and polygons:",
+           plan_->vertices);
+    listed("These points were used only by what is deleted, and go too:",
+           plan_->orphans);
+    listed("These constraints are deleted with what they constrain:",
+           plan_->removed);
+    listed(
+        "These formulas read an edge or a vertex that moved or went: check "
+        "them:",
+        plan_->check);
     return out;
 }
 
@@ -136,6 +155,7 @@ void DeleteRequest::perform(DeletePlan plan) {
     // An erased param or let moves no path: its drafts must go by hand.
     for(const EditBatch::Op & op : plan.batch.ops)
         app_.panels().host.fields().forget(op.path);
+    const std::string label = plan.batch.label;
     doc_.apply(std::move(plan.batch));
     std::vector<int> displays;
     for(const SelKey & k : plan.deleted)
@@ -145,6 +165,14 @@ void DeleteRequest::perform(DeletePlan plan) {
             selection_.remove(k);
     std::ranges::sort(displays, std::greater<>());
     for(const int i : displays) app_.display_erased(i);
+    // After the selection moved, which would hide it at once.
+    app_.sync();
+    if(!plan.removed.empty()) {
+        std::string names;
+        for(const std::string & r : plan.removed)
+            names += (names.empty() ? "" : ", ") + r.substr(0, r.find(": "));
+        app_.notify(Tone::Normal, std::format("{}: deleted {}", label, names));
+    }
 }
 
 const char * PathDialog::title() const {
@@ -159,18 +187,25 @@ std::string_view ControlsHelp::text() {
     return "Canvas: click a handle, a point, a line or a filled shape to "
            "select it (Shift or Ctrl+click toggles), click empty space to "
            "clear;\n"
-           "drag from anywhere but an orange handle to select what lies "
-           "inside the box (Shift or Ctrl adds); double-click shows the "
-           "entry in its list and in Properties.\n"
+           "drag from anywhere but an orange handle or a sketch element to "
+           "select what lies inside the box (Shift or Ctrl adds); "
+           "double-click shows the entry in its list and in Properties.\n"
            "Drag the orange handles to move design points (they stay in "
-           "their domain). Middle, right or Space+drag pans, the wheel "
-           "zooms at the cursor,\n"
+           "their domain), and a sketch's elements (their constraints hold). "
+           "Middle, right or Space+drag pans, the wheel zooms at the "
+           "cursor,\n"
            "F fits all, G fits the design. Right-click for the actions on "
            "the selection: hide and show, enable, fix, select the "
            "associated constraints...\n"
-           "Esc clears the selection; Del deletes it, after listing the "
+           "Esc drops the shape a tool draws, then quits the tool, then "
+           "clears the selection; Del deletes it, after listing the "
            "expressions that use a deleted name; F2 renames the selected "
            "entry.\n"
+           "Tools: Shift+P, Shift+L, Shift+M, Shift+R, Shift+C, Shift+A "
+           "draw, single letters constrain (see the toolbar's tooltips); a "
+           "digit types a value, Tab opens the next field, M takes the next "
+           "method, Enter finishes, a right click is Esc; hold Ctrl not to "
+           "snap.\n"
            "Lists: click a row to select it; double-click its name, or F2, "
            "to rename it and every use of it; double-click elsewhere to edit "
            "it in Properties.\n"

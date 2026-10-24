@@ -1,6 +1,7 @@
 #include "front/imgui/dock_layout.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <iterator>
@@ -23,11 +24,11 @@ namespace {
 
 constexpr std::string_view kLayoutKey = "layout.imgui";
 // Bump it when the default layout gains or loses a window (App::load_layout).
-constexpr int kLayoutVersion = 4;
+constexpr int kLayoutVersion = 5;
 
 struct Nodes {
-    ImGuiID centre = 0, right_top = 0, right_bottom = 0, bottom_left = 0,
-            bottom_right = 0;
+    ImGuiID centre = 0, toolbar = 0, right_top = 0, right_bottom = 0,
+            bottom_left = 0, bottom_right = 0;
 };
 
 // The node of each panel, in PanelId order: the project builds without
@@ -76,14 +77,16 @@ void build_default_layout(ImGuiID root, ImVec2 size) {
     ImGui::DockBuilderAddNode(root, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(root, size);
     // In a small window the minimums would exceed half of it: the canvas
-    // keeps at least half.
-    const float right = std::clamp(size.x * 0.36f, 380.0f, 640.0f);
+    // keeps at least the right column's width, beside the toolbar, which
+    // the split below takes from the canvas alone.
+    const float right =
+        std::min(std::clamp(size.x * 0.36f, 380.0f, 640.0f),
+                 std::max(0.0f, (size.x - toolbar_width()) / 2.0f));
     const float bottom_h = std::clamp(size.y * 0.30f, 170.0f, 380.0f);
     Nodes n;
     ImGuiID left = 0, right_column = 0, bottom = 0;
-    ImGui::DockBuilderSplitNode(root, ImGuiDir_Right,
-                                std::min(right / size.x, 0.5f), &right_column,
-                                &left);
+    ImGui::DockBuilderSplitNode(root, ImGuiDir_Right, right / size.x,
+                                &right_column, &left);
     ImGui::DockBuilderSplitNode(right_column, ImGuiDir_Down, 0.5f,
                                 &n.right_bottom, &n.right_top);
     ImGui::DockBuilderSplitNode(left, ImGuiDir_Down,
@@ -91,9 +94,18 @@ void build_default_layout(ImGuiID root, ImVec2 size) {
                                 &n.centre);
     ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.45f, &n.bottom_right,
                                 &n.bottom_left);
-    ImGui::DockBuilderGetNode(n.centre)->LocalFlags |=
-        ImGuiDockNodeFlags_AutoHideTabBar;
+    // The toolbar takes its width from the canvas alone: the panels keep
+    // the places they have without it. The canvas's side of the split
+    // inherits the central node.
+    const float canvas_w = ImGui::DockBuilderGetNode(n.centre)->Size.x;
+    ImGui::DockBuilderSplitNode(n.centre, ImGuiDir_Left,
+                                toolbar_width() / canvas_w, &n.toolbar,
+                                &n.centre);
+    for(const ImGuiID node : {n.centre, n.toolbar})
+        ImGui::DockBuilderGetNode(node)->LocalFlags |=
+            ImGuiDockNodeFlags_AutoHideTabBar;
     ImGui::DockBuilderDockWindow(canvas_window_title().c_str(), n.centre);
+    ImGui::DockBuilderDockWindow(toolbar_window_title().c_str(), n.toolbar);
     for(const PanelInfo & p : all_panels())
         ImGui::DockBuilderDockWindow(window_title({}, p.id).c_str(),
                                      node_of(p.id, n));
@@ -112,6 +124,12 @@ std::string window_title(std::string_view label, PanelId id) {
 std::string canvas_window_title() {
     return std::format("{}###canvas", kCanvasLabel);
 }
+
+std::string toolbar_window_title() {
+    return std::format("{}###toolbar", kToolbarLabel);
+}
+
+float toolbar_width() { return std::round(ImGui::GetFontSize() * 9.0f); }
 
 DockLayout::DockLayout(App & app) : app_(app) {
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;

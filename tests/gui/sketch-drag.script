@@ -1,0 +1,6 @@
+# Drags the shelf's free corner S 50 pixels to the right: the shelf stays on
+# the north wall, so S.y keeps its 2.05; one undo step writes S.
+open docs/instances/sketch-basic.json
+wait 16
+drag L 386 202 436 202
+wait 4

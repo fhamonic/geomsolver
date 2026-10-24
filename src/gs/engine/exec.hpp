@@ -911,6 +911,7 @@ void exec_instr(const Instr & I, const ArgRef * A,
         case Op::Const:
         case Op::Var:
         case Op::Sweep:
+        case Op::SketchVar:
             break;
         case Op::Add:
             o[0] = s(0) + s(1);
@@ -1098,6 +1099,23 @@ void exec_instr(const Instr & I, const ArgRef * A,
             o[1] = p(0)[1];
             o[2] = s(1);
             break;
+        case Op::Arc: {
+            // c + r dir(a), as VAdd(c, VScale(Dir(a), r)) computes it: the
+            // ends must equal start(k) and end(k) to the bit.
+            const V2<T> c = v(0);
+            const auto at = [&](const T & a, T * out) {
+                V2<T> d;
+                ad::cis(a, d.x, d.y);
+                st2(out, c + scale(d, s(1)));
+            };
+            const int n = I.aux;
+            const T span = s(3) - s(2);
+            at(s(2), o);
+            for(int k = 1; k < n; ++k)
+                at(s(2) + span * (static_cast<double>(k) / n), o + 2 * k);
+            at(s(3), o + 2 * n);
+            break;
+        }
         case Op::Place: {
             const V2<T> t = v(1), cs = v(2);
             if(A[0].type == ValueType::Vec) {
@@ -1143,6 +1161,9 @@ void exec_instr(const Instr & I, const ArgRef * A,
             st2(o, centroid(metas[uz(A[0].meta)], p(0)));
             break;
         }
+        case Op::Radius:
+            o[0] = p(0)[2];
+            break;
         case Op::Clearance:
             o[0] = clearance(A[0], A[1], p(0), p(1), metas, sc);
             break;
@@ -1161,6 +1182,18 @@ void exec_instr(const Instr & I, const ArgRef * A,
         case Op::VisibleFraction:
             o[0] = visible_fraction(A, I.arg_count, b, metas, sc);
             break;
+        case Op::InnerGap: {
+            const V2<T> c1 = v(0), c2 = v(2);
+            const double dx = val(c1.x) - val(c2.x), dy = val(c1.y) - val(c2.y);
+            const double scale = std::fabs(val(s(1))) + std::fabs(val(s(3)));
+            // A scale of the circles' own: the row cannot know the
+            // diagonal of its sketch component.
+            if(dx * dx + dy * dy < 1e-14 * scale * scale)
+                o[0] = s(3) - s(1);
+            else
+                o[0] = norm(c1 - c2) - (s(1) - s(3));
+            break;
+        }
         case Op::Dyad:
             dyad(p(0), s(1), p(2), s(3), s(4), o);
             break;

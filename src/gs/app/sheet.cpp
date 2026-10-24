@@ -184,6 +184,11 @@ bool SheetBuilder::set(const SelKey & key, std::string_view id,
 
 bool SheetBuilder::press(const SelKey & key, std::string_view id) {
     const std::optional<DetailItem> item = editable(key, id);
+    if(item && item->kind == Kind::Link && item->target) {
+        app_.selection().set(*item->target);
+        app_.reveal(*item->target);
+        return true;
+    }
     return item && item->kind == Kind::Button && run(key, *item);
 }
 

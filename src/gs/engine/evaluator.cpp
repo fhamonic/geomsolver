@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "exec.hpp"
+#include "gs/engine/rows.hpp"
 
 namespace gs {
 namespace detail {
@@ -41,11 +42,17 @@ struct Engine {
             chart_map(in.chart, u, buf.data() + in.slot);
         }
     }
+    // No pass writes an Op::SketchVar slot, so q stays loaded until the next
+    // call; its columns carry no derivative.
+    void set_q(std::span<const double> q) {
+        for(std::size_t c = 0; c < P.sketch_slot.size(); ++c)
+            if(P.sketch_slot[c] >= 0) buf[uz(P.sketch_slot[c])] = T(q[c]);
+    }
     void set_sweep(int k, double t) {
         const int slot = P.sweep_slot[uz(k)];
         if(slot >= 0) buf[uz(slot)] = T(P.sweeps[uz(k)].value(t));
     }
-    void run(const std::vector<int> & ids) {
+    void run(std::span<const int> ids) {
         T * b = buf.data();
         for(const int id : ids) {
             const Instr & I = P.instrs[uz(id)];
@@ -97,7 +104,7 @@ Offsets offsets(const Program & P, const std::vector<RowGroup> & groups,
     };
     for(std::size_t g = 0; g < groups.size(); ++g) {
         o.group.push_back(o.m);
-        o.m += groups[g].split * ns(groups[g].sweep);
+        if(!groups[g].check_only) o.m += groups[g].split * ns(groups[g].sweep);
     }
     o.group.push_back(o.m);
     for(const ObjTerm & t : P.objective) {
@@ -194,7 +201,7 @@ void nlp_pass(Engine<T> & E, std::span<const double> x, const SampleSets & S,
                [&](int k, int i) {
                    for(std::size_t g = 0; g < P.groups.size(); ++g) {
                        const GroupImpl & G = P.groups[g];
-                       if(G.sweep != k) continue;
+                       if(G.sweep != k || G.check_only) continue;
                        const int split = static_cast<int>(G.rows.size());
                        for(int s = 0; s < split; ++s)
                            emit(row_value(E, G.rows[uz(s)], agg_val), out.g,
@@ -210,7 +217,7 @@ void nlp_pass(Engine<T> & E, std::span<const double> x, const SampleSets & S,
                });
     for(std::size_t g = 0; g < P.groups.size(); ++g) {
         const GroupImpl & G = P.groups[g];
-        if(G.sweep >= 0) continue;
+        if(G.sweep >= 0 || G.check_only) continue;
         for(std::size_t s = 0; s < G.rows.size(); ++s)
             emit(row_value(E, G.rows[s], agg_val), out.g,
                  off.group[g] + static_cast<int>(s), out.g_jac, gld, lane0,
@@ -227,6 +234,7 @@ void nlp_pass(Engine<T> & E, std::span<const double> x, const SampleSets & S,
 struct DualEngineBase {
     virtual ~DualEngineBase() = default;
     virtual int width() const = 0;
+    virtual void set_q(std::span<const double> q) = 0;
     virtual void nlp(std::span<const double> x, const SampleSets & S,
                      const Offsets & off, const NlpBuffers & out, int lane0,
                      int lanes, bool values) = 0;
@@ -236,6 +244,7 @@ template <int W>
 struct DualEngine final : DualEngineBase {
     explicit DualEngine(const Program & P) : e(P) {}
     int width() const override { return W; }
+    void set_q(std::span<const double> q) override { e.set_q(q); }
     void nlp(std::span<const double> x, const SampleSets & S,
              const Offsets & off, const NlpBuffers & out, int lane0, int lanes,
              bool values) override {
@@ -309,6 +318,11 @@ Verification verify_on(const Model & model, Engine<double> & E,
         const double v = row_value(E, r, E.agg_val);
         return G.equality ? std::fabs(v) : v;
     };
+    // NaN wins: std::max(v, NaN) is v, and a group whose rows are all NaN
+    // would read -inf, below every tolerance, as satisfied.
+    auto worse = [](double v, double now) {
+        return !std::isnan(now) && (std::isnan(v) || v > now);
+    };
     sweep_pass(E, P.verify_plan, P.verify_aggs, S, E.agg_val, E.agg_sample,
                [&](int k, int i) {
                    for(std::size_t g = 0; g < P.groups.size(); ++g) {
@@ -316,10 +330,11 @@ Verification verify_on(const Model & model, Engine<double> & E,
                        if(G.sweep != k) continue;
                        double v = -std::numeric_limits<double>::infinity();
                        for(const RowTemplate & r : G.rows)
-                           v = std::max(v, natural(G, r));
+                           if(const double n = natural(G, r); worse(n, v))
+                               v = n;
                        GroupCheck & c = V.groups[g];
                        if(curves) c.curve.push_back(v);
-                       if(v > c.violation) {
+                       if(worse(v, c.violation)) {
                            c.violation = v;
                            c.sample = i;
                        }
@@ -336,7 +351,8 @@ Verification verify_on(const Model & model, Engine<double> & E,
             continue;
         }
         for(const RowTemplate & r : G.rows)
-            c.violation = std::max(c.violation, natural(G, r));
+            if(const double n = natural(G, r); worse(n, c.violation))
+                c.violation = n;
         for(const RowTemplate & r : G.rows) {
             if(r.kind != RowTemplate::Kind::Aggregate) continue;
             const Term & t = r.lhs.agg != AggKind::None ? r.lhs : r.rhs;
@@ -371,15 +387,49 @@ Verification verify_on(const Model & model, Engine<double> & E,
     return V;
 }
 
+// One pass over a row's or a value's plan, loading only its inputs: its
+// design variables, and its columns with column j of its list on lane
+// j - lane0.
+template <class T, class Plan>
+void plan_pass(Engine<T> & E, const Plan & rp, std::span<const double> x,
+               std::span<const double> q, int lane0) {
+    const Program & P = E.P;
+    for(int k = rp.input_begin; k < rp.input_end; ++k) {
+        const VarInput & in = P.inputs[uz(P.row_inputs[uz(k)])];
+        T u[2];
+        for(int j = 0; j < in.chart.dims(); ++j) u[j] = T(x[uz(in.coord + j)]);
+        chart_map(in.chart, u, E.buf.data() + in.slot);
+    }
+    for(int k = rp.column_begin; k < rp.column_end; ++k) {
+        const int c = P.row_columns[uz(k)];
+        E.buf[uz(P.sketch_slot[uz(c)])] =
+            seed<T>(q[uz(c)], k - rp.column_begin - lane0);
+    }
+    E.run(std::span<const int>(P.row_nodes)
+              .subspan(uz(rp.node_begin), uz(rp.node_end - rp.node_begin)));
+}
+
+template <class T>
+T row_pass(Engine<T> & E, const RowPlan & rp, std::span<const double> x,
+           std::span<const double> q, int lane0) {
+    plan_pass(E, rp, x, q, lane0);
+    return row_value(E, E.P.groups[uz(rp.group)].rows[uz(rp.split)], E.agg_val);
+}
+
+// The count of numbers a node's value holds.
+int value_size(const Program & P, int node) {
+    const Node & n = P.nodes[uz(node)];
+    return n.type == ValueType::Scalar ? 1
+           : n.type == ValueType::Vec  ? 2
+                                       : n.size;
+}
+
 GeoValue to_geo(const Program & P, int node, const double * slot) {
     const Node & n = P.nodes[uz(node)];
     GeoValue g;
     g.type = n.type;
-    int size = n.size;
-    if(n.type == ValueType::Scalar) size = 1;
-    if(n.type == ValueType::Vec) size = 2;
     if(n.meta >= 0) g.kind = P.metas[uz(n.meta)].kind;
-    g.data.assign(slot, slot + size);
+    g.data.assign(slot, slot + value_size(P, node));
     return g;
 }
 
@@ -387,13 +437,18 @@ GeoValue to_geo(const Program & P, int node, const double * slot) {
 }  // namespace detail
 
 struct Evaluator::Impl {
-    explicit Impl(const detail::Program & P) : dbl(P) {}
+    Impl(const detail::Program & P, std::vector<double> q0)
+        : dbl(P), q(std::move(q0)) {
+        dbl.set_q(q);
+    }
     detail::Engine<double> dbl;
     std::unique_ptr<detail::DualEngineBase> dual;
+    std::vector<double> q;
 };
 
 Evaluator::Evaluator(const Model & model)
-    : model_(&model), impl_(std::make_unique<Impl>(model.program())) {}
+    : model_(&model)
+    , impl_(std::make_unique<Impl>(model.program(), model.initial_q())) {}
 Evaluator::~Evaluator() = default;
 Evaluator::Evaluator(Evaluator &&) noexcept = default;
 Evaluator & Evaluator::operator=(Evaluator &&) noexcept = default;
@@ -410,11 +465,23 @@ void Evaluator::nlp(std::span<const double> x, const SampleSets & samples,
         nlp_pass(impl_->dbl, x, samples, off, out, 0, 0, true);
         return;
     }
-    if(!impl_->dual) impl_->dual = make_dual_engine(P);
+    if(!impl_->dual) {
+        impl_->dual = make_dual_engine(P);
+        impl_->dual->set_q(impl_->q);
+    }
     const int W = impl_->dual->width();
     for(int lane0 = 0; lane0 < P.n; lane0 += W)
         impl_->dual->nlp(x, samples, off, out, lane0, std::min(W, P.n - lane0),
                          lane0 == 0);
+}
+
+void Evaluator::set_q(std::span<const double> q) {
+    if(q.size() != impl_->q.size())
+        throw std::invalid_argument(std::format(
+            "q has {} columns, the model has {}", q.size(), impl_->q.size()));
+    impl_->q.assign(q.begin(), q.end());
+    impl_->dbl.set_q(q);
+    if(impl_->dual) impl_->dual->set_q(q);
 }
 
 Evaluator::NlpResult Evaluator::nlp(std::span<const double> x,
@@ -607,6 +674,182 @@ SampleSets SampleSets::uniform(const Model & model, int n) {
     s.t.reserve(model.sweeps().size());
     for(std::size_t k = 0; k < model.sweeps().size(); ++k) s.t.push_back(t);
     return s;
+}
+
+}  // namespace gs
+
+namespace gs {
+
+struct RowEvaluator::Impl {
+    explicit Impl(const detail::Program & P) : dbl(P), d8(P), d16(P) {}
+    detail::Engine<double> dbl;
+    detail::Engine<Dual<8>> d8;
+    detail::Engine<Dual<16>> d16;
+    std::vector<RowRef> rows;
+};
+
+RowEvaluator::RowEvaluator(const Model & model) : model_(&model) {
+    const detail::Program & P = model.program();
+    if(!P.has_row_plans)
+        throw std::invalid_argument(
+            "the model was compiled without row plans "
+            "(CompileOptions::row_plans)");
+    impl_ = std::make_unique<Impl>(P);
+    for(const detail::RowPlan & rp : P.row_plans)
+        impl_->rows.push_back({rp.group, rp.split});
+}
+RowEvaluator::~RowEvaluator() = default;
+RowEvaluator::RowEvaluator(RowEvaluator &&) noexcept = default;
+RowEvaluator & RowEvaluator::operator=(RowEvaluator &&) noexcept = default;
+
+std::span<const RowRef> RowEvaluator::rows() const { return impl_->rows; }
+
+std::span<const int> RowEvaluator::columns(int row) const {
+    const detail::Program & P = model_->program();
+    const detail::RowPlan & rp = P.row_plans.at(detail::uz(row));
+    return std::span<const int>(P.row_columns)
+        .subspan(detail::uz(rp.column_begin),
+                 detail::uz(rp.column_end - rp.column_begin));
+}
+
+namespace {
+
+void check_inputs(const detail::Program & P, std::span<const double> x,
+                  std::span<const double> q, std::size_t r, std::size_t rows) {
+    if(static_cast<int>(x.size()) != P.n)
+        throw std::invalid_argument(std::format(
+            "x has {} coordinates, the model has {}", x.size(), P.n));
+    if(q.size() != P.sketch_slot.size())
+        throw std::invalid_argument(
+            std::format("q has {} columns, the model has {}", q.size(),
+                        P.sketch_slot.size()));
+    if(r != rows)
+        throw std::invalid_argument(
+            std::format("r has {} entries for {} rows", r, rows));
+}
+
+}  // namespace
+
+void RowEvaluator::values(std::span<const double> x, std::span<const double> q,
+                          std::span<double> r) {
+    using namespace detail;
+    const Program & P = model_->program();
+    check_inputs(P, x, q, r.size(), P.row_plans.size());
+    Engine<double> & E = impl_->dbl;
+    E.load(x, 0);
+    E.set_q(q);
+    E.run(P.row_union);
+    for(std::size_t i = 0; i < P.row_plans.size(); ++i) {
+        const RowPlan & rp = P.row_plans[i];
+        r[i] =
+            row_value(E, P.groups[uz(rp.group)].rows[uz(rp.split)], E.agg_val);
+    }
+}
+
+void RowEvaluator::jacobian(std::span<const double> x,
+                            std::span<const double> q,
+                            std::span<const int> rows, std::span<double> r,
+                            std::vector<JacobianEntry> & jacobian) {
+    using namespace detail;
+    const Program & P = model_->program();
+    check_inputs(P, x, q, r.size(), rows.size());
+    for(std::size_t k = 0; k < rows.size(); ++k) {
+        if(rows[k] < 0 || uz(rows[k]) >= P.row_plans.size())
+            throw std::invalid_argument(
+                std::format("row {} out of range (the model has {})", rows[k],
+                            P.row_plans.size()));
+        const RowPlan & rp = P.row_plans[uz(rows[k])];
+        const int n = rp.column_end - rp.column_begin;
+        auto emit = [&](const auto & v, int lane0, int lanes) {
+            for(int j = 0; j < lanes; ++j)
+                jacobian.push_back(
+                    {static_cast<int>(k),
+                     P.row_columns[uz(rp.column_begin + lane0 + j)], v.d[j]});
+        };
+        if(n <= 8) {
+            const Dual<8> v = row_pass(impl_->d8, rp, x, q, 0);
+            r[k] = v.v;
+            emit(v, 0, n);
+            continue;
+        }
+        for(int lane0 = 0; lane0 < n; lane0 += 16) {
+            const Dual<16> v = row_pass(impl_->d16, rp, x, q, lane0);
+            if(lane0 == 0) r[k] = v.v;
+            emit(v, lane0, std::min(16, n - lane0));
+        }
+    }
+}
+
+int RowEvaluator::value_plan(ExprRef ref) const {
+    const std::vector<detail::ValuePlan> & v = model_->program().value_plans;
+    const auto it =
+        std::ranges::lower_bound(v, ref.node, {}, &detail::ValuePlan::node);
+    return it != v.end() && it->node == ref.node
+               ? static_cast<int>(it - v.begin())
+               : -1;
+}
+
+namespace {
+
+const detail::ValuePlan & checked_plan(const detail::Program & P, int plan) {
+    if(plan < 0 || detail::uz(plan) >= P.value_plans.size())
+        throw std::invalid_argument(
+            std::format("value plan {} out of range (the model has {})", plan,
+                        P.value_plans.size()));
+    return P.value_plans[detail::uz(plan)];
+}
+
+}  // namespace
+
+std::span<const int> RowEvaluator::value_columns(int plan) const {
+    const detail::Program & P = model_->program();
+    const detail::ValuePlan & vp = checked_plan(P, plan);
+    return std::span<const int>(P.row_columns)
+        .subspan(detail::uz(vp.column_begin),
+                 detail::uz(vp.column_end - vp.column_begin));
+}
+
+void RowEvaluator::value(std::span<const double> x, std::span<const double> q,
+                         int plan, std::vector<double> & numbers) {
+    using namespace detail;
+    const Program & P = model_->program();
+    check_inputs(P, x, q, 0, 0);
+    const ValuePlan & vp = checked_plan(P, plan);
+    plan_pass(impl_->dbl, vp, x, q, 0);
+    const double * v = &impl_->dbl.at(vp.node);
+    numbers.assign(v, v + value_size(P, vp.node));
+}
+
+void RowEvaluator::value_jacobian(std::span<const double> x,
+                                  std::span<const double> q, int plan,
+                                  std::vector<double> & numbers,
+                                  std::vector<JacobianEntry> & jacobian) {
+    using namespace detail;
+    const Program & P = model_->program();
+    check_inputs(P, x, q, 0, 0);
+    const ValuePlan & vp = checked_plan(P, plan);
+    const int size = value_size(P, vp.node);
+    const int n = vp.column_end - vp.column_begin;
+    numbers.resize(uz(size));
+    auto emit = [&](const auto & E, int lane0, int lanes) {
+        for(int k = 0; k < size; ++k) {
+            const auto & v = E.at_offset(vp.node, k);
+            if(lane0 == 0) numbers[uz(k)] = v.v;
+            for(int j = 0; j < lanes; ++j)
+                jacobian.push_back(
+                    {k, P.row_columns[uz(vp.column_begin + lane0 + j)],
+                     v.d[j]});
+        }
+    };
+    if(n <= 8) {
+        plan_pass(impl_->d8, vp, x, q, 0);
+        emit(impl_->d8, 0, n);
+        return;
+    }
+    for(int lane0 = 0; lane0 < n; lane0 += 16) {
+        plan_pass(impl_->d16, vp, x, q, lane0);
+        emit(impl_->d16, lane0, std::min(16, n - lane0));
+    }
 }
 
 }  // namespace gs

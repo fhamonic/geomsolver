@@ -1,0 +1,13 @@
+# Fix on the TV example: tool first, a click on the TV's screen fixes the
+# body tv; on the selection of N, the top of the wall, N.
+open docs/instances/sketch-body.json
+wait 16
+action tool.fix
+wait 2
+click L 631 175
+wait 2
+key Escape
+wait 2
+select element N
+action tool.fix
+wait 4

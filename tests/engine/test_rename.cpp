@@ -28,6 +28,42 @@ std::string refusal(const Instance & inst, std::string_view entry,
     return r.error;
 }
 
+// A world beside a body "tv", whose elements name each other, with a link
+// arm, a pin, a frame formula and the pose accessors.
+Json body_doc() {
+    return Json::parse(R"J({
+      "format": "geomsolver-instance/2",
+      "params": {"T": 0.07},
+      "let": {"tip": "tv.c + vec(0, T)", "turn": "angle(tv)"},
+      "sketch": {
+        "elements": {
+          "A":  {"type": "point", "value": [0.16, 0.175]},
+          "AC": {"type": "segment", "from": "A", "to": "tv.c"}
+        },
+        "bodies": {
+          "tv": {
+            "pose": {"origin": {"value": [0.2, 0.5]}, "angle": {"value": -1.4}},
+            "elements": {
+              "c":  {"type": "point", "value": [-0.1, -0.03]},
+              "d":  {"type": "point", "value": [0.06, -0.03]},
+              "cd": {"type": "segment", "from": "tv.c", "to": "tv.d"}
+            }
+          },
+          "tw": {
+            "pose": {"origin": {"value": [1, 0]}, "angle": {"value": 0}},
+            "elements": {"c": {"type": "point", "value": [0, 0]}}
+          }
+        }
+      },
+      "constraints": [
+        {"name": "pin", "expr": "coincident(A, tv.d)"},
+        {"name": "level", "expr": "tv.c.y == tv.d.y", "frame": "tv"},
+        {"name": "near", "expr": "local(A, tv).x >= tv.c.x", "frame": "tv"},
+        {"name": "apart", "expr": "dist(tv.c, tw.c) >= origin(tv).x"}
+      ]
+    })J");
+}
+
 // The renamed document compiles to the same problem: same coordinates in the
 // same order (up to the renamed variable), same rows, same values.
 void check_same_problem(const Instance & before, const Json & after,
@@ -349,6 +385,280 @@ TEST_CASE("rename_in: an accepted rename applied to another document") {
     CHECK(!e["let"].contains("E"));
     CHECK(e["display"][2]["expr"] == "segment(A, E)");
     CHECK(rename_in(earlier, "constraints[5]", "x") == earlier);
+}
+
+TEST_CASE("rename: a sketch element, in its slots, its users and formulas") {
+    auto inst = instance_from(sketch_doc());
+    const RenameResult r = renamed(*inst, "sketch.elements.P1", "Origin");
+    const Json & d = r.doc;
+    CHECK(keys(d["sketch"]["elements"]) ==
+          std::vector<std::string>{"wall", "Origin", "P2", "P3", "C1", "table",
+                                   "H1", "leaf", "shelf", "Q", "rug", "dish"});
+    CHECK(d["sketch"]["elements"]["wall"]["points"] ==
+          Json::array({"Origin", "P2", "P3"}));
+    CHECK(d["let"]["mid"] == "(Origin + P2) / 2");
+    CHECK(d["constraints"][2]["expr"] == "dist(Origin, P2) == 3.2");
+    CHECK(r.rewritten == std::vector<std::string>{
+                             "sketch.elements.wall.points[0]", "let.mid",
+                             "constraints[0].expr", "constraints[2].expr"});
+    CHECK(find_name_uses(d, "P1").uses.empty());
+    CHECK(rename_in(inst->doc(), "sketch.elements.P1", "Origin") == d);
+
+    // The renamed document draws the same sketch, with the same rows.
+    const auto m0 = compile_ok(*inst);
+    const auto m1 = compile_ok(*instance_from(d));
+    REQUIRE(m1->sketch().size() == m0->sketch().size());
+    CHECK(m1->sketch()[1].name == "Origin");
+    std::vector<ExprRef> r0, r1;
+    for(const SketchInfo & e : m0->sketch()) r0.push_back(e.ref);
+    for(const SketchInfo & e : m1->sketch()) r1.push_back(e.ref);
+    const std::vector<GeoValue> v0 = Evaluator(*m0).values({}, {}, r0);
+    const std::vector<GeoValue> v1 = Evaluator(*m1).values({}, {}, r1);
+    for(std::size_t i = 0; i < v0.size(); ++i) CHECK(v1[i].data == v0[i].data);
+    CHECK(m1->groups().size() == m0->groups().size());
+}
+
+TEST_CASE("rename: a param in the sketch's values, radii, extent and bodies") {
+    Json j = sketch_doc();
+    j["sketch"]["extent"] = "box(0, 0, 4, 4 * door_r)";
+    j["sketch"]["chord_error"] = "door_r / 8000";
+    j["sketch"]["bodies"] = Json::parse(R"J({"tv": {
+      "pose": {"origin": {"value": ["door_r", 0]},
+               "angle": {"value": "door_r"}},
+      "elements": {"c": {"type": "point", "value": "vec(door_r, 0)",
+                         "fixed": true}}}})J");
+    auto inst = instance_from(j);
+    const RenameResult r = renamed(*inst, "params.door_r", "R");
+    CHECK(r.rewritten ==
+          std::vector<std::string>{"sketch.extent", "sketch.chord_error",
+                                   "sketch.elements.leaf.to",
+                                   "sketch.elements.dish.radius",
+                                   "sketch.bodies.tv.pose.origin.value[0]",
+                                   "sketch.bodies.tv.pose.angle.value",
+                                   "sketch.bodies.tv.elements.c.value"});
+    CHECK(r.doc["sketch"]["elements"]["dish"]["radius"] == "R / 2");
+    CHECK(r.doc["sketch"]["bodies"]["tv"]["elements"]["c"]["value"] ==
+          "vec(R, 0)");
+
+    const NameUses u = find_name_uses(sketch_doc(), "P3");
+    std::vector<std::string> found;
+    for(const NameUse & use : u.uses)
+        found.push_back(std::format("{}:{}", use.path, use.column));
+    CHECK(found ==
+          std::vector<std::string>{"sketch.elements.wall.points[2]:0",
+                                   "sketch.elements.shelf.corners[1]:0",
+                                   "constraints[1].expr:8"});
+}
+
+TEST_CASE("rename: a sketch element shares the namespace") {
+    auto inst = instance_from(sketch_doc());
+    CHECK(refusal(*inst, "sketch.elements.P1", "P2") ==
+          "name 'P2' is already a sketch element (sketch.elements.P2)");
+    CHECK(refusal(*inst, "params.W", "P1") ==
+          "name 'P1' is already a sketch element (sketch.elements.P1)");
+    CHECK(refusal(*inst, "sketch.elements.P1", "W") ==
+          "name 'W' is already a param (params.W)");
+    CHECK(refusal(*inst, "sketch.elements.nope", "x") ==
+          "no entry 'sketch.elements.nope'");
+    CHECK(refusal(*inst, "sketch.elements", "x") ==
+          "'sketch.elements' has no name to rename");
+    CHECK(refusal(*inst, "sketch.bodies.tv", "x") ==
+          "no entry 'sketch.bodies.tv'");
+}
+
+TEST_CASE("rename: a body, in every name of its elements and its frames") {
+    auto inst = instance_from(body_doc());
+    const RenameResult r = renamed(*inst, "sketch.bodies.tv", "screen");
+    const Json & d = r.doc;
+    CHECK(keys(d["sketch"]["bodies"]) ==
+          std::vector<std::string>{"screen", "tw"});
+    CHECK(d["sketch"]["elements"]["AC"]["to"] == "screen.c");
+    CHECK(d["sketch"]["bodies"]["screen"]["elements"]["cd"]["from"] ==
+          "screen.c");
+    CHECK(d["let"]["tip"] == "screen.c + vec(0, T)");
+    CHECK(d["let"]["turn"] == "angle(screen)");
+    CHECK(d["constraints"][1]["expr"] == "screen.c.y == screen.d.y");
+    CHECK(d["constraints"][1]["frame"] == "screen");
+    CHECK(d["constraints"][2]["expr"] == "local(A, screen).x >= screen.c.x");
+    CHECK(d["constraints"][3]["expr"] ==
+          "dist(screen.c, tw.c) >= origin(screen).x");
+    CHECK(r.rewritten == std::vector<std::string>{
+                             "let.tip", "let.turn", "sketch.elements.AC.to",
+                             "sketch.bodies.screen.elements.cd.from",
+                             "sketch.bodies.screen.elements.cd.to",
+                             "constraints[0].expr", "constraints[1].expr",
+                             "constraints[1].frame", "constraints[2].expr",
+                             "constraints[2].frame", "constraints[3].expr"});
+    CHECK(rename_in(inst->doc(), "sketch.bodies.tv", "screen") == d);
+    // tw, whose name tv does not begin, is untouched.
+    CHECK(d["sketch"]["bodies"]["tw"] == body_doc()["sketch"]["bodies"]["tw"]);
+
+    // The renamed document draws the same sketch, with the same rows.
+    const auto m0 = compile_ok(*inst);
+    const auto m1 = compile_ok(*instance_from(d));
+    CHECK(m1->sketch()[2].name == "screen.c");
+    std::vector<ExprRef> r0, r1;
+    for(const SketchInfo & e : m0->sketch()) r0.push_back(e.ref);
+    for(const SketchInfo & e : m1->sketch()) r1.push_back(e.ref);
+    const std::vector<GeoValue> v0 = Evaluator(*m0).values({}, {}, r0);
+    const std::vector<GeoValue> v1 = Evaluator(*m1).values({}, {}, r1);
+    for(std::size_t i = 0; i < v0.size(); ++i) CHECK(v1[i].data == v0[i].data);
+    CHECK(m1->groups().size() == m0->groups().size());
+}
+
+TEST_CASE("rename: an element of a body, wherever it is named") {
+    auto inst = instance_from(body_doc());
+    const RenameResult r = renamed(*inst, "sketch.bodies.tv.elements.c", "e");
+    const Json & d = r.doc;
+    CHECK(keys(d["sketch"]["bodies"]["tv"]["elements"]) ==
+          std::vector<std::string>{"e", "d", "cd"});
+    CHECK(d["sketch"]["elements"]["AC"]["to"] == "tv.e");
+    CHECK(d["sketch"]["bodies"]["tv"]["elements"]["cd"]["from"] == "tv.e");
+    CHECK(d["let"]["tip"] == "tv.e + vec(0, T)");
+    CHECK(d["let"]["turn"] == "angle(tv)");
+    CHECK(d["constraints"][1]["expr"] == "tv.e.y == tv.d.y");
+    CHECK(d["constraints"][3]["expr"] == "dist(tv.e, tw.c) >= origin(tv).x");
+    CHECK(r.rewritten ==
+          std::vector<std::string>{"let.tip", "sketch.elements.AC.to",
+                                   "sketch.bodies.tv.elements.cd.from",
+                                   "constraints[1].expr", "constraints[2].expr",
+                                   "constraints[3].expr"});
+    CHECK(rename_in(inst->doc(), "sketch.bodies.tv.elements.c", "e") == d);
+    compile_ok(*instance_from(d));
+}
+
+TEST_CASE("rename: what a body and its elements may be called") {
+    auto inst = instance_from(body_doc());
+    CHECK(refusal(*inst, "sketch.elements.A", "tv") ==
+          "name 'tv' is already a body (sketch.bodies.tv)");
+    CHECK(refusal(*inst, "params.T", "tw") ==
+          "name 'tw' is already a body (sketch.bodies.tw)");
+    CHECK(refusal(*inst, "sketch.bodies.tv", "A") ==
+          "name 'A' is already a sketch element (sketch.elements.A)");
+    CHECK(refusal(*inst, "sketch.bodies.tv", "tw") ==
+          "name 'tw' is already a body (sketch.bodies.tw)");
+    CHECK(refusal(*inst, "sketch.bodies.tv.elements.c", "x") ==
+          "an element of a body is not named x or y: tv.x is a coordinate");
+    CHECK(refusal(*inst, "sketch.bodies.tv.elements.c", "d") ==
+          "name 'd' is already an element of the body "
+          "(sketch.bodies.tv.elements.d)");
+    CHECK(refusal(*inst, "sketch.bodies.tv.elements.c", "a.b") ==
+          "'a.b' is not a valid name: use letters, digits and '_', not "
+          "starting with a digit");
+    CHECK(refusal(*inst, "sketch.bodies.tv.elements.z", "e") ==
+          "no entry 'sketch.bodies.tv.elements.z'");
+    CHECK(refusal(*inst, "sketch.bodies.tv.pose", "p") ==
+          "'sketch.bodies.tv.pose' has no name to rename");
+    // An element of another body may share a name: tw.d beside tv.d.
+    CHECK(renamed(*inst, "sketch.bodies.tw.elements.c", "d").ok());
+    // A slot holding a qualified name no longer stops a rename.
+    CHECK(renamed(*inst, "sketch.elements.A", "P")
+              .doc["constraints"][0]["expr"] == "coincident(P, tv.d)");
+}
+
+TEST_CASE("substitute_entry: every use of a name, by a name or an expression") {
+    auto inst = instance_from(body_doc());
+    auto substituted = [&](std::string_view entry, std::string_view text) {
+        RenameResult r = substitute_entry(*inst, entry, text);
+        INFO(r.error);
+        REQUIRE(r.ok());
+        return r;
+    };
+    // Merging tv.c into tv.d: every use moves, the entry stays.
+    const RenameResult m = substituted("sketch.bodies.tv.elements.c", "tv.d");
+    CHECK(m.doc["sketch"]["elements"]["AC"]["to"] == "tv.d");
+    CHECK(m.doc["constraints"][1]["expr"] == "tv.d.y == tv.d.y");
+    CHECK(m.doc["sketch"]["bodies"]["tv"]["elements"].contains("c"));
+    CHECK(m.rewritten ==
+          std::vector<std::string>{"let.tip", "sketch.elements.AC.to",
+                                   "sketch.bodies.tv.elements.cd.from",
+                                   "constraints[1].expr", "constraints[2].expr",
+                                   "constraints[3].expr"});
+
+    // An expression goes in parentheses where it is not one operand.
+    const Json t = substituted("params.T", "a + b").doc;
+    CHECK(t["let"]["tip"] == "tv.c + vec(0, (a + b))");
+    CHECK(substituted("params.T", " (a + b) ").doc["let"]["tip"] ==
+          "tv.c + vec(0, (a + b))");
+    CHECK(substituted("params.T", "(a) + (b)").doc["let"]["tip"] ==
+          "tv.c + vec(0, ((a) + (b)))");
+    CHECK(substituted("params.T", "-1").doc["let"]["tip"] ==
+          "tv.c + vec(0, (-1))");
+    for(const char * operand : {"5cm", "B.x", "max(a, b)", "w"})
+        CHECK(substituted("params.T", operand).doc["let"]["tip"] ==
+              std::format("tv.c + vec(0, {})", operand));
+    CHECK(substituted("sketch.elements.A", "vec(1, 2)")
+              .doc["constraints"][2]["expr"] ==
+          "local(vec(1, 2), tv).x >= tv.c.x");
+
+    auto refused = [&](std::string_view entry, std::string_view text) {
+        const RenameResult r = substitute_entry(*inst, entry, text);
+        CHECK(r.doc.is_null());
+        return r.error;
+    };
+    CHECK(refused("sketch.bodies.tv", "tw") ==
+          "'tv' is a body: substitute its elements");
+    CHECK(refused("params.T", "a <= b") == "'a <= b' is not an expression");
+    CHECK(refused("params.T", "a +") ==
+          "'a +' is not an expression: unexpected end of expression");
+    CHECK(refused("params.nope", "1") == "no entry 'params.nope'");
+    CHECK(refused("constraints[0]", "1") ==
+          "'constraints[0]' has no name to substitute");
+    Json swept = body_doc();
+    swept["sweeps"] = Json::parse(R"J({"tau": {"min": 0, "max": 1}})J");
+    swept["constraints"][0]["forall"] = "tau";
+    auto s = instance_from(swept);
+    CHECK(substitute_entry(*s, "sweeps.tau", "2 * u").error ==
+          "constraints[0].forall holds a name, not an expression");
+    CHECK(substitute_entry(*s, "sweeps.tau", "u")
+              .doc["constraints"][0]["forall"] == "u");
+    // A sweep's name inside an expression stays a name: "at((2 * u) = 0.5,
+    // ...)" would not compile.
+    Json at = body_doc();
+    at["sweeps"] = Json::parse(R"J({"tau": {"min": 0, "max": 1}})J");
+    at["let"]["y"] = "at(tau = 0.5, T + tau)";
+    at["constraints"].push_back(Json::parse(
+        R"J({"name": "most", "expr": "max_over(tau, T * tau) <= 1"})J"));
+    const std::string most =
+        std::format("constraints[{}].expr", at["constraints"].size() - 1);
+    auto a = instance_from(at);
+    CHECK(substitute_entry(*a, "sweeps.tau", "2 * u").error ==
+          "let.y, " + most +
+              " name 'tau' where only a sweep's name may stand, in at() or "
+              "max_over/min_over");
+    const RenameResult u = substitute_entry(*a, "sweeps.tau", "u");
+    CHECK(u.doc["let"]["y"] == "at(u = 0.5, T + u)");
+    CHECK(u.doc["constraints"].back()["expr"] == "max_over(u, T * u) <= 1");
+    Json broken = body_doc();
+    broken["let"]["bad"] = "T +";
+    CHECK(substitute_entry(*instance_from(broken), "params.T", "1").error ==
+          "the uses of 'T' cannot be found in expressions that do not "
+          "parse: let.bad");
+}
+
+TEST_CASE("find_name_uses: a body is named by its elements' names") {
+    const NameUses u = find_name_uses(body_doc(), "tv");
+    std::vector<std::string> found;
+    for(const NameUse & use : u.uses)
+        found.push_back(
+            std::format("{}:{}:{}", use.path, use.column, use.name));
+    CHECK(found == std::vector<std::string>{
+                       "let.tip:0:tv", "let.turn:6:tv",
+                       "sketch.elements.AC.to:0:tv",
+                       "sketch.bodies.tv.elements.cd.from:0:tv",
+                       "sketch.bodies.tv.elements.cd.to:0:tv",
+                       "constraints[0].expr:14:tv", "constraints[1].expr:0:tv",
+                       "constraints[1].expr:10:tv", "constraints[1].frame:0:tv",
+                       "constraints[2].expr:9:tv", "constraints[2].expr:18:tv",
+                       "constraints[2].frame:0:tv", "constraints[3].expr:5:tv",
+                       "constraints[3].expr:27:tv"});
+    const std::vector<std::string> both = {"tv", "tv.c"};
+    found.clear();
+    for(const NameUse & use : find_name_uses(body_doc(), both).uses)
+        if(use.path == "constraints[1].expr")
+            found.push_back(std::format("{}:{}", use.column, use.name));
+    // The exact name wins.
+    CHECK(found == std::vector<std::string>{"0:tv.c", "10:tv"});
 }
 
 TEST_CASE("find_name_uses: every use with its column, in document order") {

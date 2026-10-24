@@ -125,6 +125,9 @@ public:
     };
     // Why Solve, Polish and the Pareto study cannot start.
     std::optional<Blocker> blocker() const;
+    // The Solve button's tooltip: kSolveTip, or why a sketch file has
+    // nothing to optimise, which disables it.
+    std::string_view solve_tip() const;
     struct Progress {
         float fraction = 0.0f;
         std::string overlay;  // "12/64 runs", "running", "idle"

@@ -1,14 +1,18 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <format>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gs/app/app.hpp"
 #include "gs/app/format.hpp"
 #include "gs/app/panels.hpp"
+#include "gs/app/sketch_entries.hpp"
 
+#include "fake_tool.hpp"
 #include "helpers.hpp"
 
 namespace gs::test {
@@ -111,13 +115,23 @@ struct Rig {
     }
     Vec2d screen(Vec2d world) const { return canvas.view().to_screen(world); }
     // An open instance, its design fitted.
-    bool open() {
-        if(!app.open(tv_file()) || !doc.model()) return false;
+    bool open(const fs::path & file = tv_file()) {
+        if(!app.open(file) || !doc.model()) return false;
         app.sync();
         rest();
         return canvas.fit_request() == FitRequest::None;
     }
+    // Element `name`'s value in the document, a point's or a radius.
+    Json element(const std::string & name, const char * key = "value") const {
+        const Json * v =
+            doc.instance()->get("sketch.elements." + name + "." + key);
+        return v ? *v : Json();
+    }
 };
+
+fs::path sketch_file(const char * name) {
+    return fs::path(GS_TEST_DATA_DIR) / "../../docs/instances" / name;
+}
 
 const Vec2d kEmpty{5.0, 5.0};  // a corner of the canvas, far from any handle
 
@@ -624,6 +638,25 @@ TEST_CASE("canvas: what is hidden is neither picked nor fitted") {
                   "Fit all leaves out the hidden geometry entries");
 }
 
+TEST_CASE("canvas: Open fits a sketch's elements, as the design") {
+    // The TV hung from its wall: the wall from (0, 0) to (0, 2), the TV's
+    // screen out to x = 0.485; no geometry, display item or handle.
+    Rig r;
+    REQUIRE(r.app.open(fs::path(GS_TEST_DATA_DIR) /
+                       "../../docs/instances/sketch-body.json"));
+    r.rest();
+    const View2d & v = r.canvas.view();
+    CHECK_MESSAGE(near(v.scale, (700.0 - 80.0) / 2.0, 1e-9),
+                  "the wall's 2 m fill the height but for the margins");
+    CHECK(near(v.centre.y, 1.0, 1e-9));
+    r.sel.set({SelKey::Kind::Element, "N"});
+    r.canvas.fit_selection();
+    r.rest();
+    CHECK_MESSAGE((near(r.canvas.view().centre.x, 0.0, 1e-12) &&
+                   near(r.canvas.view().centre.y, 2.0, 1e-12)),
+                  "Fit selection takes a selected element");
+}
+
 TEST_CASE("canvas: Fit selection fits what is drawn of the selection") {
     Rig r;
     REQUIRE(r.open());
@@ -757,6 +790,556 @@ TEST_CASE("canvas: handles lag one update behind a drag, the hover does not") {
                   "the next update catches up; the dragged handle stays hot "
                   "with the pointer off the canvas");
     r.release();
+}
+
+TEST_CASE("canvas: Open fits the sketch's extent first") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    // box(-0.5, -0.5, 3.7, 2.9): 4.2 x 3.4 m, its height the tighter.
+    const View2d & v = r.canvas.view();
+    CHECK((near(v.scale, (700.0 - 80.0) / 3.4, 1e-9) &&
+           near(v.centre.x, 1.6, 1e-12) && near(v.centre.y, 1.2, 1e-12)));
+    r.canvas.fit_design();
+    r.rest();
+    CHECK_MESSAGE(!near(r.canvas.view().scale, (700.0 - 80.0) / 3.4, 1e-3),
+                  "G still fits the drawing itself");
+}
+
+TEST_CASE("canvas: a sketch point drags, one undo step at its release") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    const std::size_t steps = r.doc.undo_count();
+    const double px = 1.0 / r.canvas.view().scale;
+    r.to(r.screen({1.6, 0.9}));
+    CHECK(r.pick_at(r.pos) == SelKey(SelKey::Kind::Element, "C"));
+    r.press();
+    r.move(10.0, 0.0, 4);
+    CHECK_MESSAGE((r.canvas.dragging() && r.app.sketch().dragging() &&
+                   r.doc.undo_count() == steps &&
+                   r.element("C") == Json{1.6, 0.9} && !r.doc.dirty()),
+                  "nothing is written while the button is held");
+    CHECK_MESSAGE((r.canvas.selection_box() == std::nullopt),
+                  "a drag from an element draws no box");
+    r.release();
+    CHECK((!r.canvas.dragging() && r.doc.undo_count() == steps + 1 &&
+           r.doc.undo_label() == "move C"));
+    CHECK((near(r.element("C")[0].get<double>(), 1.6 + 40.0 * px, 1e-9) &&
+           near(r.element("C")[1].get<double>(), 0.9, 1e-9)));
+    CHECK_MESSAGE(r.sel.empty(), "a drag selects nothing");
+    REQUIRE(r.doc.undo());
+    CHECK(r.element("C") == Json{1.6, 0.9});
+
+    r.click(r.screen({1.6, 0.9}));
+    CHECK_MESSAGE((keys(r.sel) == std::vector<std::string>{"C"} &&
+                   r.doc.undo_count() == steps),
+                  "a click selects the element and moves nothing");
+    const std::optional<Hover> hv = r.canvas.hover(r.rest());
+    CHECK((hv && hv->title == "C (point)" &&
+           hv->lines.back() ==
+               "click to select, drag to move; the constraints hold"));
+}
+
+TEST_CASE("canvas: a dragged sketch element's tooltip follows the drag") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    // The tooltip's lines before the press on `at`, then after a drag of it.
+    auto drag = [&](Vec2d at, const std::string & name) {
+        r.to(r.screen(at));
+        REQUIRE(r.pick_at(r.pos) == SelKey(SelKey::Kind::Element, name));
+        const std::optional<Hover> before = r.canvas.hover(r.rest());
+        r.press();
+        r.move(12.0, -8.0, 4);
+        REQUIRE(r.app.sketch().dragging());
+        const std::optional<Hover> during = r.canvas.hover(r.app.scene(true));
+        REQUIRE((before && during));
+        return std::pair{before->lines, during->lines};
+    };
+    // What the drawing shows of `name` while the drag runs.
+    auto live = [&](std::string_view name) {
+        const Scene * s = r.app.sketch().scene();
+        REQUIRE(s);
+        const int j = find_element(*s->model, name);
+        REQUIRE(j >= 0);
+        return std::pair{element_value_text(*s, static_cast<std::size_t>(j)),
+                         s->sketch[static_cast<std::size_t>(j)]};
+    };
+    auto undo = [&] {
+        r.release();
+        REQUIRE(r.doc.undo());
+    };
+
+    const auto [point_before, point] = drag({1.6, 0.9}, "C");
+    CHECK_MESSAGE((point[0] == live("C").first && point[0] != point_before[0]),
+                  "a point's coordinates follow the pointer");
+    undo();
+
+    // axis runs from the fixed O to C: dragged by its middle, C follows.
+    const auto [segment_before, segment] = drag({0.8, 0.45}, "axis");
+    const Vec2d c = live("C").second.vec();
+    CHECK_MESSAGE(
+        (segment.size() >= 2 && segment[0] == live("axis").first &&
+         segment[1] == std::format("from (0, 0) to ({}, {})",
+                                   format_number(c.x), format_number(c.y)) &&
+         segment[1] != segment_before[1]),
+        "a segment's length and ends follow");
+    undo();
+
+    const auto [circle_before, circle] = drag({2.05, 0.9}, "table");
+    CHECK_MESSAGE(
+        (circle[0] == live("table").first && circle[0] != circle_before[0]),
+        "a circle's radius follows its rim");
+    undo();
+}
+
+TEST_CASE("canvas: Delete during a sketch drag releases the drag first") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    DeleteRequest & deletion = r.app.delete_request();
+    const double px = 1.0 / r.canvas.view().scale;
+    auto s_x = [&] { return r.element("S")[0].get<double>(); };
+    // S slides along the north wall (shelf_on_wall holds S.y).
+    auto drag_s = [&] {
+        r.to(r.screen({s_x(), 2.05}));
+        REQUIRE(r.pick_at(r.pos) == SelKey(SelKey::Kind::Element, "S"));
+        r.press();
+        r.move(10.0, 0.0, 4);
+        REQUIRE(r.app.sketch().dragging());
+    };
+
+    std::size_t steps = r.doc.undo_count();
+    double from = s_x();
+    r.sel.set({SelKey::Kind::Element, "axis"});
+    drag_s();
+    REQUIRE(r.app.actions().run("edit.delete"));
+    r.move(10.0, 0.0, 2);
+    r.release();
+    CHECK_MESSAGE((r.doc.undo_count() == steps + 2 &&
+                   r.doc.undo_label() == "delete axis" &&
+                   !r.doc.instance()->get("sketch.elements.axis") &&
+                   near(s_x(), from + 40.0 * px, 1e-9)),
+                  "a deletion with no question: the drag is a step before it, "
+                  "and the rest of the press moves nothing");
+    REQUIRE(r.doc.undo());
+    CHECK(r.doc.undo_label() == "move S");
+
+    steps = r.doc.undo_count();
+    from = s_x();
+    r.sel.set({SelKey::Kind::Element, "C"});
+    drag_s();
+    REQUIRE(r.app.actions().run("edit.delete"));
+    CHECK((!r.app.sketch().dragging() && r.doc.undo_count() == steps + 1 &&
+           r.doc.undo_label() == "move S" &&
+           near(s_x(), from + 40.0 * px, 1e-9)));
+    REQUIRE(deletion.take_open_request());
+    // The frame the dialog takes the button from the canvas: its release
+    // must not commit the drag again, which would drop the plan.
+    r.release();
+    REQUIRE_MESSAGE((deletion.valid() && r.doc.undo_count() == steps + 1),
+                    "the question stays open over the moved S");
+    deletion.confirm();
+    CHECK((r.doc.undo_count() == steps + 2 &&
+           !r.doc.instance()->get("sketch.elements.C") &&
+           near(s_x(), from + 40.0 * px, 1e-9)));
+}
+
+TEST_CASE("canvas: an edge drags both its ends, the constraints hold") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    const std::size_t steps = r.doc.undo_count();
+    const double px = 1.0 / r.canvas.view().scale;
+    // The shelf's lower edge, from S = (0.4, 2.05): shelf_on_wall holds S.y.
+    r.to(r.screen({1.0, 2.05}));
+    r.press();
+    r.move(10.0, -10.0, 3);
+    r.release();
+    CHECK((r.doc.undo_count() == steps + 1 &&
+           r.doc.undo_label() == "move shelf"));
+    CHECK((near(r.element("S")[0].get<double>(), 0.4 + 30.0 * px, 1e-9) &&
+           near(r.element("S")[1].get<double>(), 2.05, 1e-9)));
+
+    // The walls: E and N determined, O fixed.
+    r.to(r.screen({1.5, 0.0}));
+    REQUIRE(r.pick_at(r.pos) == SelKey(SelKey::Kind::Element, "walls"));
+    r.press();
+    r.move(10.0, -10.0, 3);
+    r.release();
+    CHECK_MESSAGE(r.doc.undo_count() == steps + 1,
+                  "an edge nothing can move: no step");
+}
+
+TEST_CASE("canvas: the hover offers no drag of what nothing can move") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    REQUIRE(r.doc.diagnosis_generation() == r.doc.sketch_generation());
+    auto last_line = [&](Vec2d world) {
+        r.to(r.screen(world));
+        const std::optional<Hover> hv = r.canvas.hover(r.rest());
+        return hv ? hv->lines.back() : std::string();
+    };
+    CHECK(last_line({3.2, 0.0}) ==
+          "determined by its constraints: click to select");
+    CHECK_MESSAGE(last_line({1.5, 0.0}) ==
+                      "determined by its constraints: click to select",
+                  "the walls: E and N determined, O fixed");
+    CHECK(last_line({0.0, 0.0}) == "fixed: click to select");
+    CHECK(last_line({1.6, 0.9}) ==
+          "click to select, drag to move; the constraints hold");
+
+    // Its east wall erased, E turns about O.
+    REQUIRE(r.doc.erase("constraints[0]"));
+    REQUIRE(r.doc.diagnosis_generation() == r.doc.sketch_generation());
+    CHECK(last_line({3.2, 0.0}) ==
+          "click to select, drag to move; the constraints hold");
+}
+
+TEST_CASE("canvas: a rim drags the radius, an arc's end its end") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    const double px = 1.0 / r.canvas.view().scale;
+    // The table: centre C (1.6, 0.9), radius 45 cm.
+    r.to(r.screen({1.6 + 0.45, 0.9}));
+    r.press();
+    r.move(10.0, 0.0, 2);
+    r.release();
+    CHECK(r.doc.undo_label() == "resize table");
+    CHECK((near(r.element("table", "radius").get<double>(), 0.45 + 20.0 * px,
+                1e-9) &&
+           r.element("C") == Json{1.6, 0.9}));
+
+    Rig a;
+    REQUIRE(a.open(sketch_file("sketch-arc.json")));
+    const double apx = 1.0 / a.canvas.view().scale;
+    // The bar: centre K (2.6, 0.9), radius 0.4, from 90 to 180 degrees.
+    const double c = std::sqrt(0.5);
+    a.to(a.screen({2.6 - 0.4 * c, 0.9 + 0.4 * c}));
+    REQUIRE(a.pick_at(a.pos) == SelKey(SelKey::Kind::Element, "bar"));
+    a.press();
+    a.move(-10.0 * c, -10.0 * c, 2);
+    a.release();
+    CHECK(a.doc.undo_label() == "resize bar");
+    CHECK((near(a.element("bar", "radius").get<double>(), 0.4 + 20.0 * apx,
+                1e-6) &&
+           a.element("bar", "start") == "90deg" &&
+           a.element("bar", "end") == "180deg"));
+    REQUIRE(a.doc.undo());
+    a.to(a.screen({2.2, 0.9}));
+    const std::optional<Pick> end = a.canvas.pick(a.pos, a.rest());
+    REQUIRE(end);
+    CHECK((end->key == SelKey(SelKey::Kind::Element, "bar") &&
+           end->part == Pick::Part::End));
+    a.press();
+    a.move(0.0, 10.0, 2);
+    a.release();
+    CHECK_MESSAGE((a.doc.undo_label() == "move bar" &&
+                   a.element("bar", "end") != Json("180deg")),
+                  "the end turns the arc");
+}
+
+TEST_CASE("canvas: a body's element selects the body and drags nothing") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-body.json")));
+    const std::size_t steps = r.doc.undo_count();
+    // tv.c: the pose (0.45, 1.2) at -90 degrees takes (-0.1, -0.03) to
+    // (0.42, 1.3).
+    r.to(r.screen({0.42, 1.3}));
+    REQUIRE(r.pick_at(r.pos) == SelKey(SelKey::Kind::Body, "tv"));
+    r.click(r.pos);
+    CHECK(r.sel.keys() == std::vector<SelKey>{{SelKey::Kind::Body, "tv"}});
+    r.press();
+    r.move(10.0, 10.0, 3);
+    CHECK_MESSAGE((!r.app.sketch().dragging() && r.canvas.selection_box()),
+                  "until a body drags whole, a drag from it draws a box");
+    r.release();
+    CHECK(r.doc.undo_count() == steps);
+
+    // O is fixed: a drag from it draws a box, as from a fixed handle.
+    r.to(r.screen({0.0, 0.0}));
+    REQUIRE(r.pick_at(r.pos) == SelKey(SelKey::Kind::Element, "O"));
+    r.press();
+    r.move(-10.0, 10.0, 3);
+    CHECK(r.canvas.selection_box());
+    r.release();
+
+    // A box around the whole TV, x in [0.42, 0.52], and E pinned to tv.d.
+    const Vec2d lo = r.screen({0.38, 1.85}), hi = r.screen({0.55, 0.55});
+    r.drag(lo, hi);
+    CHECK_MESSAGE(
+        (r.sel.keys() == std::vector<SelKey>{{SelKey::Kind::Element, "E"},
+                                             {SelKey::Kind::Body, "tv"}}),
+        "a box selects a body when it holds all of it");
+    r.drag(lo, r.screen({0.55, 1.0}));
+    CHECK_MESSAGE(
+        (r.sel.keys() == std::vector<SelKey>{{SelKey::Kind::Element, "E"}}),
+        "not when part of it is out");
+}
+
+TEST_CASE("canvas: a tool takes the left button, a right click is its Esc") {
+    Rig r;
+    REQUIRE(r.open());
+    FakeLog log;
+    provide_fake(r.app, log);
+    r.sel.set({SelKey::Kind::Design, "A"});
+    REQUIRE(r.app.tools().start("tool.segment"));
+    const double px = 1.0 / r.canvas.view().scale;
+    const Vec2d before = r.value("A");
+    r.to(r.screen(before));
+    REQUIRE(!log.events.empty());
+    CHECK(log.events.back().kind == ToolEvent::Kind::Move);
+    log.events.clear();
+    r.press();
+    r.move(10.0, 0.0, 2);
+    r.release();
+    using Kind = ToolEvent::Kind;
+    std::vector<Kind> kinds;
+    for(const ToolEvent & e : log.events) kinds.push_back(e.kind);
+    CHECK((kinds == std::vector<Kind>{Kind::Press, Kind::Move, Kind::Move,
+                                      Kind::Release}));
+    CHECK_MESSAGE((near(log.events[0].world.x, r.value("A").x, px) &&
+                   log.events[0].px_per_m == r.canvas.view().scale &&
+                   log.events[3].dragged),
+                  "at the pointer, in the world");
+    CHECK_MESSAGE((keys(r.sel) == std::vector<std::string>{"A"} &&
+                   same(r.value("A"), before) && !r.doc.in_gesture() &&
+                   r.doc.undo_count() == 0),
+                  "no selection, no handle drag, no box");
+    CHECK(r.app.tools().active()->in_progress());
+    CHECK_MESSAGE(!r.canvas.hover(r.rest()), "no tooltip over a tool");
+
+    const Vec2d centre = r.canvas.view().centre;
+    r.press(Button::Right);
+    r.move(10.0, 0.0, 2);
+    r.release();
+    CHECK_MESSAGE((!same(r.canvas.view().centre, centre) &&
+                   r.app.tools().active()->in_progress()),
+                  "a right drag pans");
+    r.click(r.pos, Mods::None, Button::Right);
+    CHECK_MESSAGE(
+        (r.app.tools().active() && !r.app.tools().active()->in_progress() &&
+         !r.app.take_context_menu()),
+        "a right click drops the shape, no menu");
+    r.click(r.pos, Mods::None, Button::Right);
+    CHECK_MESSAGE((!r.app.tools().active() &&
+                   keys(r.sel) == std::vector<std::string>{"A"}),
+                  "then quits the tool, the selection kept");
+    r.click(r.pos, Mods::None, Button::Right);
+    CHECK_MESSAGE(r.app.take_context_menu().has_value(),
+                  "without a tool, the menu");
+
+    // Plan 4.3: a right click runs the chain from the shape, where Esc
+    // first takes the text left in a field.
+    REQUIRE(r.app.tools().start("tool.segment"));
+    r.click({500.0, 350.0});
+    r.to({600.0, 350.0});
+    r.canvas.typed("5");
+    REQUIRE(r.app.tools().editing());
+    r.click(r.pos, Mods::None, Button::Right);
+    CHECK_MESSAGE((r.app.tools().active() && !r.app.tools().editing() &&
+                   !r.app.tools().active()->in_progress()),
+                  "a right click with a text left in a field drops the shape "
+                  "with it, in one click");
+}
+
+TEST_CASE("canvas: a lost pointer capture ends the press, with no release") {
+    Rig r;
+    REQUIRE(r.open());
+    FakeLog log;
+    provide_fake(r.app, log);
+    REQUIRE(r.app.tools().start("tool.segment"));
+    r.to({500.0, 350.0});
+    r.press();
+    r.canvas.cancel_pointer();
+    REQUIRE(!log.events.empty());
+    CHECK_MESSAGE((log.events.back().kind == ToolEvent::Kind::Cancel &&
+                   r.app.tools().active()->in_progress()),
+                  "the tool hears it; A, placed at the press, stays");
+    const std::size_t events = log.events.size();
+    r.release();
+    CHECK_MESSAGE(log.events.size() == events, "and no release follows");
+    r.app.tools().cancel();
+
+    r.rest();
+    r.to(r.screen(r.value("A")));
+    r.press();
+    r.move(4.0, 0.0, 6);
+    REQUIRE(r.doc.in_gesture());
+    r.canvas.cancel_pointer();
+    r.release();
+    CHECK_MESSAGE((!r.doc.in_gesture() && r.doc.undo_count() == 1 &&
+                   r.doc.undo_label() == "move A"),
+                  "a handle's drag ends as one step");
+
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    const Json s = r.element("S");
+    r.to(r.screen({s[0].get<double>(), 2.05}));
+    r.press();
+    r.move(10.0, 0.0, 4);
+    REQUIRE(r.app.sketch().dragging());
+    r.canvas.cancel_pointer();
+    r.release();
+    CHECK_MESSAGE((!r.app.sketch().dragging() && r.doc.undo_count() == 0 &&
+                   r.element("S") == s && r.app.selection().empty()),
+                  "a sketch drag is dropped: nothing written, nothing "
+                  "selected");
+}
+
+TEST_CASE("canvas: characters typed over it reach the tool") {
+    Rig r;
+    REQUIRE(r.open());
+    FakeLog log;
+    provide_fake(r.app, log);
+    r.canvas.typed("1");
+    REQUIRE(r.app.tools().start("tool.segment"));
+    r.click({500.0, 350.0});
+    r.to({600.0, 350.0});
+    r.frame({.pos = r.pos, .hovered = true, .typing = true});
+    r.canvas.typed("1");
+    CHECK_MESSAGE(!r.app.tools().editing(),
+                  "nothing while a text field has the keyboard");
+    r.rest();
+    r.canvas.typed("1");
+    CHECK((r.app.tools().editing() && r.app.tools().editing()->id == "length"));
+
+    // The view gave the field the keyboard, which it lost to a panel.
+    REQUIRE(r.app.tools().take_field_focus() == "length");
+    r.app.tools().field_focused("length");
+    r.canvas.typed(" ");
+    CHECK_MESSAGE(!r.app.tools().take_field_focus(),
+                  "Space's blank leaves the text left alone");
+    const Vec2d centre = r.canvas.view().centre;
+    log.events.clear();
+    r.press(Button::Left, Mods::None, 1, true);
+    r.move(10.0, 0.0, 2);
+    r.release();
+    CHECK_MESSAGE(
+        (!same(r.canvas.view().centre, centre) && log.events.empty() &&
+         r.app.tools().editing() && r.app.tools().editing()->text == "1"),
+        "Space + drag pans, the tool gets nothing");
+}
+
+TEST_CASE(
+    "canvas: a tool's events snap; Ctrl is freehand; the grid on "
+    "request") {
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    REQUIRE(r.app.tools().start("tool.segment"));
+    const Vec2d e = r.screen({3.2, 0.0});
+    const Vec2d near_e{e.x + 3.0, e.y - 2.0};
+    r.to(near_e);
+    CHECK_MESSAGE((r.app.hot() == SelKey{SelKey::Kind::Element, "E"}),
+                  "what the pointer snaps to is the hot key, outlined");
+    r.click(near_e);
+    r.click(r.screen({2.6, 1.4}));
+    CHECK((r.element("L1", "from") == "E" && r.element("L1", "to") == "P1"));
+
+    r.click(near_e, Mods::Ctrl);
+    r.click(r.screen({2.6, 1.6}));
+    CHECK_MESSAGE(r.element("L2", "from") == "P2",
+                  "with Ctrl, a new point where the pointer is");
+    const std::vector<double> p2 = r.element("P2").get<std::vector<double>>();
+    const double px = 1.0 / r.canvas.view().scale;
+    CHECK((near(p2[0], 3.2 + 3.0 * px, 1e-9) && near(p2[1], 2.0 * px, 1e-9)));
+
+    ToolOptions o = r.app.tools().options();
+    o.grid_snap = true;
+    r.app.tools().set_options(o);
+    r.click(r.screen({2.43, 1.17}));
+    r.click(r.screen({2.77, 1.71}));
+    const double major = grid_step(r.canvas.view().scale, 70.0);
+    const double step =
+        major / 5.0 * r.canvas.view().scale >= 10.0 ? major / 5.0 : major;
+    for(const char * p : {"P4", "P5"})
+        for(const double v : r.element(p).get<std::vector<double>>())
+            CHECK_MESSAGE(near(v / step, std::round(v / step), 1e-9),
+                          p << " on the grid, " << step << " m");
+}
+
+TEST_CASE("canvas: a constraint tool gets the pick under the pointer") {
+    {
+        Rig r;
+        REQUIRE(r.open());
+        FakeLog log;
+        provide_fake(r.app, log);
+        REQUIRE(r.app.tools().start("tool.segment"));
+        r.to(r.screen(r.value("A")));
+        REQUIRE(!log.events.empty());
+        CHECK_MESSAGE(!log.events.back().pick,
+                      "a tool that picks nothing gets no pick");
+    }
+    Rig r;
+    REQUIRE(r.open(sketch_file("sketch-basic.json")));
+    REQUIRE(r.app.tools().start("tool.horizontal"));
+    // A quarter of the way along axis, from O to C: off its middle.
+    const Vec2d on_axis = r.screen({0.4, 0.225});
+    r.to({on_axis.x + 2.0, on_axis.y + 2.0});
+    CHECK_MESSAGE((r.app.hot() == SelKey{SelKey::Kind::Element, "axis"}),
+                  "what the tool picks is the hot key, outlined");
+    CHECK(r.app.tools().hint() == "Horizontal: a click adds horizontal(axis)");
+    r.click({on_axis.x + 2.0, on_axis.y + 2.0}, Mods::Ctrl);
+    const Json * c = r.doc.instance()->get("constraints");
+    REQUIRE(c);
+    CHECK_MESSAGE(
+        (c->back()["name"] == "h1" && c->back()["expr"] == "horizontal(axis)"),
+        "Ctrl, the freehand modifier of the snaps, picks all the "
+        "same");
+    r.to(r.screen({3.6, 2.6}));
+    CHECK(!r.app.hot());
+}
+
+TEST_CASE(
+    "canvas: after a commit, a still pointer snaps again in the new scene") {
+    {
+        Rig r;
+        REQUIRE(r.open());
+        FakeLog log;
+        provide_fake(r.app, log);
+        REQUIRE(r.app.tools().start("tool.segment"));
+        r.rest();
+        CHECK_MESSAGE(log.events.empty(), "a tool started gets no move");
+        r.click({500.0, 350.0});
+        r.to({600.0, 350.0});
+        r.rest();
+        const std::size_t placed = log.events.size();
+        r.press();
+        r.release();
+        REQUIRE((log.commits == 1 && r.doc.undo_count() == 1));
+        using Kind = ToolEvent::Kind;
+        std::vector<Kind> kinds;
+        for(std::size_t i = placed; i < log.events.size(); ++i)
+            kinds.push_back(log.events[i].kind);
+        CHECK_MESSAGE((kinds == std::vector<Kind>{Kind::Press, Kind::Move,
+                                                  Kind::Release}),
+                      "one move at the release, in the scene of the commit");
+        r.rest();
+        r.rest();
+        CHECK_MESSAGE(log.events.size() == placed + 3, "then none");
+    }
+    {
+        // The second end on the table's rim keeps on(P2, table).
+        Rig r;
+        REQUIRE(r.open(sketch_file("sketch-basic.json")));
+        const std::size_t constraints =
+            r.doc.instance()->get("constraints")->size();
+        REQUIRE(r.app.tools().start("tool.segment"));
+        r.click(r.screen({2.6, 1.4}));
+        const Vec2d rim = r.screen({2.05, 0.9});
+        r.to(rim);
+        r.press();
+        r.release();
+        REQUIRE(r.element("L1", "to") == "P2");
+        REQUIRE(r.doc.instance()->get("constraints")->size() ==
+                constraints + 1);
+        r.rest();
+        CHECK_MESSAGE(r.app.tools().active()->preview().suggestions.empty(),
+                      "P2 is shared: the rim suggests nothing more");
+        CHECK((r.app.hot() == SelKey{SelKey::Kind::Element, "P2"}));
+        r.press();
+        r.release();
+        r.click(r.screen({2.6, 1.6}));
+        CHECK(r.element("L2", "from") == "P2");
+        CHECK_MESSAGE(
+            r.doc.instance()->get("constraints")->size() == constraints + 1,
+            "no on() for a point that is not created");
+    }
 }
 
 }  // namespace gs::test

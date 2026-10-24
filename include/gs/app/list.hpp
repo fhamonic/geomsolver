@@ -125,11 +125,15 @@ struct Filter {
 //   Scene for Violated, whose verdicts are read from the frame's scene;
 // - Content otherwise: an entry may have been added or erased without any
 //   path moving (an append, an erased object key), so it compares
-//   children() with its ids and adds and removes rows by RowId;
-// - Content, Model, Values, Sweep, Visibility, Solver or Scene: the rows it
-//   shows read row() again, and the footer. Scene: a value read from the
-//   frame's scene (App::scene_now()) follows a change of x or of a sweep
-//   only once the frame has computed that scene.
+//   children() with its ids and adds and removes rows by RowId. A row may
+//   also move to another parent with its id (a constraint whose edit takes
+//   it between Geometry and Design): it removes every row that left its
+//   parent, under every parent, before it adds any, or it finds the moved
+//   row still cached and then drops it with its old parent;
+// - Content, Model, Values, Sweep, Visibility, Solver, Scene or Sketch: the
+//   rows it shows read row() again, the footer and column_shown(). Scene: a
+//   value read from the frame's scene (App::scene_now()) follows a change of x
+//   or of a sweep only once the frame has computed that scene.
 // Selection and Hover change no row: the toolkit's selection and the hot
 // row's tint follow the App's. filters() is also read again on Selection:
 // a filter's tip may name the selection (Associated's does).
@@ -137,6 +141,12 @@ class ListPresenter {
 public:
     virtual ~ListPresenter() = default;
     virtual std::span<const Column> columns() const = 0;
+    // Whether column `i` is drawn now: a column only a sketch fills is
+    // hidden in a document without one, which then shows as it did before
+    // sketches. The columns, their kinds and their indices stay: toggle()
+    // and activate() take the same column in either. Read again with the
+    // rows. True by default.
+    virtual bool column_shown(std::size_t i) const;
     // The rows under `parent`, or the top-level rows, in order: only those
     // the filters let through.
     virtual std::vector<RowId> children(

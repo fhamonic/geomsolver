@@ -1,0 +1,16 @@
+{
+  "format": "geomsolver-instance/2",
+  "description": "A triangle with a fixed corner and a level base, for the GUI scripts of conflicting and redundant dimensions.",
+  "sketch": {
+    "extent": "box(0, 0, 3, 2.5)",
+    "elements": {
+      "T1": {"type": "point", "value": [0.5, 0.5], "fixed": true},
+      "T2": {"type": "point", "value": [2.5, 0.5]},
+      "T3": {"type": "point", "value": [1.5, 2]},
+      "S1": {"type": "segment", "from": "T1", "to": "T2"},
+      "S2": {"type": "segment", "from": "T2", "to": "T3"},
+      "S3": {"type": "segment", "from": "T3", "to": "T1"}
+    }
+  },
+  "constraints": [{"name": "level", "expr": "horizontal(S1)"}]
+}

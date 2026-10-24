@@ -12,6 +12,14 @@
 
 namespace gs::app {
 
+// An arc element's exact parameters in the world (SketchArc): the canvas
+// draws the arc from them, never from its polyline, which is tessellated
+// for the optimiser's chord error and not for the zoom.
+struct ArcValue {
+    Vec2d center;
+    double radius = 0.0, start = 0.0, end = 0.0;  // the angles in radians
+};
+
 // Everything the GUI draws or lists for the current (model, x, sweep
 // positions). Values are SI.
 struct Scene {
@@ -22,6 +30,12 @@ struct Scene {
     // model->constraints()[i].value at sweep_t, disabled constraints
     // included; an empty GeoValue where the constraint has no value.
     std::vector<GeoValue> constraints;
+    // Per element of model->sketch(): its world value at the q the scene
+    // was evaluated at, the drawn values for a design-mode model.
+    std::vector<GeoValue> sketch;
+    // Per element of model->sketch(): an arc's exact parameters, nullopt
+    // for any other type.
+    std::vector<std::optional<ArcValue>> arcs;
     // Per display item: values at evenly spaced positions of its sweep
     // (empty when the item has no ghosts or depends on no sweep).
     std::vector<std::vector<GeoValue>> ghosts;
@@ -39,8 +53,14 @@ struct Scene {
     std::string error;  // evaluation failure, empty when fine
 };
 
+// Evaluates the display items, lets, constraint values and sketch elements
+// of scene.model at x and the sweep positions st, with `ev`, an Evaluator of
+// that model (its q, for a sketch-mode model). Throws as Evaluator::values.
+void evaluate_values(Evaluator & ev, std::span<const double> x,
+                     std::span<const double> st, Scene & scene);
+
 // Re-evaluates only what an input change invalidates:
-//   display/lets  <- model, x, any sweep position
+//   display/lets/sketch  <- model, x, any sweep position
 //   ghosts/traces <- model, x, positions of the other sweeps
 //   verification  <- model, x, grid size
 // violation_now is re-read from the verification curves on sweep moves.

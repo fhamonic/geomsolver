@@ -100,12 +100,13 @@ private:
     bool dirty_ = false;
 };
 
-// Whether the instance schema lists the last key of `json_path` for its
-// parent: true for a listed property ("design.A.fixed", "criteria[3].bound"),
-// an array index, and any key of an object whose keys are free
-// ("solver.maxtime"); false for an unlisted key ("design.A.mx") and a new
-// entry of a name-keyed map ("params.x"). Instance::set creates any missing
-// key, so a caller can warn before a misspelt path adds one.
+// Whether the key table (gs/engine/keys.hpp) lists the last key of
+// `json_path` for its parent: true for a listed key ("design.A.fixed",
+// "criteria[3].bound", "solver.maxtime"), an array index, and any key below
+// an object the table does not describe; false for an unlisted key
+// ("design.A.mx", "solver.maxtim") and a new entry of a name-keyed map
+// ("params.x"). Instance::set creates any missing key, so a caller can warn
+// before a misspelt path adds one.
 bool schema_lists_key(std::string_view json_path);
 
 // The paths of the keys of `doc` that need "geomsolver-instance/2"

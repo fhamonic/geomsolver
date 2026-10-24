@@ -1,0 +1,28 @@
+# Draws a chain of segments with the Segment tool on the sketch example:
+# from E, snapped and shared, to a new point P1 level with it within 2
+# degrees (the H suggestion, kept); from P1, snapped, a segment whose length
+# 0.5 is typed over the canvas and applied with Enter, its end P2 placed by
+# a click; from P2, snapped, to P3; a fourth one started, then dropped by
+# Esc. A second Esc quits the tool, and an undo takes back the third
+# segment.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.segment
+wait 2
+click L 837 532
+click L 515 523
+click L 515 532
+wait 2
+text "0.5"
+wait 2
+key Enter
+wait 2
+click L 482 452
+click L 484 458
+click L 740 307
+click L 788 371
+key Escape
+key Escape
+wait 2
+action edit.undo
+wait 2

@@ -37,28 +37,36 @@ std::string geometry_text(const Json & entry);
 // (2.700, 2.100)", "(0.3100, 0.0200)" for a Vec.
 std::string shape_text(const GeoValue & value);
 
-// The Elements panel, in three groups: the design points; the geometry, the
-// instance's and its included files' (read-only); and the derived elements,
-// the lets of type Shape, with those of type Vec when the vector filter is
-// on. Each row has its eye, its type, its name, its value and its state.
+// The Elements panel, in four groups: the sketch, its world's elements in
+// document order, then its bodies, each over its members; the design
+// points; the geometry, the instance's and its included files'
+// (read-only); and the derived elements, the lets of type Shape, with those
+// of type Vec when the vector filter is on. Each row has its eye, its type,
+// its name, its value and its state; a sketch element's also its helper
+// flag. A sketch's values are a drag's live ones while it runs, and its
+// states come from the diagnosis (element_state()).
 class ElementsPresenter final : public ListPresenter {
 public:
     explicit ElementsPresenter(App & app) : app_(app) {}
 
     std::span<const Column> columns() const override;
+    // Helper only with a sketch.
+    bool column_shown(std::size_t i) const override;
     // The headers of the groups that have rows; under each, its rows.
     std::vector<RowId> children(const std::optional<RowId> & parent) override;
     std::optional<ListRow> row(const RowId & id) override;
     std::vector<std::string> toolbar() const override;
     Changes resets_on() const override;
     // The eye, column 0: a name's eye, kept in the settings (set_eyes()).
+    // A sketch element's Helper, column 5: one undo step.
     bool toggle(const RowId & id, std::size_t column) override;
     // A derived let's row: OpenFormula, but Rename on the name, as in
     // Quantities, so that one let does the same in both lists.
     Intent activate(const RowId & id,
                     std::optional<std::size_t> column) override;
     // Show (all, variables: the released points, constants: the fixed
-    // points and the geometry), Included and Vectors.
+    // points, the geometry and the sketch, constant for the optimiser),
+    // Included, Vectors, and with a sketch Sketch only.
     std::vector<Filter> filters() const override;
 
 protected:
@@ -75,6 +83,7 @@ private:
         std::string file;                  // an included geometry entry's
         const GeoValue * value = nullptr;  // a let's, in the scene
         std::string kind;                  // a let's: "polygon", "vector"
+        std::optional<RowId> body;         // a body's element's row
     };
     // The rows of `group` the filters let through. Built again once the
     // document, the frame's scene or a filter changed: row() reads them for
@@ -82,14 +91,19 @@ private:
     // in its length.
     std::span<const Shown> shown(std::string_view group);
     std::vector<Shown> build_shown(std::string_view group);
+    // The elements of the body at `body` ("sketch.bodies.tv"), under `row`.
+    std::vector<Shown> build_members(const Shown & body);
     std::optional<Shown> find(const RowId & id);
+    std::optional<ListRow> sketch_row(const RowId & id, const Shown & s);
 
     App & app_;
     int state_ = 0;  // an index of the Show filter's choices
     bool included_ = true;
     bool vectors_ = false;
-    std::array<std::vector<Shown>, 3> shown_;     // one per group
-    std::map<RowId, const Shown *> shown_index_;  // into shown_
+    bool sketch_only_ = false;
+    std::array<std::vector<Shown>, 4> shown_;      // one per group
+    std::map<RowId, std::vector<Shown>> members_;  // per body's row
+    std::map<RowId, const Shown *> shown_index_;   // into shown_, members_
     // The compile and scene generations shown_ was built at; none once a
     // filter changed.
     std::optional<std::array<std::uint64_t, 2>> shown_at_;

@@ -1,0 +1,38 @@
+# A rectangle drawn and constrained from nothing, on an empty sketch. The
+# Segment tool draws four segments by snapping each to the corner before:
+# the first, level, with its length 0.6 typed (d1), each later one level or
+# plumb with its corner, so that the H and V suggestions are kept (h1, v1,
+# h2, v2), the last ending on the first corner. Two Esc quit the tool and
+# clear the selection. Fix, tool first, locks the first corner P1, then
+# Equal on the selection of the first two sides makes a square (eq1):
+# nothing is left free.
+open tests/data/sketch-blank.json
+wait 16
+action tool.segment
+wait 2
+click L 415 503
+move 743 503 3
+wait 2
+text "0.6"
+wait 2
+key Enter
+wait 2
+click L 743 503
+click L 743 503
+click L 743 229
+click L 743 229
+click L 415 229
+click L 415 229
+click L 415 503
+key Escape
+key Escape
+wait 2
+action tool.fix
+wait 2
+click L 415 503
+wait 2
+key Escape
+wait 2
+select element L1 element L2
+action tool.equal
+wait 4

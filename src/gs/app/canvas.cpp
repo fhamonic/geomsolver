@@ -4,10 +4,15 @@
 #include <charconv>
 #include <cmath>
 #include <format>
+#include <numbers>
 #include <ranges>
+#include <stdexcept>
 
 #include "gs/app/app.hpp"
 #include "gs/app/format.hpp"
+#include "gs/app/picker.hpp"
+#include "gs/app/sketch_entries.hpp"
+#include "gs/app/snapper.hpp"
 #include "gs/app/visibility.hpp"
 #include "gs/engine/geometry.hpp"
 
@@ -62,6 +67,87 @@ bool on_edge(const GeoValue & g, Vec2d world, double tol_world) {
         if(dist_point_segment(world, v[i], v[(i + 1) % n]) <= tol_world)
             return true;
     return false;
+}
+
+// The edge of a polyline, polygon or box within tol_world of `world`, the
+// nearest; -1 for none.
+int edge_at(const GeoValue & g, Vec2d world, double tol_world) {
+    const std::vector<Vec2d> v = vertices(g);
+    const std::size_t n = v.size();
+    const std::size_t edges =
+        g.kind == ShapeKind::Polygon && n >= 3 ? n : (n > 0 ? n - 1 : 0);
+    int best = -1;
+    double bd = tol_world;
+    for(std::size_t i = 0; i < edges; ++i)
+        if(const double d = dist_point_segment(world, v[i], v[(i + 1) % n]);
+           d <= bd) {
+            bd = d;
+            best = static_cast<int>(i);
+        }
+    return best;
+}
+
+Vec2d arc_point(const ArcValue & a, double angle) {
+    return {a.center.x + a.radius * std::cos(angle),
+            a.center.y + a.radius * std::sin(angle)};
+}
+
+// Within tol_world of the exact arc, between its ends.
+bool on_arc(const ArcValue & a, Vec2d world, double tol_world) {
+    if(std::fabs(dist(world, a.center) - a.radius) > tol_world) return false;
+    constexpr double turn = 2.0 * std::numbers::pi;
+    const double span =
+        std::fmod(std::fmod(a.end - a.start, turn) + turn, turn);
+    const double at =
+        std::atan2(world.y - a.center.y, world.x - a.center.x) - a.start;
+    const double from_start = std::fmod(std::fmod(at, turn) + turn, turn);
+    return from_start <= (span == 0.0 ? turn : span) ||
+           dist(world, arc_point(a, a.start)) <= tol_world ||
+           dist(world, arc_point(a, a.end)) <= tol_world;
+}
+
+bool have_elements(const Scene & scene) {
+    return scene.model && scene.sketch.size() == scene.model->sketch().size() &&
+           scene.arcs.size() == scene.sketch.size();
+}
+
+std::string point_text(Vec2d p) {
+    return std::format("({}, {})", format_number(p.x), format_number(p.y));
+}
+
+// Where the part of element `i` under the pointer lies, for its tooltip.
+// The Elements panel's summary says how big a segment, a box or a polyline
+// is, which a drag that translates it leaves unchanged: with the summary
+// alone, the tooltip of a segment dragged by its middle shows nothing move.
+// None for a point or a circle, whose summary places them.
+std::optional<std::string> element_place(const Scene & scene, std::size_t i,
+                                         const Pick & p) {
+    const SketchInfo & e = scene.model->sketch()[i];
+    if(e.type == SketchType::Arc && scene.arcs[i]) {
+        const ArcValue & a = *scene.arcs[i];
+        if(p.part == Pick::Part::Start)
+            return "start at " + point_text(arc_point(a, a.start));
+        if(p.part == Pick::Part::End)
+            return "end at " + point_text(arc_point(a, a.end));
+        return "centre " + point_text(a.center);
+    }
+    const GeoValue & g = scene.sketch[i];
+    if(g.type != ValueType::Shape) return std::nullopt;
+    const int n = g.vertex_count();
+    if(e.type == SketchType::Segment && n == 2)
+        return std::format("from {} to {}", point_text(g.vertex(0)),
+                           point_text(g.vertex(1)));
+    if(e.type == SketchType::Box && n == 4)
+        return std::format("corners {} and {}", point_text(g.vertex(0)),
+                           point_text(g.vertex(2)));
+    const int edges = e.type == SketchType::Polygon    ? n
+                      : e.type == SketchType::Polyline ? n - 1
+                                                       : 0;
+    if(p.part == Pick::Part::Edge && p.edge >= 0 && p.edge < edges)
+        return std::format("edge {} from {} to {}", p.edge,
+                           point_text(g.vertex(p.edge)),
+                           point_text(g.vertex((p.edge + 1) % n)));
+    return std::nullopt;
 }
 
 // What add_shape() of canvas_display.cpp fills: a circle, or a polygon of 3
@@ -248,6 +334,9 @@ CanvasShown canvas_shown(const Scene & scene, const Model * geometry,
     for(const DesignVar & dv : model->design())
         out.design.push_back(dv.type == VarType::Point &&
                              !eyes.hidden(dv.name));
+    for(const SketchInfo & e : model->sketch())
+        out.sketch.push_back(!eyes.hidden(e.name) &&
+                             (e.frame.empty() || !eyes.hidden(e.frame)));
     return out;
 }
 
@@ -271,6 +360,11 @@ void CanvasController::fit_design() {
 
 void CanvasController::fit_selection() {
     fit_ = FitRequest::Selection;
+    changed_.emit(Change::View);
+}
+
+void CanvasController::fit_extent() {
+    fit_ = FitRequest::Extent;
     changed_.emit(Change::View);
 }
 
@@ -302,6 +396,8 @@ void CanvasController::update(const PointerInput & in, const Scene & scene) {
 
     pointer_ = in.pos;
     hovered_ = in.hovered;
+    typing_ = in.typing;
+    mods_ = in.mods;
     world_ = view_.to_world(in.pos);
     px_ = 1.0 / view_.scale;
     if(in.hovered && in.wheel != 0.0) {
@@ -313,23 +409,35 @@ void CanvasController::update(const PointerInput & in, const Scene & scene) {
        dist(in.pos, press_->pos) >= 6.0) {
         press_->dragged = true;
         if(press_->button == Button::Right) panning_ = true;
-        if(press_->button == Button::Left && !panning_ && !press_->grabbed)
+        if(press_->button == Button::Left && !panning_ && !press_->grabbed &&
+           !press_->tool)
             boxing_ = true;
+        if(press_->grab) begin_sketch_drag(scene);
     }
     // An undo, a redo or a deletion while the button is held closes the
     // gesture and recompiles, after which drag_var_ may name another
     // variable: the drag ends with it, or each later move would be an undo
-    // step of its own, clearing the redo.
+    // step of its own, clearing the redo. Undo, Redo and Delete also end a
+    // sketch drag (App's actions), whose release must then apply nothing.
     if(drag_var_ >= 0 && !doc_.in_gesture()) drag_var_ = -1;
+    if(sketch_drag_ && !app_.sketch().dragging()) sketch_drag_ = false;
+    const bool moved = in.delta.x != 0.0 || in.delta.y != 0.0;
+    if(!app_.tools().active()) tool_model_.reset();
+    const bool rescene = tool_model_ && tool_model_ != scene.model;
+    // The tool sees the pointer before the release: a press, a move and a
+    // release in one update (a script's click) reach it in that order.
+    if(app_.tools().active() && (moved || rescene) && !panning_ &&
+       (hovered_ || (press_ && press_->tool)))
+        to_tool(ToolEvent::Kind::Move, scene);
     if(!in.held) release(in.mods, scene);
     // Nothing moves before the press becomes a drag: a click that wobbles
     // by a pixel selects without moving the point (an undo step).
-    const bool moved = in.delta.x != 0.0 || in.delta.y != 0.0;
     if(drag_var_ >= 0 && press_->dragged && moved) {
         const double target[2] = {world_.x + drag_offset_.x,
                                   world_.y + drag_offset_.y};
         doc_.set_var_value(drag_var_, target);
     }
+    if(sketch_drag_ && moved) move_sketch_drag();
     if(panning_ && moved) {
         view_.pan_pixels(in.delta.x, in.delta.y);
         changed_.emit(Change::View);
@@ -338,10 +446,15 @@ void CanvasController::update(const PointerInput & in, const Scene & scene) {
     hover_.reset();
     if(drag_var_ >= 0)
         hover_ = pick_handle(drag_var_);
+    else if(sketch_drag_ && press_)
+        hover_ = press_->grab;
     else if(hovered_ && !panning_ && !boxing_)
         hover_ = pick(pointer_, scene);
+    if(!app_.tools().active() || !hovered_) snapped_.reset();
     app_.set_hot(HotSource::Canvas,
-                 hover_ ? std::optional(hover_->key) : std::nullopt);
+                 app_.tools().active()
+                     ? snapped_
+                     : (hover_ ? std::optional(hover_->key) : std::nullopt));
 }
 
 void CanvasController::apply_fit(const Scene & scene) {
@@ -361,9 +474,25 @@ void CanvasController::apply_fit(const Scene & scene) {
                    wanted(SelKey{Kind::Let, scene.model->lets()[i].name}))
                     add_to_box(box, scene.lets[i]);
     };
+    // A sketch is drawn as the design is: its elements are fitted with it.
+    auto add_elements = [&](auto && wanted) {
+        if(!scene.model || scene.sketch.size() != scene.model->sketch().size())
+            return;
+        for(std::size_t i = 0; i < scene.sketch.size(); ++i)
+            if(shown.sketch[i] &&
+               wanted(SelKey{Kind::Element, scene.model->sketch()[i].name}))
+                add_to_box(box, scene.sketch[i]);
+    };
     auto any = [](const SelKey &) { return true; };
+    if(fit_ == FitRequest::Extent) {
+        if(const std::optional<GeoValue> & extent = geom_model->sketch_extent())
+            add_to_box(box, *extent);
+        else
+            fit_ = FitRequest::Design;
+    }
     if(fit_ == FitRequest::Design) {
         add_drawn(any);
+        add_elements(any);
         if(display)
             for(std::size_t i = 0; i < scene.display.size(); ++i) {
                 if(!shown.display[i]) continue;
@@ -378,6 +507,7 @@ void CanvasController::apply_fit(const Scene & scene) {
     if(fit_ == FitRequest::Selection) {
         auto selected = [&](const SelKey & k) { return sel_.contains(k); };
         add_drawn(selected);
+        add_elements(selected);
         for(const DesignHandle & h : handles_)
             if(selected({Kind::Design, doc_.model()->design()[uz(h.var)].name}))
                 box.add(h.p);
@@ -391,6 +521,7 @@ void CanvasController::apply_fit(const Scene & scene) {
             if(shown.geometry[i])
                 add_to_box(box, geom_model->geometry()[i].value);
         add_drawn(any);
+        add_elements(any);
     }
     // One point has no extent to fit: centre it at the current scale.
     if(!box.empty() && box.x1 - box.x0 < 1e-9 && box.y1 - box.y0 < 1e-9)
@@ -402,15 +533,35 @@ void CanvasController::apply_fit(const Scene & scene) {
 }
 
 void CanvasController::press(const PointerInput & in, const Scene & scene) {
-    press_ = Press{.button = *in.pressed, .pos = pointer_, .clicks = in.clicks};
+    press_ = Press{.button = *in.pressed,
+                   .pos = pointer_,
+                   .clicks = in.clicks,
+                   .world = world_};
     if(press_->button == Button::Middle ||
        (press_->button == Button::Left && in.space_held && !in.typing)) {
         panning_ = true;
         return;
     }
-    if(const std::optional<Pick> p = pick(pointer_, scene))
-        press_->pick = p->key;
+    if(press_->button == Button::Left && app_.tools().active()) {
+        press_->tool = true;
+        to_tool(ToolEvent::Kind::Press, scene);
+        return;
+    }
+    const std::optional<Pick> p = pick(pointer_, scene);
+    if(p) press_->pick = p->key;
     if(press_->button != Button::Left) return;
+    // A world element that may move; a fixed point boxes, as a fixed
+    // handle does, and a body's element drags nothing until its body
+    // drags whole (plan step 12).
+    if(p && p->source == Pick::Source::Element &&
+       p->key.kind == Kind::Element) {
+        const SketchInfo & si = scene.model->sketch()[uz(p->index)];
+        if(!(si.type == SketchType::Point && si.fixed)) {
+            press_->grabbed = true;
+            press_->grab = p;
+        }
+        return;
+    }
     const int h = handle_at(handles_, view_, pointer_, false);
     const auto handle = std::ranges::find(handles_, h, &DesignHandle::var);
     if(handle == handles_.end() || handle->fixed) return;
@@ -423,6 +574,15 @@ void CanvasController::press(const PointerInput & in, const Scene & scene) {
 }
 
 void CanvasController::release(Mods mods, const Scene & scene) {
+    if(press_ && press_->tool) {
+        to_tool(ToolEvent::Kind::Release, scene);
+        press_.reset();
+        return;
+    }
+    if(sketch_drag_) {
+        app_.sketch().end();
+        sketch_drag_ = false;
+    }
     if(press_ && !panning_) {
         const bool toggle = has(mods, Mods::Shift) || has(mods, Mods::Ctrl);
         if(boxing_) {
@@ -446,7 +606,10 @@ void CanvasController::release(Mods mods, const Scene & scene) {
                 sel_.clear();
             }
         } else if(press_->button == Button::Right && !press_->dragged) {
-            app_.context_click(press_->pick, pointer_);
+            if(app_.tools().active())
+                app_.tools().right_click();
+            else
+                app_.context_click(press_->pick, pointer_);
         }
     }
     if(drag_var_ >= 0) doc_.end_gesture();
@@ -454,6 +617,120 @@ void CanvasController::release(Mods mods, const Scene & scene) {
     panning_ = false;
     boxing_ = false;
     press_.reset();
+}
+
+void CanvasController::typed(std::string_view text) {
+    if(!typing_ && app_.tools().active()) app_.tools().typed(text);
+}
+
+void CanvasController::cancel_pointer() {
+    if(press_ && press_->tool)
+        app_.tools().event({.kind = ToolEvent::Kind::Cancel,
+                            .world = world_,
+                            .px_per_m = view_.scale,
+                            .mods = mods_,
+                            .snap = {.world = world_}});
+    if(sketch_drag_) app_.sketch().cancel();
+    sketch_drag_ = false;
+    if(drag_var_ >= 0) doc_.end_gesture();
+    drag_var_ = -1;
+    panning_ = false;
+    boxing_ = false;
+    press_.reset();
+}
+
+void CanvasController::to_tool(ToolEvent::Kind kind, const Scene & scene) {
+    ToolEvent e{.kind = kind,
+                .world = world_,
+                .px_per_m = view_.scale,
+                .mods = mods_,
+                .snap = {.world = world_}};
+    if(press_) {
+        e.clicks = press_->clicks;
+        e.dragged = press_->dragged;
+    }
+    if(const Tool * tool = app_.tools().active();
+       tool && !has(mods_, Mods::Ctrl))
+        e.snap = Snapper(scene, geometry_model(scene, doc_), shown(scene))
+                     .snap(world_, view_.scale, tool->snap_filter(),
+                           app_.tools().options().grid_snap);
+    if(const Tool * tool = app_.tools().active())
+        if(const PickFilter f = tool->pick_filter(); !f.empty())
+            e.pick = Picker(scene, shown(scene)).pick(world_, view_.scale, f);
+    snapped_.reset();
+    if(e.pick)
+        snapped_ = SelKey{e.pick->key.kind, e.pick->key.name};
+    else if(e.snap.target)
+        snapped_ = SelKey{e.snap.target->kind, e.snap.target->name};
+    tool_model_ = scene.model;
+    app_.tools().event(e);
+}
+
+void CanvasController::begin_sketch_drag(const Scene & scene) {
+    const Pick & grab = *press_->grab;
+    const Model * m = doc_.sketch_model().get();
+    if(!m || doc_.sketch_stale() || !scene.model) return;
+    const std::string & name = grab.key.name;
+    const int i = find_element(*m, name);
+    if(i < 0) return;
+    const SketchInfo & si = m->sketch()[uz(i)];
+    sketch::Gesture g;
+    std::string label = "move " + name;
+    try {
+        switch(grab.part) {
+            case Pick::Part::Whole:
+                if(si.type != SketchType::Point) return;
+                g = sketch::drag_point(*m, i);
+                break;
+            case Pick::Part::Edge:
+                if(si.type == SketchType::Circle ||
+                   si.type == SketchType::Arc) {
+                    // The centre where the frame draws it: the press's
+                    // scene may be an edit older.
+                    const int j = find_element(*scene.model, name);
+                    if(j < 0 || uz(j) >= scene.sketch.size()) return;
+                    const GeoValue & v = scene.sketch[uz(j)];
+                    if(si.type == SketchType::Circle) {
+                        if(v.type != ValueType::Shape ||
+                           v.kind != ShapeKind::Circle)
+                            return;
+                        rim_centre_ = v.circle_center();
+                        g = sketch::drag_circle_edge(*m, i);
+                    } else {
+                        if(!scene.arcs[uz(j)]) return;
+                        rim_centre_ = scene.arcs[uz(j)]->center;
+                        g = sketch::drag_arc_edge(*m, i);
+                    }
+                    label = "resize " + name;
+                } else {
+                    g = sketch::drag_edge(*m, i, grab.edge);
+                }
+                break;
+            case Pick::Part::Start:
+            case Pick::Part::End:
+                g = sketch::drag_arc_end(*m, i, grab.part == Pick::Part::End);
+                break;
+        }
+    } catch(const std::invalid_argument &) {
+        return;
+    }
+    sketch_drag_ = app_.sketch().begin(g, std::move(label));
+    if(sketch_drag_) move_sketch_drag();
+}
+
+void CanvasController::move_sketch_drag() {
+    const std::span<const Vec2d> start = app_.sketch().start();
+    const Vec2d d{world_.x - press_->world.x, world_.y - press_->world.y};
+    std::vector<Vec2d> targets;
+    const bool rim =
+        press_->grab->part == Pick::Part::Edge && start.size() == 1;
+    if(rim)
+        targets.push_back({start[0].x + dist(world_, rim_centre_) -
+                               dist(press_->world, rim_centre_),
+                           0.0});
+    else
+        for(const Vec2d & s : start) targets.push_back({s.x + d.x, s.y + d.y});
+    app_.sketch().move(targets);
 }
 
 int CanvasController::hot_handle() const {
@@ -487,14 +764,80 @@ std::optional<Pick> CanvasController::pick(Vec2d screen,
         return Pick{c.source, c.index,
                     candidate_key(c, scene, geometry, shown)};
     };
-    for(const Candidate & c : all | std::views::reverse)
-        if(c.value->type == ValueType::Vec &&
-           dist(c.value->vec(), world) <= 7.0 * px)
-            return found(c);
-    for(const Candidate & c : all | std::views::reverse)
-        if(on_edge(*c.value, world, 4.0 * px)) return found(c);
+    // The sketch is drawn over the geometry, under the lets and display
+    // items.
+    auto geometry_first = [](const Candidate & c) {
+        return c.source == Pick::Source::Geometry;
+    };
+    auto pass = [&](bool points) -> std::optional<Pick> {
+        auto hit = [&](const Candidate & c) {
+            return points ? c.value->type == ValueType::Vec &&
+                                dist(c.value->vec(), world) <= 7.0 * px
+                          : on_edge(*c.value, world, 4.0 * px);
+        };
+        for(const Candidate & c : all | std::views::reverse)
+            if(!geometry_first(c) && hit(c)) return found(c);
+        if(std::optional<Pick> e = pick_element(world, scene, shown, points))
+            return e;
+        for(const Candidate & c : all | std::views::reverse)
+            if(geometry_first(c) && hit(c)) return found(c);
+        return std::nullopt;
+    };
+    if(std::optional<Pick> p = pass(true)) return p;
+    if(std::optional<Pick> p = pass(false)) return p;
     for(const Candidate & c : all | std::views::reverse)
         if(c.filled && inside(*c.value, world)) return found(c);
+    return std::nullopt;
+}
+
+std::optional<Pick> CanvasController::pick_element(Vec2d world,
+                                                   const Scene & scene,
+                                                   const CanvasShown & shown,
+                                                   bool points) const {
+    if(!have_elements(scene) || shown.sketch.size() != scene.sketch.size())
+        return std::nullopt;
+    const Model & m = *scene.model;
+    const double px = 1.0 / view_.scale;
+    auto found = [&](std::size_t i, Pick::Part part, int edge) {
+        const SketchInfo & si = m.sketch()[i];
+        const SelKey key = si.frame.empty() ? SelKey{Kind::Element, si.name}
+                                            : SelKey{Kind::Body, si.frame};
+        return Pick{Pick::Source::Element, static_cast<int>(i), key, part,
+                    edge};
+    };
+    // Points over the shapes, as add_elements() draws them; the last drawn
+    // on top.
+    for(std::size_t i = scene.sketch.size(); i-- > 0;) {
+        if(!shown.sketch[i]) continue;
+        const SketchInfo & si = m.sketch()[i];
+        const GeoValue & g = scene.sketch[i];
+        if(points) {
+            if(si.type == SketchType::Point && g.type == ValueType::Vec &&
+               dist(g.vec(), world) <= 7.0 * px)
+                return found(i, Pick::Part::Whole, -1);
+            if(si.type == SketchType::Arc && scene.arcs[i]) {
+                const ArcValue & a = *scene.arcs[i];
+                if(dist(arc_point(a, a.end), world) <= 7.0 * px)
+                    return found(i, Pick::Part::End, -1);
+                if(dist(arc_point(a, a.start), world) <= 7.0 * px)
+                    return found(i, Pick::Part::Start, -1);
+            }
+            continue;
+        }
+        if(si.type == SketchType::Point || g.type != ValueType::Shape) continue;
+        if(si.type == SketchType::Arc) {
+            if(scene.arcs[i] && on_arc(*scene.arcs[i], world, 4.0 * px))
+                return found(i, Pick::Part::Edge, 0);
+            continue;
+        }
+        if(g.kind == ShapeKind::Circle) {
+            if(on_edge(g, world, 4.0 * px))
+                return found(i, Pick::Part::Edge, 0);
+            continue;
+        }
+        if(const int e = edge_at(g, world, 4.0 * px); e >= 0)
+            return found(i, Pick::Part::Edge, e);
+    }
     return std::nullopt;
 }
 
@@ -522,11 +865,37 @@ std::vector<SelKey> CanvasController::boxed(Vec2d a, Vec2d b,
     }
     for(const DesignHandle & h : handles_)
         if(in_rect(h.p)) add(pick_handle(h.var)->key);
+    if(have_elements(scene) && shown.sketch.size() == scene.sketch.size()) {
+        const Model & m = *scene.model;
+        // A body is boxed once every element of it shown is.
+        std::vector<std::string> bodies, outside;
+        for(std::size_t i = 0; i < scene.sketch.size(); ++i) {
+            if(!shown.sketch[i]) continue;
+            const SketchInfo & si = m.sketch()[i];
+            Box2d extent;
+            add_to_box(extent, scene.sketch[i]);
+            const bool inside = !extent.empty() &&
+                                in_rect({extent.x0, extent.y0}) &&
+                                in_rect({extent.x1, extent.y1});
+            if(si.frame.empty()) {
+                if(inside) add({Kind::Element, si.name});
+            } else if(!inside) {
+                outside.push_back(si.frame);
+            } else if(!std::ranges::contains(bodies, si.frame)) {
+                bodies.push_back(si.frame);
+            }
+        }
+        for(const std::string & body : bodies)
+            if(!std::ranges::contains(outside, body)) add({Kind::Body, body});
+    }
     return out;
 }
 
 std::optional<Hover> CanvasController::hover(const Scene & scene) const {
-    if(!hover_ || !hovered_ || panning_ || boxing_) return std::nullopt;
+    // A tool shows its hint in the status bar, and a tooltip would cover
+    // what it draws.
+    if(!hover_ || !hovered_ || panning_ || boxing_ || app_.tools().active())
+        return std::nullopt;
     const Pick & p = *hover_;
     const std::size_t i = uz(p.index);
     Hover hv;
@@ -563,6 +932,59 @@ std::optional<Hover> CanvasController::hover(const Scene & scene) const {
             hv.title = std::format("{} (let)", l.name);
             hv.lines.push_back(
                 std::format("{} = {}", l.text, format_value(scene.lets[i])));
+            break;
+        }
+        case Pick::Source::Element: {
+            if(!have_elements(scene) || i >= scene.sketch.size()) break;
+            const SketchInfo & si = scene.model->sketch()[i];
+            const Json * type = doc_.has_instance()
+                                    ? doc_.instance()->get(si.path + ".type")
+                                    : nullptr;
+            const std::string kind =
+                type && type->is_string() ? type->get<std::string>() : "";
+            // While a sketch drag runs, `scene` keeps the values of the last
+            // commit until the release: the drag's live scene has the drawn
+            // ones, under its own model, where the element is found by name.
+            const Scene * values = &scene;
+            std::size_t vi = i;
+            if(const Scene * live = app_.sketch().scene();
+               live && have_elements(*live))
+                if(const int j = find_element(*live->model, si.name); j >= 0) {
+                    values = live;
+                    vi = uz(j);
+                }
+            if(p.key.kind == Kind::Body) {
+                hv.title = std::format("{} (body)", si.frame);
+                hv.lines.push_back(
+                    std::format("{} ({}): {}", si.name, kind,
+                                element_value_text(*values, vi)));
+                hv.lines.push_back("click to select the body");
+                break;
+            }
+            hv.title = std::format("{} ({})", si.name, kind);
+            hv.lines.push_back(element_value_text(*values, vi));
+            if(std::optional<std::string> place = element_place(*values, vi, p))
+                hv.lines.push_back(std::move(*place));
+            if(!si.note.empty()) hv.lines.push_back(si.note);
+            // free_block() reads a diagnosis of any generation, and an older
+            // one may call determined an element that the last edit freed.
+            const sketch::FreeBlock * block =
+                doc_.diagnosis_generation() == doc_.sketch_generation()
+                    ? free_block(doc_, si.name)
+                    : nullptr;
+            hv.lines.push_back(
+                (si.type == SketchType::Point && si.fixed) ||
+                        (block && block->fixed)
+                    ? "fixed: click to select"
+                : block && block->count == 0
+                    ? "determined by its constraints: click to select"
+                : p.part == Pick::Part::Edge &&
+                        (si.type == SketchType::Circle ||
+                         si.type == SketchType::Arc)
+                    ? "click to select, drag the rim to change the radius"
+                : p.part == Pick::Part::Start || p.part == Pick::Part::End
+                    ? "click to select, drag to move this end"
+                    : "click to select, drag to move; the constraints hold");
             break;
         }
         case Pick::Source::Geometry: {

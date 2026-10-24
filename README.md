@@ -336,7 +336,9 @@ The same name in two of these categories is an error.
 | vector | `vec(x,y)`, `dir(a)` = (cos a, sin a), `rotate(v,a)`, `perp(v)` = (−y, x), `dot`, `cross`, `norm`, `normalize`, `dist(p,q)`, `angle(v)`, `angle_between(u,v)` (signed, in (−π, π]), `sin_between(u,v)`, `mean(p1,p2,…)` (barycentre) |
 | shapes | `box(x0,y0,x1,y1)`, `rect(centre,w,h,a)`, `polygon(p1,p2,p3,…)`, `polyline(p1,p2,…)`, `segment(p,q)`, `circle(c,r)`, `place(g,p,a)` (rotate by a about the origin, then move to p), `translate(g,v)`, `vertex(shape,i)` (constant i, file order), `center(shape)` |
 | measures | `clearance(g1,g2)` (signed: gap > 0, penetration depth < 0), `min_x max_x min_y max_y(g,…)`, `max_proj(g,v)` / `min_proj(g,v)` (extreme of dot(point, v) over g), `visible_fraction(eye,target,occluder,…)` (share of the target seen from the eye, see below) |
+| segments, circles | `start(s)`, `end(s)`, `mid(s)`, `len(s)`, `dir(s)`, `angle(s)`, `angle(s1,s2)` (signed, in (−π, π]), `edge(shape,i)`, `radius(k)`, `line_dist(p,s)` (positive left of s), `line_dist(p,s,side)`; a segment of zero length has no direction (NaN) |
 | kinematics | `dyad(c1,r1,c2,r2,branch)`: the intersection of two circles on side `branch` (+1/−1) of c1→c2. `branch_of(c1,c2,p)` gives the side p is on |
+| predicates (a whole constraint each) | `coincident(p,q)`, `on_line(p,s)`, `on_segment(p,s)`, `on(p,k)`, `horizontal(s)` / `(p,q)`, `vertical(s)` / `(p,q)`, `parallel(s1,s2[,±1])`, `perpendicular(s1,s2[,±1])`, `tangent(s,k,side)`, `tangent(k1,k2,side)`, `tangent_at(x,y,p,±1)`, `symmetric(p,q,s or m)`: see `docs/reference/builtins.md` |
 
 Kinematics details:
 

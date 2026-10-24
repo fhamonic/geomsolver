@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <array>
 #include <format>
+#include <numbers>
 #include <utility>
 
 #include "gs/app/app.hpp"
 #include "gs/app/format.hpp"
+#include "gs/app/sketch_entries.hpp"
 #include "gs/app/variables.hpp"
 #include "gs/app/visibility.hpp"
+#include "gs/engine/evaluator.hpp"
 
 namespace gs::app {
 namespace {
@@ -16,26 +19,72 @@ namespace {
 using DK = DetailItem::Kind;
 using Kind = SelKey::Kind;
 
+std::size_t uz(int i) { return static_cast<std::size_t>(i); }
+
 const Column kColumns[] = {{"Eye", 1.6f, ListCell::Kind::Eye},
                            {"Type", 4.0f},
                            {"Name", 6.5f, ListCell::Kind::Name},
                            {"Value", 0.0f},
-                           {"State", 4.5f}};
+                           {"State", 4.5f},
+                           {"Helper", 3.0f, ListCell::Kind::Check}};
+constexpr std::size_t kHelperColumn = 5;
 
-constexpr std::string_view kGroups[] = {"points", "geometry", "derived"};
+constexpr std::string_view kGroups[] = {"sketch", "points", "geometry",
+                                        "derived"};
 
 constexpr const char * kShow[] = {"all", "variables", "constants"};
 
 std::string_view group_of(Kind kind) {
-    return kind == Kind::Design     ? kGroups[0]
-           : kind == Kind::Geometry ? kGroups[1]
-                                    : kGroups[2];
+    return kind == Kind::Element || kind == Kind::Body ? kGroups[0]
+           : kind == Kind::Design                      ? kGroups[1]
+           : kind == Kind::Geometry                    ? kGroups[2]
+                                                       : kGroups[3];
 }
 
 std::string group_label(std::string_view group) {
-    return group == kGroups[0]   ? "Design points"
-           : group == kGroups[1] ? "Geometry"
+    return group == kGroups[0]   ? "Sketch"
+           : group == kGroups[1] ? "Design points"
+           : group == kGroups[2] ? "Geometry"
                                  : "Derived";
+}
+
+bool flag(const Json & entry, const char * key) {
+    const auto it = entry.find(key);
+    return it != entry.end() && *it == true;
+}
+
+// The pose of body `name` as the list shows it: the live columns while a
+// drag runs, else the drawing's; a fixed pose evaluated, as a fixed point's
+// value is ("-90deg" shows as -90.00°).
+std::string pose_text(App & app, const std::string & name, const Json & body) {
+    const Document & doc = app.document();
+    auto text = [](double x, double y, double angle) {
+        return std::format("at ({}, {}), {}°", format_number(x),
+                           format_number(y),
+                           format_number(angle * 180.0 / std::numbers::pi));
+    };
+    const Model * m = doc.sketch_model().get();
+    const std::span<const double> q = app.sketch().q();
+    if(m && q.size() == m->sketch_coords().size())
+        for(const SketchBody & b : m->sketch_bodies()) {
+            if(b.name != name) continue;
+            if(b.columns.size() == 3)
+                return text(q[uz(b.columns[0])], q[uz(b.columns[1])],
+                            q[uz(b.columns[2])]);
+            Evaluator ev(*m);
+            ev.set_q(q);
+            const ExprRef refs[] = {b.origin, b.angle};
+            const std::vector<GeoValue> v = ev.values(doc.sketch_x(), {}, refs);
+            return text(v[0].vec().x, v[0].vec().y, v[1].scalar());
+        }
+    const Json * origin = body.contains("pose") ? &body["pose"] : nullptr;
+    auto part = [&](const char * key) -> std::string {
+        if(!origin || !origin->contains(key) || !(*origin)[key].is_object() ||
+           !(*origin)[key].contains("value"))
+            return "?";
+        return json_text((*origin)[key]["value"]);
+    };
+    return std::format("at {}, {}", part("origin"), part("angle"));
 }
 
 const Json * member(const Json & j, const char * key) {
@@ -137,13 +186,29 @@ std::string shape_text(const GeoValue & value) {
 
 std::span<const Column> ElementsPresenter::columns() const { return kColumns; }
 
+bool ElementsPresenter::column_shown(std::size_t i) const {
+    return i != kHelperColumn || app_.document().has_sketch();
+}
+
 std::vector<ElementsPresenter::Shown> ElementsPresenter::build_shown(
     std::string_view group) {
     std::vector<Shown> out;
     const Document & doc = app_.document();
     if(!doc.has_instance()) return out;
     const Instance & inst = *doc.instance();
+    if(group != kGroups[0] && sketch_only_ && doc.has_sketch()) return out;
     if(group == kGroups[0]) {
+        if(state_ == 1) return out;
+        for(const auto [section, kind] :
+            {std::pair{"sketch.elements", Kind::Element},
+             std::pair{"sketch.bodies", Kind::Body}}) {
+            const Json * entries = inst.get(section);
+            if(!entries || !entries->is_object()) continue;
+            for(const auto & [name, entry] : entries->items())
+                out.push_back({.key = {kind, name},
+                               .path = std::format("{}.{}", section, name)});
+        }
+    } else if(group == kGroups[1]) {
         const Json * design = inst.get("design");
         if(!design || !design->is_object()) return out;
         for(const auto & [name, entry] : design->items()) {
@@ -153,14 +218,14 @@ std::vector<ElementsPresenter::Shown> ElementsPresenter::build_shown(
                 continue;
             out.push_back({.key = {Kind::Design, name}, .path = e->path});
         }
-    } else if(group == kGroups[1]) {
+    } else if(group == kGroups[2]) {
         if(state_ == 1) return out;
         for(const GeometryEntry & g : geometry_entries(inst))
             if(included_ || g.file.empty())
                 out.push_back({.key = {Kind::Geometry, g.name},
                                .path = g.path,
                                .file = g.file});
-    } else if(group == kGroups[2]) {
+    } else if(group == kGroups[3]) {
         const Model * m = doc.model().get();
         if(state_ != 0 || !m) return out;
         const Scene & scene = app_.scene_now();
@@ -179,20 +244,42 @@ std::vector<ElementsPresenter::Shown> ElementsPresenter::build_shown(
     return out;
 }
 
+std::vector<ElementsPresenter::Shown> ElementsPresenter::build_members(
+    const Shown & body) {
+    std::vector<Shown> out;
+    const Json * elements =
+        app_.document().instance()->get(body.path + ".elements");
+    if(!elements || !elements->is_object()) return out;
+    for(const auto & [name, entry] : elements->items())
+        out.push_back(
+            {.key = {Kind::Element, std::format("{}.{}", body.key.name, name)},
+             .path = std::format("{}.elements.{}", body.path, name),
+             .body = RowId{body.key}});
+    return out;
+}
+
 std::span<const ElementsPresenter::Shown> ElementsPresenter::shown(
     std::string_view group) {
     const std::array now{app_.document().compile_generation(),
                          app_.scene_generation()};
     if(shown_at_ != now) {
         shown_index_.clear();
-        for(std::size_t g = 0; g < shown_.size(); ++g) {
-            shown_[g] = build_shown(kGroups[g]);
+        members_.clear();
+        auto index = [&](std::vector<Shown> & rows) {
             std::vector<SelKey> keys;
-            for(const Shown & s : shown_[g]) keys.push_back(s.key);
+            for(const Shown & s : rows) keys.push_back(s.key);
             const std::vector<RowId> ids = row_ids(keys);
             for(std::size_t i = 0; i < ids.size(); ++i)
-                shown_index_.emplace(ids[i], &shown_[g][i]);
+                shown_index_.emplace(ids[i], &rows[i]);
+        };
+        for(std::size_t g = 0; g < shown_.size(); ++g) {
+            shown_[g] = build_shown(kGroups[g]);
+            index(shown_[g]);
         }
+        for(const Shown & s : shown_[0])
+            if(s.key.kind == Kind::Body)
+                members_.emplace(RowId{s.key}, build_members(s));
+        for(auto & [body, rows] : members_) index(rows);
         shown_at_ = now;
     }
     const auto g = std::ranges::find(kGroups, group);
@@ -216,9 +303,14 @@ std::vector<RowId> ElementsPresenter::children(
                 out.push_back(header_row(std::string(group)));
         return out;
     }
-    if(!parent->header()) return {};
     std::vector<SelKey> keys;
-    for(const Shown & s : shown(parent->group)) keys.push_back(s.key);
+    if(parent->header()) {
+        for(const Shown & s : shown(parent->group)) keys.push_back(s.key);
+    } else if(parent->key.kind == Kind::Body) {
+        shown(kGroups[0]);
+        if(const auto it = members_.find(*parent); it != members_.end())
+            for(const Shown & s : it->second) keys.push_back(s.key);
+    }
     return row_ids(keys);
 }
 
@@ -235,6 +327,8 @@ std::optional<ListRow> ElementsPresenter::row(const RowId & id) {
     }
     const std::optional<Shown> s = find(id);
     if(!s) return std::nullopt;
+    if(id.key.kind == Kind::Element || id.key.kind == Kind::Body)
+        return sketch_row(id, *s);
     ListRow r{.id = id,
               .parent = header_row(std::string(group_of(id.key.kind))),
               .depth = 1,
@@ -296,6 +390,80 @@ std::optional<ListRow> ElementsPresenter::row(const RowId & id) {
                            "Computed from the design by its let: edit its "
                            "formula among the lets"});
     }
+    r.cells.emplace_back();
+    return r;
+}
+
+std::optional<ListRow> ElementsPresenter::sketch_row(const RowId & id,
+                                                     const Shown & s) {
+    const Document & doc = app_.document();
+    const Json * entry = doc.instance()->get(s.path);
+    if(!entry || !entry->is_object()) return std::nullopt;
+    const bool body = id.key.kind == Kind::Body;
+    ListRow r{.id = id,
+              .parent = s.body ? *s.body : header_row(std::string(kGroups[0])),
+              .depth = s.body ? 2 : 1,
+              .path = s.path};
+    if(body) {
+        const auto it = members_.find(id);
+        r.expandable = it != members_.end() && !it->second.empty();
+    }
+    const bool on = eye_open(doc, app_.visibility(), id.key);
+    ListCell eye{
+        .kind = ListCell::Kind::Eye, .tip = eye_tip(doc, id.key, on), .on = on};
+    // Under a closed body's eye a member's own eye no longer says what the
+    // canvas shows: its "Shown on the canvas" would contradict the body's.
+    if(s.body && app_.visibility().hidden(s.body->key.name)) {
+        const std::string & b = s.body->key.name;
+        eye.tone = Tone::Dim;
+        eye.tip = on ? std::format(
+                           "Hidden with its body {}. Its own eye is open: it "
+                           "shows again with {}",
+                           b, b)
+                     : std::format(
+                           "Hidden with its body {}, and by its own eye: "
+                           "opening {}'s leaves it hidden",
+                           b, b);
+    }
+    r.cells.push_back(std::move(eye));
+    const Json * kind = member(*entry, "type");
+    const std::string type = body ? std::string("body")
+                             : kind && kind->is_string()
+                                 ? kind->get<std::string>()
+                                 : std::string("?");
+    r.cells.push_back({ListCell::Kind::Text, type, Tone::Dim, ""});
+    const Json * note = entry->contains("note") ? &(*entry)["note"] : nullptr;
+    r.cells.push_back(
+        {ListCell::Kind::Name, id.key.name, Tone::Normal,
+         app_.panels()
+             .host
+             .name(s.path, note && note->is_string() ? note->get<std::string>()
+                                                     : std::string())
+             .tip});
+    std::string value = "-";
+    if(body) {
+        value = pose_text(app_, id.key.name, *entry);
+    } else if(const Scene * scene = sketch_values(app_)) {
+        const int i = find_element(*scene->model, id.key.name);
+        if(i >= 0) value = element_value_text(*scene, uz(i));
+    }
+    r.cells.push_back({ListCell::Kind::Text, value, Tone::Normal, value});
+    const Status st =
+        body ? body_state(doc, id.key.name) : element_state(doc, id.key.name);
+    r.cells.push_back({ListCell::Kind::Text, st.text, st.tone, st.tip});
+    if(body) {
+        r.cells.emplace_back();
+    } else {
+        const bool helper = flag(*entry, "helper");
+        r.cells.push_back(
+            {.kind = ListCell::Kind::Check,
+             .tip = helper ? "A helper: drawn thin, constrained like any "
+                             "element, left out of the results"
+                           : "Check to make it a helper: drawn thin, "
+                             "constrained like any element, left out of the "
+                             "results",
+             .on = helper});
+    }
     return r;
 }
 
@@ -309,11 +477,22 @@ Changes ElementsPresenter::resets_on() const {
 
 bool ElementsPresenter::toggle(const RowId & id, std::size_t column) {
     const std::optional<ListRow> r = id.header() ? std::nullopt : row(id);
-    if(!r || column >= r->cells.size() ||
-       r->cells[column].kind != ListCell::Kind::Eye)
-        return false;
+    if(!r || column >= r->cells.size()) return false;
+    const ListCell & cell = r->cells[column];
+    if(cell.kind == ListCell::Kind::Check && column == kHelperColumn) {
+        const std::string path = r->path + ".helper";
+        EditBatch batch(std::format("make {} {}", id.key.name,
+                                    cell.on ? "a plain element" : "a helper"));
+        if(cell.on)
+            batch.erase(path);
+        else
+            batch.set(path, true);
+        app_.document().apply(std::move(batch));
+        return true;
+    }
+    if(cell.kind != ListCell::Kind::Eye) return false;
     const SelKey keys[] = {id.key};
-    set_eyes(app_.document(), app_.visibility(), keys, !r->cells[column].on);
+    set_eyes(app_.document(), app_.visibility(), keys, !cell.on);
     return true;
 }
 
@@ -326,21 +505,29 @@ Intent ElementsPresenter::activate(const RowId & id,
 }
 
 std::vector<Filter> ElementsPresenter::filters() const {
-    return {{.kind = Filter::Kind::Choice,
-             .label = "Show",
-             .choices = {std::begin(kShow), std::end(kShow)},
-             .value = state_,
-             .tip = "variables: the released points; constants: the fixed "
-                    "points and the geometry"},
-            {.kind = Filter::Kind::Check,
-             .label = "Included",
-             .value = included_,
-             .tip = "The geometry of the included files"},
-            {.kind = Filter::Kind::Check,
-             .label = "Vectors",
-             .value = vectors_,
-             .tip = "The lets of type Vec among the derived elements: points, "
-                    "and directions too"}};
+    std::vector<Filter> out = {
+        {.kind = Filter::Kind::Choice,
+         .label = "Show",
+         .choices = {std::begin(kShow), std::end(kShow)},
+         .value = state_,
+         .tip = "variables: the released points; constants: the fixed "
+                "points, the geometry and the sketch, which the optimiser "
+                "does not move"},
+        {.kind = Filter::Kind::Check,
+         .label = "Included",
+         .value = included_,
+         .tip = "The geometry of the included files"},
+        {.kind = Filter::Kind::Check,
+         .label = "Vectors",
+         .value = vectors_,
+         .tip = "The lets of type Vec among the derived elements: points, "
+                "and directions too"}};
+    if(app_.document().has_sketch())
+        out.push_back({.kind = Filter::Kind::Check,
+                       .label = "Sketch only",
+                       .value = sketch_only_,
+                       .tip = "Only the sketch's elements and bodies"});
+    return out;
 }
 
 bool ElementsPresenter::apply_filter(std::size_t i, const DetailValue & value) {
@@ -348,14 +535,16 @@ bool ElementsPresenter::apply_filter(std::size_t i, const DetailValue & value) {
     if(i == 0) state_ = std::get<int>(value);
     if(i == 1) included_ = std::get<bool>(value);
     if(i == 2) vectors_ = std::get<bool>(value);
+    if(i == 3) sketch_only_ = std::get<bool>(value);
     return true;
 }
 
 bool ElementsPresenter::reset_filters() {
-    const bool changed = state_ != 0 || !included_ || vectors_;
+    const bool changed = state_ != 0 || !included_ || vectors_ || sketch_only_;
     state_ = 0;
     included_ = true;
     vectors_ = false;
+    sketch_only_ = false;
     shown_at_.reset();
     return changed;
 }

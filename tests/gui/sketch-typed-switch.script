@@ -1,0 +1,26 @@
+# Types 160 into the End of the arc bar, then Ctrl+clicks its Radius, above
+# it, types 0.5 and Enter: the activation of Radius comes first in that
+# frame, and the End typed must still be written.
+size 1600 1300
+open docs/instances/sketch-arc.json
+wait 16
+select element bar
+wait 6
+click L 840 1191 ctrl
+wait 3
+text "1"
+wait 2
+text "6"
+wait 2
+text "0"
+wait 2
+click L 840 1141 ctrl
+wait 3
+text "0"
+wait 2
+text "."
+wait 2
+text "5"
+wait 2
+key Enter
+wait 8

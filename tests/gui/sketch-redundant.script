@@ -1,0 +1,35 @@
+# A redundant H, refused, and a redundant dimension, made a reference. On the
+# triangle, Horizontal on its base S1, which is level already: refused, and
+# nothing added. Then Smart Dimension makes it fully constrained (d1, d2,
+# d3 at their measured values) and measures T1 to T3, which d3 gives
+# already: d4 is added as a reference dimension, the status bar says so, and
+# no editor opens.
+open tests/data/sketch-triangle.json
+wait 16
+action tool.horizontal
+wait 2
+click L 579 503
+wait 2
+key Escape
+wait 2
+action tool.dimension
+wait 2
+click L 579 503
+click L 579 547
+wait 2
+key Enter
+wait 2
+click L 689 339
+click L 754 284
+wait 2
+key Enter
+wait 2
+click L 469 339
+click L 404 284
+wait 2
+key Enter
+wait 2
+click L 360 503
+click L 579 175
+click L 447 197
+wait 2

@@ -1,0 +1,26 @@
+# Smart Dimension on a segment: L1, then its label above it, the length
+# typed at once, while the editor's measured value is still selected (d1).
+# Then L2, M four times to its angle from the x axis, and the angle typed in
+# degrees (a1).
+open tests/data/sketch-dimension.json
+wait 16
+action tool.dimension
+wait 2
+click L 360 248
+click L 396 211
+text "0.8"
+wait 2
+key Enter
+wait 2
+click L 716 476
+action tool.method
+action tool.method
+action tool.method
+action tool.method
+wait 2
+click L 652 430
+wait 2
+text "30"
+wait 2
+key Enter
+wait 2

@@ -31,8 +31,11 @@ PropertiesPresenter::PropertiesPresenter(App & app)
     , criteria_(app)
     , displays_(app)
     , geometry_(app)
-    , builders_{&params_,      &design_,   &design_,   &ranges_,  &lets_,
-                &constraints_, &criteria_, &displays_, &geometry_} {}
+    , elements_(app)
+    , bodies_(app)
+    , builders_{&params_,   &design_,      &design_,   &ranges_,
+                &lets_,     &constraints_, &criteria_, &displays_,
+                &geometry_, &elements_,    &bodies_} {}
 
 DetailSheet PropertiesPresenter::sheet() {
     if(!app_.document().has_instance()) return hint("No instance loaded.");

@@ -11,6 +11,7 @@
 #include "gs/app/ranges.hpp"
 #include "gs/app/selection.hpp"
 #include "gs/app/sheet.hpp"
+#include "gs/app/sketch_sheets.hpp"
 #include "gs/app/variables.hpp"
 
 namespace gs::app {
@@ -56,6 +57,8 @@ private:
     CriterionSheet criteria_;
     DisplaySheet displays_;
     GeometrySheet geometry_;
+    SketchElementSheet elements_;
+    BodySheet bodies_;
     // One per EntryKind, in its order.
     std::array<SheetBuilder *, kEntryKinds> builders_;
 };

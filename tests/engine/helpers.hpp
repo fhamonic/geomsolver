@@ -60,6 +60,48 @@ inline Json base_doc() {
     return d;
 }
 
+// A world sketch of every element type compiled so far (plan 1.1 without
+// its arc and body). The polyline comes before its points, "rug" uses a
+// let that reads elements and a derived corner, and "Q" and "dish" follow
+// the params.
+inline Json sketch_doc() {
+    return Json::parse(R"J({
+      "format": "geomsolver-instance/2",
+      "params": {"W": 1.23, "T": 0.07, "door_r": 0.8},
+      "sketch": {
+        "extent": "box(0, 0, 4, 3)",
+        "chord_error": "0.1mm",
+        "elements": {
+          "wall":  {"type": "polyline", "points": ["P1", "P2", "P3"],
+                    "note": "the room's corner"},
+          "P1":    {"type": "point", "value": [0, 0], "fixed": true},
+          "P2":    {"type": "point", "value": [3.2, 0]},
+          "P3":    {"type": "point", "value": ["3.2", "240cm"]},
+          "C1":    {"type": "point", "value": [1.0, 1.2]},
+          "table": {"type": "circle", "center": "C1", "radius": "45cm"},
+          "H1":    {"type": "point", "value": [2.0, 0.0]},
+          "leaf":  {"type": "segment", "from": "H1",
+                    "to": "H1 + vec(0, door_r)", "helper": true},
+          "shelf": {"type": "box", "corners": ["vec(0, 2)", "P3 - vec(1, 0.1)"]},
+          "Q":     {"type": "point", "value": "vec(W, T)", "fixed": true},
+          "rug":   {"type": "polygon",
+                    "points": ["C1", "vertex(shelf, 1)", "mid"]},
+          "dish":  {"type": "circle", "center": "Q", "radius": "door_r / 2",
+                    "fixed": true}
+        }
+      },
+      "let": {"mid": "(P1 + P2) / 2"},
+      "constraints": [
+        {"name": "h1", "expr": "P1.y == P2.y"},
+        {"name": "v1", "expr": "P2.x == P3.x"},
+        {"name": "d1", "expr": "dist(P1, P2) == 3.2",
+         "label": {"offset": [0, -0.25]}},
+        {"name": "sep", "expr": "dist(C1, H1) >= 0.10"},
+        {"name": "dref", "expr": "dist(C1, H1) == 1.077", "driving": false}
+      ]
+    })J");
+}
+
 inline bool has_error(const std::vector<Diagnostic> & ds,
                       const std::string & path, const std::string & fragment,
                       int column = -2) {

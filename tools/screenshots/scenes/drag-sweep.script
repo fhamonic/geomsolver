@@ -1,5 +1,5 @@
-# The sweep slider dragged to tau = 0.5858.
+# The sweep slider dragged to tau = 0.5851.
 open tests/data/tv_corner_ref.json
-drag L 97 671 500 671
+drag L 233 671 556 671
 wait 14
 shot

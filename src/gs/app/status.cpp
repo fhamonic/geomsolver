@@ -35,6 +35,9 @@ Status group_status(const Model & m, const Scene & s,
             wg = g;
         }
     }
+    // Groups whose violations are all -inf pick none: indexing with -1
+    // reads out of bounds.
+    if(wg < 0) wg = groups.front();
     const GroupCheck & c = s.verification->groups[uz(wg)];
     const RowGroup & rg = m.groups()[uz(wg)];
     const std::string where =

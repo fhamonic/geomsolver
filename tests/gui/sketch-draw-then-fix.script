@@ -1,0 +1,12 @@
+# The Steps 9-10 ruling (check gap 2): a constraint tool started right after
+# a creation commit, on the box that commit selected, starts tool first,
+# and refuses nothing.
+open tests/data/sketch-blank.json
+wait 16
+action tool.box
+wait 2
+click L 415 503
+click L 743 229
+wait 2
+action tool.fix
+wait 2

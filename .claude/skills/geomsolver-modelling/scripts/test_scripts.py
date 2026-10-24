@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -23,9 +24,15 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
 CHECK = HERE / "check.py"
 DIAG = HERE / "diagnose.py"
+sys.path.insert(0, str(HERE))
+import gs_common as gc  # noqa: E402
 FIXTURE = REPO / "tests" / "data" / "tv_corner_ref.json"
 ROOM = REPO / "tests" / "data" / "example_room_ref.json"
 TUTORIAL = REPO / "docs" / "instances" / "start-tutorial-5.json"
+SKETCH = REPO / "docs" / "instances" / "sketch-basic.json"
+BODY = REPO / "docs" / "instances" / "sketch-body.json"
+ARC = REPO / "docs" / "instances" / "sketch-arc.json"
+PREDICATES = REPO / "docs" / "instances" / "ref-predicates.json"
 USER = REPO / "data" / "tv_corner.json"
 LAYOUT = HERE.parent / "assets" / "templates" / "layout.json"
 DIAG_LIMIT = 60.0
@@ -79,6 +86,10 @@ def make_variants(tmp: Path) -> dict[str, Path]:
     warn = json.loads(text)
     warn["constraints"][0]["notes"] = "misspelt key"
     write("tv_warning.json", json.dumps(warn, indent=1))
+    strict = json.loads(text)
+    strict["format"] = "geomsolver-instance/2"
+    strict["constraints"][0]["release"] = [0, 0.1]
+    write("tv_v2_unknown.json", json.dumps(strict, indent=1))
 
     # mistakes the CLI accepts silently: check.py must list them under LINT
     trap = json.loads(LAYOUT.read_text())
@@ -128,8 +139,60 @@ def make_variants(tmp: Path) -> dict[str, Path]:
     dis["criteria"].append({"name": "tv_in", "expr": "max_over(tau, clearance(tv, couch))", "role": "max",
                             "bound": -0.01, "enabled": False})
     write("tv_disabled.json", json.dumps(dis, indent=1))
+    # the two sketch mistakes of plan 1.8 the CLI refuses: an expression in a free value, a slot on a sweep
+    free = json.loads(SKETCH.read_text())
+    free["sketch"]["elements"]["E"]["value"] = ["room_w", 0]
+    write("sketch_free_expr.json", json.dumps(free, indent=1))
+    arm = json.loads(text)
+    arm["format"] = "geomsolver-instance/2"
+    arm["sketch"] = {"elements": {"Q": {"type": "point", "value": [0, 0]},
+                                  "arm": {"type": "segment", "from": "Q", "to": "C"}}}
+    write("tv_sketch_sweep.json", json.dumps(arm, indent=1))
     assert base["params"]["edge_margin"] == 0.10
     return out
+
+
+def key_table_drift(cli: Path, tmp: Path) -> list[str]:
+    """The patterns of gs_common.INSTANCE_KEYS whose keys differ from those geomsolver-cli names when it refuses
+    an unknown key there, in a /2 file with a key 'zz' at every level."""
+    early = {"format": "geomsolver-instance/2",
+             "geometry": {"g": {"type": "point", "x": 0, "y": 0}},
+             "design": {"d": {"type": "scalar", "min": 0, "max": 1}},
+             "sweeps": {"s": {"min": 0, "max": 1}},
+             "solver": {"starts": 4},
+             "sketch": {"elements": {"e": {"type": "point", "value": [0, 0]}},
+                        "bodies": {"b": {"pose": {"origin": {"value": [0, 0]}, "angle": {"value": 0}},
+                                         "elements": {"e": {"type": "point", "value": [0, 0]}}}}}}
+    # The CLI stops at errors in the sections above before it checks constraints, criteria and display.
+    items = {"format": "geomsolver-instance/2",
+             "design": {"d": {"type": "scalar", "min": 0, "max": 1}},
+             "constraints": [{"name": "c", "expr": "d <= 1", "label": {"offset": [0, 0.1]}}],
+             "criteria": [{"name": "k", "expr": "d", "role": "minimize"}],
+             "display": [{"expr": "vec(d, 0)"}]}
+    names = {"geometry": "g", "design": "d", "sweeps": "s", "bodies": "b", "elements": "e"}
+    where = {}  # concrete path -> pattern
+    for pattern in gc.INSTANCE_KEYS:
+        doc = items if pattern.split(".")[0].split("[")[0] in ("constraints", "criteria", "display") else early
+        node, path, parent = doc, "", ""
+        for step in re.findall(r"\[\]|[^.\[\]]+", pattern):
+            if step == "[]":
+                node, path = node[0], path + "[0]"
+                continue
+            key = names.get(parent, "?") if step == "*" else step
+            node, path, parent = node[key], f"{path}.{key}" if path else key, step
+        node["zz"] = 1
+        where[path] = pattern
+    found = {}
+    for i, doc in enumerate((early, items)):
+        f = tmp / f"keys_{i}.json"
+        f.write_text(json.dumps(doc))
+        p = subprocess.run([str(cli), str(f), "--eval"], capture_output=True, text=True, timeout=60)
+        for line in (p.stdout + p.stderr).splitlines():
+            m = re.match(r"^(?:(.+)\.)?zz: unknown key 'zz'; .+? has the keys (.+)$", line)
+            if m:
+                found[where.get(m.group(1) or "", m.group(1))] = set(m.group(2).split(", "))
+    return [f"{k}: skill {sorted(gc.INSTANCE_KEYS.get(k, set()))}, CLI {sorted(found.get(k, set()))}"
+            for k in sorted(set(gc.INSTANCE_KEYS) | set(found)) if gc.INSTANCE_KEYS.get(k) != found.get(k)]
 
 
 def main() -> int:
@@ -137,7 +200,7 @@ def main() -> int:
     ap.add_argument("--show", action="store_true", help="print every script output")
     a = ap.parse_args()
 
-    inputs = [FIXTURE, ROOM, TUTORIAL] + ([USER] if USER.exists() else [])
+    inputs = [FIXTURE, ROOM, TUTORIAL, SKETCH] + ([USER] if USER.exists() else [])
     before = {p: sha(p) for p in inputs}
     tmp = Path(tempfile.mkdtemp(prefix="gs_skill_test_"))
     v = make_variants(tmp)
@@ -198,6 +261,12 @@ def main() -> int:
     expect("exit 0, FEASIBLE", code == 0 and out.startswith("VERDICT: FEASIBLE"))
     expect("warning listed", "warning: constraints[0].notes: unknown key 'notes'" in out)
 
+    code, out, _ = case("check: an unknown key in a /2 file", CHECK, str(v["tv_v2_unknown.json"]), "--solve")
+    expect("exit 2, COMPILE_ERROR", code == 2 and out.startswith("VERDICT: COMPILE_ERROR"))
+    expect("the error names the key and the keys allowed",
+           "  constraints[0].release: unknown key 'release'; a constraint has the keys driving, enabled, expr, "
+           "forall, frame, label, name, note" in out)
+
     code, out, _ = case("check: --set a key of format /2", CHECK, str(FIXTURE), "--set", "sweeps.tau.samples=9")
     expect("the CLI's note on the raised format is not an error",
            code == 1 and "note:" not in out and out.split("ERRORS", 1)[1].split("WARNINGS")[0].strip() == "(none)")
@@ -230,6 +299,93 @@ def main() -> int:
                for n in ("protrusion", "view_kitchen", "tv_in")))
     expect("no LINT on a disabled bound", "(none)" in out.split("LINT", 1)[1].split("RUNS")[0])
 
+    code, out, _ = case("check: a sketch with no design variable --solve", CHECK, str(SKETCH), "--solve")
+    expect("exit 0, FEASIBLE", code == 0 and out.startswith("VERDICT: FEASIBLE"))
+    expect("RUNS: nothing to optimise", "nothing to optimise: the sketch is checked, not solved" in out)
+    expect("NEXT: a design variable, not another solve",
+           "make it a design variable" in out.splitlines()[-1] and "--solve" not in out.splitlines()[-1])
+    heads = [ln.split(" ")[0] for ln in out.splitlines() if ln and not ln.startswith(" ")]
+    expect("SKETCH between RUNS and DESIGN, with the CLI's Sketch section",
+           heads.index("RUNS") < heads.index("SKETCH") < heads.index("DESIGN") and
+           "\n  sketch: 9 parameters in 2 components; 4 free DOFs (S, shelf, C, table, axis); redundant: none; "
+           "conflicting: none; "
+           "malformed: none; largest geometry residual 0 m\n" in out)
+    code, out, _ = case("check: a sketch moved off its constraints --solve", CHECK, str(SKETCH), "--solve",
+                        "--set", "sketch.elements.E.value=[3.1, 0.05]", "--json", str(tmp / "moved.json"))
+    expect("exit 1, the SKETCH says not solved",
+           code == 1 and "not solved: largest geometry residual 0.0996 m" in out.split("SKETCH", 1)[1])
+    expect("NEXT: settle it with --sketch-solve into a new file",
+           "--sketch-solve --write-instance NEW.json" in out.splitlines()[-1])
+    expect("the JSON report carries the sketch",
+           json.loads((tmp / "moved.json").read_text())["sketch"]["dof"] == 4)
+    code, out, _ = case("check: a sketch moved off its constraints, evaluated", CHECK, str(SKETCH),
+                        "--set", "sketch.elements.E.value=[3.1, 0.05]")
+    expect("NEXT: settle it with --sketch-solve, not a --solve that checks the same drawing",
+           "--sketch-solve --write-instance NEW.json" in out.splitlines()[-1] and
+           "check.py" not in out.splitlines()[-1])
+    code, out, _ = case("check: a dimension that contradicts another", CHECK, str(SKETCH),
+                        "--set", 'constraints[7]={"name": "narrow", "expr": "dist(O, E) == 3"}',
+                        "--json", str(tmp / "narrow.json"))
+    expect("exit 1, the SKETCH leaves the latest out, with its group",
+           code == 1 and "conflicting: narrow left out (with width);" in out.split("SKETCH", 1)[1])
+    expect("the JSON report lists it",
+           json.loads((tmp / "narrow.json").read_text())["sketch"]["left_out"] == ["narrow"])
+    code, out, _ = case("check: a sketch whose drawing breaks a constraint --solve", CHECK, str(SKETCH), "--solve",
+                        "--set", "params.walk=0.8")
+    expect("exit 1, INFEASIBLE, passage violated",
+           code == 1 and out.startswith("VERDICT: INFEASIBLE") and "passage" in out.split("VIOLATED", 1)[1])
+    code, out, _ = case("check: a bound over an arc, tightened", CHECK, str(ARC),
+                        "--set", "constraints[8].expr=clearance(door, couch) >= 1.121",
+                        "--json", str(tmp / "arc.json"))
+    heads = [ln.split(" ")[0] for ln in out.splitlines() if ln and not ln.startswith(" ")]
+    expect("exit 1, swing violated, and NOTES after SKETCH says the bound was tightened",
+           code == 1 and "swing" in out.split("VIOLATED", 1)[1] and
+           heads.index("SKETCH") < heads.index("NOTES") < heads.index("DESIGN") and
+           "\n  constraints[8]: arc door: bound of swing tightened by 0.1 mm\n" in out)
+    expect("the JSON report carries the notes",
+           {"path": "constraints[8]", "text": "arc door: bound of swing tightened by 0.1 mm"} in
+           json.loads((tmp / "arc.json").read_text())["notes"])
+    code, out, _ = case("check: a sketch with no design variable, no arc", CHECK, str(SKETCH))
+    expect("no NOTES section", "\nNOTES" not in out)
+    code, out, _ = case("check: an expression in a free sketch value", CHECK, str(v["sketch_free_expr.json"]))
+    expect("exit 2, COMPILE_ERROR with the engine's message",
+           code == 2 and out.startswith("VERDICT: COMPILE_ERROR") and
+           "  sketch.elements.E.value[0]: a free value is written by the sketch solver: give a number, or fix the "
+           "element" in out)
+    code, out, _ = case("check: a sketch slot on a sweep", CHECK, str(v["tv_sketch_sweep.json"]))
+    expect("exit 2, COMPILE_ERROR naming the sweep and the let",
+           code == 2 and out.startswith("VERDICT: COMPILE_ERROR") and
+           "  sketch.elements.arm.to at column 0: a sketch value may not depend on the sweep 'tau' (through the "
+           "let 'C')" in out)
+    # the body and frame mistakes of plan 1.8 the CLI refuses, each with its message
+    code, out, _ = case("check: a drawing with a body", CHECK, str(BODY))
+    expect("exit 0, FEASIBLE", code == 0 and out.startswith("VERDICT: FEASIBLE"))
+    expect("its SKETCH counts the pose", "  sketch: 15 parameters in 1 component; 4 free DOFs" in out)
+    for title, args, message in [
+            ("a body's element on a world point", ["sketch.bodies.tv.elements.screen.corners[0]=A"],
+             "  sketch.bodies.tv.elements.screen.corners[0] at column 0: 'A' is in the world: an element of tv "
+             "names only tv's elements and constants"),
+            ("a frame formula on a world point", ["constraints[3].expr=tv.c.y == A.y"],
+             "  constraints[3].expr at column 10: frame tv: 'A' is a world point; write local(A, tv)"),
+            ("a frame that names no body", ["constraints[3].frame=tw"],
+             "  constraints[3].frame: unknown body 'tw'")]:
+        code, out, _ = case(f"check: {title}", CHECK, str(BODY), *[a for kv in args for a in ("--set", kv)])
+        expect("exit 2, COMPILE_ERROR with the engine's message",
+               code == 2 and out.startswith("VERDICT: COMPILE_ERROR") and message in out)
+    code, out, _ = case("check: predicates on a drawing with a corner moved", CHECK, str(PREDICATES),
+                        "--set", "sketch.elements.C.value=[2.1, 1.05]")
+    violated = out.split("VIOLATED", 1)[1].split("PROBES")[0]
+    expect("exit 1, INFEASIBLE, each predicate's row in its unit",
+           code == 1 and out.startswith("VERDICT: INFEASIBLE") and
+           "par_same      constraint  violated by 0.02380503" in violated and
+           "corner        constraint  violated by 0.1" in violated and "M_on_base" not in violated)
+    code, out, _ = case("check: a predicate compared with a value", CHECK, str(PREDICATES),
+                        "--set", "constraints[4].expr=horizontal(base) == 0")
+    expect("exit 2, COMPILE_ERROR with the engine's message",
+           code == 2 and out.startswith("VERDICT: COMPILE_ERROR") and
+           "  constraints[4].expr at column 0: horizontal() is a predicate: it is only allowed as a whole "
+           "constraint" in out)
+
     code, out, _ = case("check: --probe that does not compile", CHECK, str(FIXTURE), "--probe", "dist(A)")
     expect("exit 2, ERROR naming the probe", code == 2 and out.startswith("VERDICT: ERROR") and "--probe" in out.splitlines()[-1])
 
@@ -246,6 +402,10 @@ def main() -> int:
 
     code, out, _ = case("check: missing instance file", CHECK, str(tmp / "missing.json"))
     expect("exit 2, ERROR", code == 2 and out.startswith("VERDICT: ERROR") and "cannot open" in out)
+
+    print("\n== the lint's key lists (gs_common.INSTANCE_KEYS) against the CLI's key table")
+    drift = key_table_drift(gc.find_cli(None), tmp)
+    expect("every pattern lists the same keys", not drift, "; ".join(drift))
 
     # ---- diagnose.py
     code, out, wall = case("diagnose: fixture (feasible)", DIAG, str(FIXTURE))

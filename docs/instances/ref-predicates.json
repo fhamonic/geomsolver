@@ -1,0 +1,47 @@
+{
+  "format": "geomsolver-instance/2",
+  "description": "A drawing that satisfies one constraint of each predicate, to read their rows: --eval --verbose-sketch lists every group",
+  "sketch": {
+    "elements": {
+      "A":      {"type": "point", "value": [0, 0], "fixed": true},
+      "B":      {"type": "point", "value": [2, 0]},
+      "C":      {"type": "point", "value": [2, 1]},
+      "D":      {"type": "point", "value": [0, 1]},
+      "base":   {"type": "segment", "from": "A", "to": "B"},
+      "side":   {"type": "segment", "from": "B", "to": "C"},
+      "top":    {"type": "segment", "from": "D", "to": "C"},
+      "frame":  {"type": "box", "corners": ["A", "C"], "helper": true},
+      "M":      {"type": "point", "value": [1, 0]},
+      "T":      {"type": "point", "value": [1, 1]},
+      "axis":   {"type": "segment", "from": "M", "to": "T", "helper": true},
+      "K":      {"type": "point", "value": [1, 1.5]},
+      "wheel":  {"type": "circle", "center": "K", "radius": 0.5},
+      "H":      {"type": "point", "value": [1, 1.75]},
+      "hub":    {"type": "circle", "center": "H", "radius": 0.25},
+      "R":      {"type": "point", "value": [2, 1.5]},
+      "roller": {"type": "circle", "center": "R", "radius": 0.5}
+    }
+  },
+  "constraints": [
+    {"name": "corner", "expr": "coincident(vertex(frame, 1), B)"},
+    {"name": "M_on_base_line", "expr": "on_line(M, base)"},
+    {"name": "M_on_base", "expr": "on_segment(M, base)"},
+    {"name": "T_on_wheel", "expr": "on(T, wheel)"},
+    {"name": "base_h", "expr": "horizontal(base)"},
+    {"name": "side_v", "expr": "vertical(side)"},
+    {"name": "DC_h", "expr": "horizontal(D, C)"},
+    {"name": "AD_v", "expr": "vertical(A, D)"},
+    {"name": "par", "expr": "parallel(base, top)"},
+    {"name": "par_same", "expr": "parallel(base, top, 1)"},
+    {"name": "perp", "expr": "perpendicular(base, side)"},
+    {"name": "perp_left", "expr": "perpendicular(base, side, 1)"},
+    {"name": "wheel_on_top", "expr": "tangent(top, wheel, 1)"},
+    {"name": "hub_in_wheel", "expr": "tangent(wheel, hub, -1)"},
+    {"name": "roller_by_wheel", "expr": "tangent(wheel, roller, 1)"},
+    {"name": "smooth_at_T", "expr": "tangent_at(top, wheel, T, 1)"},
+    {"name": "M_mid", "expr": "symmetric(A, B, M)"},
+    {"name": "mirror", "expr": "symmetric(D, C, axis)"},
+    {"name": "right_angle", "expr": "angle(base, side) == 90deg"},
+    {"name": "level", "expr": "angle(top) == 0"}
+  ]
+}

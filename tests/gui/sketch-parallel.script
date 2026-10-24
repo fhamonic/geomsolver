@@ -1,0 +1,27 @@
+# Parallel and Perpendicular on an empty sketch: three slanted segments.
+# Parallel, tool first, on L1 then L2, which point the same way:
+# parallel(L1, L2, 1). Perpendicular on the selection of L1 and L3, L3
+# turning right of L1 as drawn: perpendicular(L1, L3, -1).
+open tests/data/sketch-blank.json
+wait 16
+action tool.segment
+wait 2
+click L 415 503
+click L 743 449
+click L 415 339
+click L 689 273
+click L 634 120
+click L 667 229
+key Escape
+key Escape
+wait 2
+action tool.parallel
+wait 2
+click L 661 462
+click L 620 290
+wait 2
+key Escape
+wait 2
+select element L1 element L3
+action tool.perpendicular
+wait 4

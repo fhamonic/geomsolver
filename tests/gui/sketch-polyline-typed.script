@@ -1,0 +1,21 @@
+# A polyline's first edge typed: the length 0.5, Tab, the angle 90, Tab,
+# which places the vertex and opens the next edge's length, empty; Esc
+# closes that field, a click places the third vertex and Enter finishes
+# the polyline.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.polyline
+wait 2
+click L 708 339
+move 760 300 3
+wait 2
+text "0.5"
+wait 2
+key Tab
+text "90"
+key Tab
+wait 2
+key Escape
+click L 789 258
+key Enter
+wait 2

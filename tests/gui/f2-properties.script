@@ -1,7 +1,7 @@
 # A click on A's handle, then F2: the name editor opens in Properties.
 open tests/data/tv_corner_ref.json
 wait 16
-click L 350 579
+click L 418 579
 wait 3
 key F2
 wait 4

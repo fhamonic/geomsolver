@@ -15,6 +15,10 @@ struct Builtin {
         // body is evaluated over that sweep, not once.
         SpecialForm,
         Constant,  // a name, not a call: pi
+        // parallel(S1, S2), coincident(P, Q): a whole constraint by itself,
+        // which compiles to its own rows; never a value inside an
+        // expression.
+        Predicate,
     };
     std::string_view name;
     Kind kind = Kind::Function;

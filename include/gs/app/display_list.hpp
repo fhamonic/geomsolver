@@ -57,6 +57,15 @@ enum class Role : std::uint8_t {
     // A let that its eye shows and no display item draws: its value, its
     // name, or its scalar value among the status lines.
     Quantity,
+    // A sketch element: a point, a segment, a polyline, a polygon, a box,
+    // a circle or an arc.
+    Element,
+    ElementHelper,  // a helper element: thin, in the background
+    ElementFixed,   // a fixed one: a fixed point, a circle of fixed radius
+    // What the active tool draws before it commits, and the glyphs of the
+    // constraints it suggests.
+    Preview,
+    Suggestion,
 };
 
 struct Paint {

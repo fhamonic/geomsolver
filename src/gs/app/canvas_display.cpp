@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <format>
 #include <initializer_list>
 #include <optional>
@@ -118,11 +119,100 @@ void add_shape(DisplayList & out, std::vector<Vec2d> & scratch,
              dashed);
 }
 
+// An exact arc as world points, the chords within 0.25 px of it at `scale`
+// px per metre: its polyline value is tessellated for the optimiser's chord
+// error, which a zoom on a small arc shows as facets.
+void arc_points(const ArcValue & a, double scale, std::vector<Vec2d> & out) {
+    out.clear();
+    const double span = a.end - a.start;
+    if(!(a.radius > 0.0) || !std::isfinite(span) || !(scale > 0.0)) return;
+    const double step =
+        2.0 * std::acos(std::max(-1.0, 1.0 - 0.25 / (scale * a.radius)));
+    const int n = std::clamp(
+        static_cast<int>(std::ceil(std::fabs(span) / step)), 1, 4096);
+    for(int k = 0; k <= n; ++k) {
+        const double t = a.start + span * k / n;
+        out.push_back({a.center.x + a.radius * std::cos(t),
+                       a.center.y + a.radius * std::sin(t)});
+    }
+}
+
+Paint element_paint(const SketchInfo & e) {
+    return {e.helper  ? Role::ElementHelper
+            : e.fixed ? Role::ElementFixed
+                      : Role::Element};
+}
+
+float element_width(const SketchInfo & e) { return e.helper ? 1.0f : 2.0f; }
+
+// The sketch's elements as `values` has them, shapes first, then the
+// points over them. Plain: glyphs, labels and the DOF colours come later.
+void add_elements(DisplayList & out, std::vector<Vec2d> & scratch,
+                  const Scene & values, const std::vector<bool> & shown) {
+    const Model & m = *values.model;
+    for(std::size_t i = 0; i < m.sketch().size(); ++i) {
+        const SketchInfo & e = m.sketch()[i];
+        if(e.type == SketchType::Point || !shown[i]) continue;
+        const GeoValue & g = values.sketch[i];
+        if(e.type == SketchType::Arc) {
+            if(!values.arcs[i]) continue;
+            arc_points(*values.arcs[i], out.view.scale, scratch);
+            out.path(scratch, false, element_paint(e), std::nullopt,
+                     element_width(e), false);
+            continue;
+        }
+        if(g.type != ValueType::Shape) continue;
+        if(g.kind == ShapeKind::Circle) {
+            out.circle(g.circle_center(), g.circle_radius(), element_paint(e),
+                       std::nullopt, element_width(e), false);
+            continue;
+        }
+        scratch.clear();
+        for(int k = 0; k < g.vertex_count(); ++k)
+            scratch.push_back(g.vertex(k));
+        out.path(scratch, g.kind == ShapeKind::Polygon, element_paint(e),
+                 std::nullopt, element_width(e), false);
+    }
+    for(std::size_t i = 0; i < m.sketch().size(); ++i) {
+        const SketchInfo & e = m.sketch()[i];
+        const GeoValue & g = values.sketch[i];
+        if(e.type != SketchType::Point || g.type != ValueType::Vec || !shown[i])
+            continue;
+        out.marker({.at = to_f(out.view.to_screen(g.vec())),
+                    .kind = e.fixed ? Marker::FixedHandle : Marker::Point,
+                    .size = e.helper ? 2.5f : 3.5f,
+                    .paint = element_paint(e)});
+    }
+}
+
+// Whether `live`'s lets and display items are `m`'s, one for one: a drag
+// then draws them at the live values.
+bool same_items(const Model & m, const Model & live) {
+    return std::ranges::equal(m.lets(), live.lets(), {}, &LetInfo::name,
+                              &LetInfo::name) &&
+           std::ranges::equal(m.display(), live.display(), {},
+                              &DisplayInfo::path, &DisplayInfo::path);
+}
+
 std::string grid_label(double v, double step) {
     const int decimals =
         std::max(0, -static_cast<int>(std::floor(std::log10(step) + 1e-9)));
     if(std::fabs(v) < step * 1e-6) v = 0.0;
     return std::format("{:.{}f}", v, decimals);
+}
+
+// Calls `f` at each multiple of `step` in [lo, hi], adding `step` as it goes.
+// Far enough from the origin `step` is under half an ulp of g (4e10 m at the
+// zoom cap, 1e21 m at the zoom floor, nearer after a fit to a tiny box) and
+// g + step == g: a plain `g += step` loop then never ends and the frame hangs.
+template <class F>
+void grid_walk(double lo, double hi, double step, F && f) {
+    for(double g = std::ceil(lo / step) * step; g <= hi;) {
+        f(g);
+        const double next = g + step;
+        if(!(next > g)) return;
+        g = next;
+    }
 }
 
 void add_grid(DisplayList & out, const TextMeasurer & text) {
@@ -136,14 +226,14 @@ void add_grid(DisplayList & out, const TextMeasurer & text) {
                y1 = static_cast<float>(v.oy + v.h);
     auto lines = [&](double step, Role role) {
         if(step * v.scale < 10.0) return;
-        for(double gx = std::ceil(lo.x / step) * step; gx <= hi.x; gx += step) {
+        grid_walk(lo.x, hi.x, step, [&](double gx) {
             const auto sx = static_cast<float>(v.to_screen({gx, 0}).x);
             out.line({sx, y0}, {sx, y1}, {role});
-        }
-        for(double gy = std::ceil(lo.y / step) * step; gy <= hi.y; gy += step) {
+        });
+        grid_walk(lo.y, hi.y, step, [&](double gy) {
             const auto sy = static_cast<float>(v.to_screen({0, gy}).y);
             out.line({x0, sy}, {x1, sy}, {role});
-        }
+        });
     };
     lines(minor, Role::GridMinor);
     lines(major, Role::GridMajor);
@@ -153,16 +243,16 @@ void add_grid(DisplayList & out, const TextMeasurer & text) {
     if(origin.y >= y0 && origin.y <= y1)
         out.line({x0, origin.y}, {x1, origin.y}, {Role::Axis}, 1.5f);
     const float th = text.line_height();
-    for(double gx = std::ceil(lo.x / major) * major; gx <= hi.x; gx += major) {
+    grid_walk(lo.x, hi.x, major, [&](double gx) {
         const auto sx = static_cast<float>(v.to_screen({gx, 0}).x);
         out.text({sx + 3, y1 - th - 2}, grid_label(gx, major),
                  {Role::GridText});
-    }
-    for(double gy = std::ceil(lo.y / major) * major; gy <= hi.y; gy += major) {
+    });
+    grid_walk(lo.y, hi.y, major, [&](double gy) {
         const auto sy = static_cast<float>(v.to_screen({0, gy}).y);
         out.text({x0 + 4, sy - th - 1}, grid_label(gy, major),
                  {Role::GridText});
-    }
+    });
     out.text({x1 - text.size("m").x - 6, y1 - th - 2}, "m", {Role::GridText});
 }
 
@@ -171,7 +261,8 @@ void add_grid(DisplayList & out, const TextMeasurer & text) {
 void build_canvas_display(DisplayList & out, const CanvasController & canvas,
                           const Document & doc, const Selection & sel,
                           const std::optional<SelKey> & hot,
-                          const Scene & scene, const TextMeasurer & text) {
+                          const Scene & scene, const TextMeasurer & text,
+                          const Scene * live, const PreviewList * preview) {
     out.clear();
     out.view = canvas.view();
     const View2d & view = out.view;
@@ -186,10 +277,38 @@ void build_canvas_display(DisplayList & out, const CanvasController & canvas,
     const Model * model = scene.model.get();
     const double tol = doc.feas_tol();
     const Model * geom_model = model ? model : doc.background().get();
+    // A sketch drag's lets and display items move with it.
+    const Scene & drawn =
+        live && model && live->model && same_items(*model, *live->model)
+            ? *live
+            : scene;
     const bool have_scene =
-        model && scene.display.size() == model->display().size();
-    const bool have_lets = model && scene.lets.size() == model->lets().size();
+        model && drawn.display.size() == model->display().size();
+    const bool have_lets = model && drawn.lets.size() == model->lets().size();
+    // The elements: the drag's, else the scene's; without a model, the
+    // background's, evaluated here, on the rare frames a load failed.
+    Scene background;
+    const Scene * elements = live ? live : model ? &scene : nullptr;
+    if(!model && geom_model && !geom_model->sketch().empty()) {
+        background.model = doc.background();
+        try {
+            Evaluator ev(*geom_model);
+            evaluate_values(ev, geom_model->initial_x(), {}, background);
+            elements = &background;
+        } catch(const std::exception &) {
+            elements = nullptr;
+        }
+    }
+    if(elements && (!elements->model || elements->sketch.size() !=
+                                            elements->model->sketch().size()))
+        elements = nullptr;
     const CanvasShown shown = canvas.shown(scene);
+    // The elements' eyes, by the model the elements were evaluated with: a
+    // drag's or the background's lists them apart from the scene's.
+    const std::vector<bool> elements_shown =
+        !elements            ? std::vector<bool>()
+        : elements == &scene ? shown.sketch
+                             : canvas.shown(*elements).sketch;
     std::vector<Vec2d> scratch;
 
     out.clip(p0, p1);
@@ -238,6 +357,8 @@ void build_canvas_display(DisplayList & out, const CanvasController & canvas,
         }
     }
 
+    if(elements) add_elements(out, scratch, *elements, elements_shown);
+
     // Domains of free point variables (fixed ones have no domain to move in).
     if(model && options.domains) {
         for(std::size_t i = 0; i < model->design().size(); ++i) {
@@ -271,8 +392,8 @@ void build_canvas_display(DisplayList & out, const CanvasController & canvas,
             }
     }
     if(have_lets)
-        for(std::size_t i = 0; i < scene.lets.size(); ++i) {
-            const GeoValue & g = scene.lets[i];
+        for(std::size_t i = 0; i < drawn.lets.size(); ++i) {
+            const GeoValue & g = drawn.lets[i];
             if(!shown.lets[i] || g.type == ValueType::Scalar) continue;
             add_shape(out, scratch, g, {Role::Quantity}, std::nullopt, 1.5f);
             if(!options.labels) continue;
@@ -288,7 +409,7 @@ void build_canvas_display(DisplayList & out, const CanvasController & canvas,
         for(std::size_t i = 0; i < items.size(); ++i) {
             if(!shown.display[i]) continue;
             const DisplayInfo & d = items[i];
-            const GeoValue & g = scene.display[i];
+            const GeoValue & g = drawn.display[i];
             const auto width = static_cast<float>(std::max(d.width, 0.5));
             add_shape(out, scratch, g, {Role::Item, d.color},
                       d.fill ? std::optional(Paint{Role::ItemFill, d.color})
@@ -339,15 +460,25 @@ void build_canvas_display(DisplayList & out, const CanvasController & canvas,
             overlays({SelKey::Kind::Geometry, g.name}, g.value,
                      g.value.kind == ShapeKind::Polyline ? 3.0f : 1.2f);
         }
+    if(elements)
+        for(std::size_t i = 0; i < elements->sketch.size(); ++i) {
+            if(!elements_shown[i]) continue;
+            const SketchInfo & e = elements->model->sketch()[i];
+            overlays({SelKey::Kind::Element, e.name}, elements->sketch[i],
+                     element_width(e));
+            if(!e.frame.empty())
+                overlays({SelKey::Kind::Body, e.frame}, elements->sketch[i],
+                         element_width(e));
+        }
     if(have_lets)
-        for(std::size_t i = 0; i < scene.lets.size(); ++i)
+        for(std::size_t i = 0; i < drawn.lets.size(); ++i)
             if(shown.lets[i])
                 overlays({SelKey::Kind::Let, model->lets()[i].name},
-                         scene.lets[i], 1.5f);
+                         drawn.lets[i], 1.5f);
     if(have_scene)
-        for(std::size_t i = 0; i < scene.display.size(); ++i)
+        for(std::size_t i = 0; i < drawn.display.size(); ++i)
             if(shown.display[i] && !under_handle(shown.display_key[i]))
-                overlays(shown.display_key[i], scene.display[i],
+                overlays(shown.display_key[i], drawn.display[i],
                          static_cast<float>(
                              std::max(model->display()[i].width, 0.5)));
 
@@ -402,6 +533,46 @@ void build_canvas_display(DisplayList & out, const CanvasController & canvas,
         }
         if(options.labels && !labelled_by_display(dv.name))
             labels.label(c, dv.name, {Role::HandleLabel}, {8, 2});
+    }
+
+    if(preview) {
+        for(const PreviewPrim & p : preview->prims) {
+            switch(p.kind) {
+                case PreviewPrim::Kind::Point:
+                    if(!p.points.empty())
+                        out.marker({.at = s(p.points.front()),
+                                    .kind = Marker::Point,
+                                    .size = 3.5f,
+                                    .paint = {Role::Preview}});
+                    break;
+                case PreviewPrim::Kind::Path:
+                    out.path(p.points, p.closed, {Role::Preview}, std::nullopt,
+                             1.5f, false);
+                    break;
+                case PreviewPrim::Kind::Circle:
+                    if(!p.points.empty())
+                        out.circle(p.points.front(), p.radius, {Role::Preview},
+                                   std::nullopt, 1.5f, false);
+                    break;
+            }
+        }
+        // The texts of one anchor side by side, in their order: the slot a
+        // point shares, then the glyphs.
+        std::vector<std::pair<Vec2d, float>> next;
+        auto beside = [&](Vec2d anchor, const std::string & t) {
+            auto it = std::ranges::find(next, anchor,
+                                        &std::pair<Vec2d, float>::first);
+            if(it == next.end()) it = next.insert(it, {anchor, 12.0f});
+            const Vec2f at = s(anchor);
+            out.text({at.x + it->second, at.y - 16.0f}, t, {Role::Suggestion});
+            it->second += text.size(t).x + 6.0f;
+        };
+        for(const PreviewPrim & p : preview->prims)
+            if(p.kind == PreviewPrim::Kind::Point && !p.label.empty() &&
+               !p.points.empty())
+                beside(p.points.front(), p.label);
+        for(const Suggestion & g : preview->suggestions)
+            beside(g.anchor, g.glyph);
     }
 
     if(const std::optional<std::array<Vec2d, 2>> box = canvas.selection_box()) {
@@ -528,20 +699,20 @@ void build_canvas_display(DisplayList & out, const CanvasController & canvas,
                 for(std::size_t i = 0; i < model->display().size(); ++i) {
                     const DisplayInfo & d = model->display()[i];
                     if(!shown.display[i] ||
-                       scene.display[i].type != ValueType::Scalar)
+                       drawn.display[i].type != ValueType::Scalar)
                         continue;
                     lines.push_back(
                         {std::format("{} = {}",
                                      d.label.empty() ? d.text : d.label,
-                                     format_value(scene.display[i])),
+                                     format_value(drawn.display[i])),
                          {Role::ItemLabel, d.color}});
                 }
             if(have_lets)
-                for(std::size_t i = 0; i < scene.lets.size(); ++i)
-                    if(shown.lets[i] && scene.lets[i].type == ValueType::Scalar)
+                for(std::size_t i = 0; i < drawn.lets.size(); ++i)
+                    if(shown.lets[i] && drawn.lets[i].type == ValueType::Scalar)
                         lines.push_back(
                             {std::format("{} = {}", model->lets()[i].name,
-                                         format_value(scene.lets[i])),
+                                         format_value(drawn.lets[i])),
                              {Role::Quantity}});
         }
         float y = p0.y + pad;

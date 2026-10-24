@@ -37,11 +37,41 @@ struct Prefill {
 Prefill constraint_prefill(const Document & doc,
                            std::span<const SelKey> selection);
 
+// A selected entry of the sketch, as a formula names it ("A", "end(door)",
+// "L1", "edge(B1, 2)", "K1", "tv.c") and where it is drawn.
+struct SketchOperand {
+    // Point: a point element, a derived point; Line: a segment, an edge;
+    // Shape: any other element, a circle, an arc, a polyline or a box
+    // whole.
+    enum class Kind : std::uint8_t { Point, Line, Shape };
+    Kind kind = Kind::Point;
+    std::string ref;
+    Vec2d at;  // a point's position
+};
+// What a selection of the sketch pre-fills the pop-up with (plan 4.6's
+// Bounds and Clearance, the user's D4 examples), each text with its caret:
+// - two points: dist(A, B) >= (bound), " <= dist(A, B) <= " with the caret
+//   at its start (range), A.x > B.x and A.y > B.y, the one drawn further
+//   along first, so that each holds as drawn (order_x, order_y);
+// - one segment or edge: len(L1) <= (bound), " <= len(L1) <= " (range);
+// - two shapes or a point and a shape: clearance(X, Y) >= (bound).
+// Empty texts for what does not apply, and for any other selection.
+struct SketchPrefills {
+    Prefill bound, range, order_x, order_y;
+
+    bool operator==(const SketchPrefills &) const = default;
+};
+SketchPrefills sketch_prefills(std::span<const SketchOperand> operands);
+// "Add dist(A, B) >= ...", "Add ... <= dist(A, B) <= ...", "Add A.x > B.x
+// ...": the context menu's label of `p`, "..." where the caret is and for a
+// bound left to type at the end.
+std::string prefill_label(const Prefill & p);
+
 // A name the formula field completes to.
 struct Completion {
     std::string name;
-    // "param", "design", "sweep", "let", "geometry", "function", "special
-    // form" or "constant".
+    // "param", "design", "sweep", "let", "geometry", "element", "body",
+    // "function", "special form", "predicate" or "constant".
     std::string kind;
     // Short: "0.02", "(0.16, 0.175)", "[0, 1]", "polygon", "2 args".
     std::string value;
@@ -107,8 +137,9 @@ public:
     FormulaDraft & operator=(const FormulaDraft &) = delete;
 
     // A new constraint, under an unused name, its formula pre-filled from
-    // the selection (constraint_prefill()).
+    // the selection (constraint_prefill()), or with `prefill`.
     void add_constraint();
+    void add_constraint(const Prefill & prefill);
     // A new criterion, reported only until its role is chosen.
     void add_criterion();
     // A new let.

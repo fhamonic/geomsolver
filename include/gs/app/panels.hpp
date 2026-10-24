@@ -40,6 +40,8 @@ struct PanelInfo {
 
 // The canvas's window, which is no panel: always shown.
 inline constexpr std::string_view kCanvasLabel = "Canvas";
+// The toolbar's window beside it, no panel either.
+inline constexpr std::string_view kToolbarLabel = "Tools";
 
 std::span<const PanelInfo> all_panels();
 const PanelInfo & panel_info(PanelId id);

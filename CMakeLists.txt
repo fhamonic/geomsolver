@@ -34,6 +34,7 @@ find_package(GLEW REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(nlohmann_json_schema_validator REQUIRED)
 find_package(NLopt REQUIRED)
+find_package(Eigen3 REQUIRED)
 # gs_solve runs its multistart on std::jthread; before glibc 2.34 that needs
 # libpthread on the link line.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -84,6 +85,18 @@ if(GS_SOLVE_SOURCES)
 endif()
 
 
+# ################### gs_sketch: the sketch solver ####################
+# Eigen is PRIVATE: gs_app and the tests do not get its include path, so a
+# public header (include/gs/sketch) that names an Eigen type breaks them.
+file(GLOB_RECURSE GS_SKETCH_SOURCES CONFIGURE_DEPENDS
+     ${PROJECT_SOURCE_DIR}/src/gs/sketch/*.cpp)
+if(GS_SKETCH_SOURCES)
+  add_library(gs_sketch STATIC ${GS_SKETCH_SOURCES})
+  gs_configure_target(gs_sketch)
+  target_link_libraries(gs_sketch PUBLIC gs_engine PRIVATE Eigen3::Eigen)
+endif()
+
+
 # ################### gs_app: GUI logic, no toolkit ####################
 # Links no GUI toolkit: a front-end (src/front/<toolkit>) adds its own, and
 # another toolkit's front-end must be able to reuse gs_app as it is.
@@ -93,7 +106,7 @@ file(GLOB_RECURSE GS_APP_SOURCES CONFIGURE_DEPENDS
 if(GS_APP_SOURCES)
   add_library(gs_app STATIC ${GS_APP_SOURCES})
   gs_configure_target(gs_app)
-  target_link_libraries(gs_app PUBLIC gs_engine gs_solve)
+  target_link_libraries(gs_app PUBLIC gs_engine gs_solve gs_sketch)
 endif()
 
 
@@ -118,7 +131,7 @@ target_link_libraries(geomsolver PUBLIC gs_app glfw GLEW::GLEW imgui::imgui
 if(TARGET gs_solve AND EXISTS ${PROJECT_SOURCE_DIR}/src/cli/main.cpp)
   add_executable(geomsolver-cli src/cli/main.cpp)
   gs_configure_target(geomsolver-cli)
-  target_link_libraries(geomsolver-cli PRIVATE gs_solve)
+  target_link_libraries(geomsolver-cli PRIVATE gs_solve gs_sketch)
 endif()
 
 
@@ -133,7 +146,7 @@ if(ENABLE_TESTING)
   set(GS_DATA_DIR ${PROJECT_SOURCE_DIR}/data)
   set(GS_LIVE_INSTANCE ${GS_DATA_DIR}/tv_corner.json CACHE FILEPATH
       "Instance the live_instance test compiles and solves")
-  foreach(suite engine solve app)
+  foreach(suite engine solve sketch app)
     file(GLOB_RECURSE GS_TEST_${suite} CONFIGURE_DEPENDS
          ${PROJECT_SOURCE_DIR}/tests/${suite}/*.cpp)
     if(GS_TEST_${suite} AND TARGET gs_${suite})
@@ -145,9 +158,25 @@ if(ENABLE_TESTING)
       add_test(NAME test_${suite} COMMAND test_${suite})
     endif()
   endforeach()
+  # The sketch solver's timing gates, failing at 3 times their targets: a
+  # loaded machine must not fail a plain ctest, so they run only with
+  # ctest -C bench -L bench.
+  if(TARGET gs_sketch)
+    add_executable(bench_sketch tests/bench/bench_sketch.cpp)
+    gs_configure_target(bench_sketch)
+    target_link_libraries(bench_sketch PRIVATE gs_sketch doctest::doctest)
+    target_compile_definitions(bench_sketch PRIVATE
+                               GS_TEST_DATA_DIR="${GS_TEST_DATA_DIR}")
+    add_test(NAME bench_sketch COMMAND bench_sketch CONFIGURATIONS bench)
+    set_tests_properties(bench_sketch PROPERTIES LABELS bench)
+  endif()
   # Headless: runs before any window or GL context is created.
   add_test(NAME geomsolver_selftest
            COMMAND geomsolver --selftest ${GS_TEST_DATA_DIR}/tv_corner_ref.json)
+  # The checks are written for this file: a SKIP here would pass with checks
+  # unrun.
+  set_tests_properties(geomsolver_selftest PROPERTIES
+                       FAIL_REGULAR_EXPRESSION "SKIP  ")
   # Scripts played with no window, checked through their --dump.
   add_test(NAME gui_scripts
            COMMAND ${CMAKE_COMMAND} -DGUI=$<TARGET_FILE:geomsolver>

@@ -1,0 +1,11 @@
+# Each vertex 30 px right of the one before and 18 px below it, where the
+# fields of the edge before showed: every click places its vertex.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.polyline
+wait 2
+click L 708 260
+click L 738 278
+click L 768 296
+key Enter
+wait 2

@@ -7,6 +7,7 @@
 
 #include "gs/app/app.hpp"
 #include "gs/app/canvas_display.hpp"
+#include "gs/app/constraints.hpp"
 #include "gs/app/format.hpp"
 
 #include "helpers.hpp"
@@ -161,6 +162,66 @@ TEST_CASE("canvas display: the TV, back to front, clipped to the canvas") {
              std::vector<std::string>{"minimize protrusion = 107.4117 cm"} &&
          count(list, Role::StatusBackdrop) == 2),
         "the status lines, each on a backdrop");
+}
+
+TEST_CASE("canvas display: a sketch's elements, drawn plainly") {
+    Rig r;
+    REQUIRE(
+        r.doc.load_json(Json::parse(R"J({
+          "format": "geomsolver-instance/2",
+          "sketch": {"elements": {
+            "P": {"type": "point", "value": [0, 0], "fixed": true},
+            "Q": {"type": "point", "value": [1, 0]},
+            "PQ": {"type": "segment", "from": "P", "to": "Q"},
+            "disc": {"type": "circle", "center": "Q", "radius": 0.2}}},
+          "constraints": [
+            {"name": "flat", "expr": "P.y == Q.y"},
+            {"name": "apart", "expr": "dist(P, Q) == 2"},
+            {"name": "ref", "expr": "len(PQ) == 1", "driving": false}]
+        })J"),
+                        fs::temp_directory_path() / "test_app_sketch.json"));
+    REQUIRE(r.doc.model());
+    CHECK(r.doc.model()->sketch().size() == 4);
+    r.app.sync();
+    const DisplayList & list = r.frame();
+    CHECK((count(list, Role::Item) == 0 &&
+           count(list, Role::GeometryStroke) == 0 &&
+           count(list, Marker::Handle) == 0));
+    // Shapes first, then the points over them; the fixed point a square.
+    const auto items = list.items();
+    std::vector<const Primitive *> sketch;
+    for(const Primitive & p : items)
+        if(role_of(p) == Role::Element || role_of(p) == Role::ElementFixed)
+            sketch.push_back(&p);
+    REQUIRE(sketch.size() == 4);
+    const auto * pq = std::get_if<PathPrim>(sketch[0]);
+    REQUIRE(pq);
+    CHECK((!pq->closed && pq->count == 2 && pq->width == 2.0f &&
+           list.points(*pq)[1].x == 1.0));
+    const auto * disc = std::get_if<CirclePrim>(sketch[1]);
+    REQUIRE(disc);
+    CHECK((disc->radius == 0.2 && !disc->fill));
+    const auto * p = std::get_if<MarkerPrim>(sketch[2]);
+    const auto * q = std::get_if<MarkerPrim>(sketch[3]);
+    REQUIRE((p && q));
+    CHECK((p->kind == Marker::FixedHandle &&
+           p->paint.role == Role::ElementFixed && q->kind == Marker::Point &&
+           q->paint.role == Role::Element));
+    CHECK(q->at.x == to_f(r.canvas.view().to_screen({1.0, 0.0})).x);
+
+    ConstraintsPresenter & cl = r.app.panels().constraints;
+    std::vector<std::string> names;
+    for(const RowId & id : cl.children(header_row("geometry")))
+        names.push_back(key_name(id.key));
+    CHECK(names == std::vector<std::string>{"flat", "apart", "ref"});
+    const auto status = [&](const char * name) {
+        const std::optional<ListRow> row =
+            cl.row({{SelKey::Kind::Constraint, name}, 0});
+        REQUIRE(row);
+        return row->cells[6].tone;
+    };
+    CHECK(status("flat") == Tone::Ok);
+    CHECK(status("apart") == Tone::Bad);
 }
 
 TEST_CASE("canvas display: each View option removes what it hides") {
@@ -580,6 +641,285 @@ TEST_CASE("canvas display: a later paint draws the handles of its scene") {
     r.app.sync();
     CHECK_MESSAGE((painted() == points() && points().size() == 4),
                   "after deleting A, the handles of the new model");
+}
+
+}  // namespace gs::test
+
+namespace gs::test {
+
+namespace {
+
+fs::path sketch_file(const char * name) {
+    return fs::path(GS_TEST_DATA_DIR) / "../../docs/instances" / name;
+}
+
+std::vector<const PathPrim *> paths(const DisplayList & list, Role role) {
+    std::vector<const PathPrim *> out;
+    for(const Primitive & p : list.items())
+        if(const auto * x = std::get_if<PathPrim>(&p);
+           x && x->stroke.role == role)
+            out.push_back(x);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("canvas display: a sketch's helpers, members and exact arcs") {
+    Rig r;
+    REQUIRE(r.app.open(sketch_file("sketch-basic.json")));
+    const DisplayList & basic = r.frame();
+    const std::vector<const PathPrim *> helpers =
+        paths(basic, Role::ElementHelper);
+    REQUIRE(helpers.size() == 1);
+    CHECK_MESSAGE(helpers[0]->width == 1.0f, "the axis, thin");
+    const std::vector<const PathPrim *> shapes = paths(basic, Role::Element);
+    REQUIRE(shapes.size() == 2);
+    CHECK_MESSAGE((!shapes[0]->closed && shapes[0]->count == 3),
+                  "the walls, an open polyline");
+    CHECK_MESSAGE((shapes[1]->closed && shapes[1]->count == 4),
+                  "the shelf, a box");
+
+    REQUIRE(r.app.open(sketch_file("sketch-body.json")));
+    const Scene & body = r.app.scene(false);
+    const Model & bm = *body.model;
+    const auto c =
+        std::ranges::find(bm.sketch(), std::string("tv.c"), &SketchInfo::name);
+    REQUIRE(c != bm.sketch().end());
+    const Vec2d world =
+        body.sketch[uz(static_cast<int>(c - bm.sketch().begin()))].vec();
+    CHECK_MESSAGE(world.x == doctest::Approx(0.45 - 0.03),
+                  "a member at its world place: the pose turns it by -90 deg");
+    const DisplayList & tv = r.frame();
+    const Vec2f at = to_f(r.canvas.view().to_screen(world));
+    CHECK(std::ranges::any_of(tv.items(), [&](const Primitive & p) {
+        const auto * m = std::get_if<MarkerPrim>(&p);
+        return m && m->paint.role == Role::Element && m->at.x == at.x &&
+               m->at.y == at.y;
+    }));
+
+    REQUIRE(r.app.open(sketch_file("sketch-arc.json")));
+    const Scene & arcs = r.app.scene(false);
+    const Model & am = *arcs.model;
+    // The bar: the door is a helper, drawn thin and grey.
+    const auto bar =
+        std::ranges::find(am.sketch(), std::string("bar"), &SketchInfo::name);
+    REQUIRE(bar != am.sketch().end());
+    const std::size_t d = uz(static_cast<int>(bar - am.sketch().begin()));
+    REQUIRE(arcs.arcs[d]);
+    const ArcValue a = *arcs.arcs[d];
+    // The arc's path: the one whose first point is its exact start.
+    auto arc_path = [&](const DisplayList & list) -> const PathPrim * {
+        for(const PathPrim * p : paths(list, Role::Element)) {
+            const Vec2d first = list.points(*p)[0];
+            if(std::fabs(first.x -
+                         (a.center.x + a.radius * std::cos(a.start))) < 1e-12 &&
+               std::fabs(first.y -
+                         (a.center.y + a.radius * std::sin(a.start))) < 1e-12)
+                return p;
+        }
+        return nullptr;
+    };
+    const DisplayList & far = r.frame();
+    const PathPrim * coarse = arc_path(far);
+    REQUIRE(coarse);
+    const std::uint32_t coarse_count = coarse->count;
+    const std::span<const Vec2d> pts = far.points(*coarse);
+    const Vec2d last = pts.back();
+    CHECK(last.x == doctest::Approx(a.center.x + a.radius * std::cos(a.end)));
+    const double scale = r.canvas.view().scale;
+    double sagitta = 0.0;
+    for(std::size_t k = 0; k + 1 < pts.size(); ++k) {
+        const Vec2d mid{(pts[k].x + pts[k + 1].x) / 2,
+                        (pts[k].y + pts[k + 1].y) / 2};
+        sagitta = std::max(sagitta, a.radius - std::hypot(mid.x - a.center.x,
+                                                          mid.y - a.center.y));
+    }
+    CHECK_MESSAGE(sagitta * scale <= 0.25,
+                  "every chord within 0.25 px of the arc at this zoom");
+    r.canvas.update({.pos = {500.0, 350.0}, .wheel = 12.0, .hovered = true},
+                    arcs);
+    const DisplayList & near = r.frame();
+    const PathPrim * fine = arc_path(near);
+    REQUIRE(fine);
+    CHECK_MESSAGE(fine->count > coarse_count, "finer as the view zooms in");
+}
+
+TEST_CASE(
+    "canvas display: a drag draws its live values, selected elements "
+    "their outline") {
+    Rig r;
+    REQUIRE(r.app.open(sketch_file("sketch-basic.json")));
+    r.app.sync();
+    r.frame();
+    SketchSession & session = r.app.sketch();
+    const Model & m = *r.doc.sketch_model();
+    const auto c =
+        std::ranges::find(m.sketch(), std::string("C"), &SketchInfo::name);
+    REQUIRE(session.begin(
+        sketch::drag_point(m, static_cast<int>(c - m.sketch().begin())),
+        "move C"));
+    REQUIRE(session.move(std::vector<Vec2d>{{1.7, 0.95}}));
+    const Scene & scene = r.app.scene(false);
+    r.canvas.set_viewport(0.0, 0.0, r.width, 700.0);
+    build_canvas_display(r.list, r.canvas, r.doc, r.app.selection(),
+                         r.app.hot(), scene, FakeText(), session.scene());
+    const Vec2f live = to_f(r.canvas.view().to_screen({1.7, 0.95}));
+    auto marker_at = [&](Vec2f at) {
+        return std::ranges::any_of(r.list.items(), [&](const Primitive & p) {
+            const auto * mk = std::get_if<MarkerPrim>(&p);
+            return mk && mk->paint.role == Role::Element &&
+                   std::fabs(mk->at.x - at.x) < 0.01f &&
+                   std::fabs(mk->at.y - at.y) < 0.01f;
+        });
+    };
+    CHECK_MESSAGE(marker_at(live), "C where the drag holds it");
+    CHECK(!marker_at(to_f(r.canvas.view().to_screen({1.6, 0.9}))));
+    session.cancel();
+
+    r.app.selection().set({SelKey::Kind::Element, "table"});
+    const DisplayList & selected = r.frame();
+    CHECK(std::ranges::any_of(selected.items(), [](const Primitive & p) {
+        const auto * k = std::get_if<CirclePrim>(&p);
+        return k && k->stroke.role == Role::Selected && k->radius == 0.45;
+    }));
+}
+
+TEST_CASE(
+    "canvas display: a sketch file that does not compile keeps its "
+    "drawing") {
+    Rig r;
+    Json d = Json::parse(read_all(sketch_file("sketch-basic.json")));
+    d["design"] = {{"x", {{"type", "scalar"}, {"min", 0}, {"max", "oops"}}}};
+    REQUIRE(
+        r.doc.load_json(d, fs::temp_directory_path() / "test_app_bad.json"));
+    REQUIRE(!r.doc.model());
+    REQUIRE(r.doc.background());
+    const DisplayList & list = r.frame();
+    CHECK_MESSAGE((count(list, Role::ElementFixed) == 1 &&
+                   paths(list, Role::Element).size() == 2 &&
+                   paths(list, Role::ElementHelper).size() == 1),
+                  "the background's elements: an error in design hides no "
+                  "drawing");
+}
+
+TEST_CASE("canvas display: a file without a sketch draws no element") {
+    Rig r;
+    REQUIRE(r.app.open(tv_file()));
+    const DisplayList & list = r.frame();
+    for(const Role role :
+        {Role::Element, Role::ElementHelper, Role::ElementFixed})
+        CHECK(count(list, role) == 0);
+}
+
+TEST_CASE("canvas display: the grid of a view far out at the zoom cap ends") {
+    Rig r;
+    // At 1e11 m the 2 um minor step of the zoom cap is under half an ulp: a
+    // sketch nearer the origin would not reach the walk's stop.
+    REQUIRE(r.doc.load_json(Json::parse(R"J({
+          "format": "geomsolver-instance/2",
+          "sketch": {"elements": {
+            "P": {"type": "point", "value": [1e11, 0]},
+            "Q": {"type": "point", "value": [100000000001, 1]},
+            "PQ": {"type": "segment", "from": "P", "to": "Q"}}},
+          "constraints": []
+        })J"),
+                            fs::temp_directory_path() / "test_app_far.json"));
+    r.app.sync();
+    r.canvas.fit_all();
+    r.frame();
+    r.canvas.update({.pos = {500.0, 350.0}, .wheel = 100.0, .hovered = true},
+                    r.app.scene(false));
+    REQUIRE(r.canvas.view().scale == 1e7);
+    const DisplayList & list = r.frame();
+    CHECK_MESSAGE((count(list, Role::GridMinor) <= 172 &&
+                   count(list, Role::GridMajor) <= 172),
+                  "at most a line per 10 px across and down");
+}
+
+TEST_CASE("canvas display: a tool's preview and suggestions, on top") {
+    Rig r;
+    REQUIRE(r.app.open(tv_file()));
+    const DisplayList & plain = r.frame();
+    CHECK((count(plain, Role::Preview) == 0 &&
+           count(plain, Role::Suggestion) == 0));
+    const PreviewList preview{
+        .prims = {{.kind = PreviewPrim::Kind::Path,
+                   .points = {{0.0, 0.0}, {1.0, 0.0}}},
+                  {.kind = PreviewPrim::Kind::Point, .points = {{1.0, 0.0}}},
+                  {.kind = PreviewPrim::Kind::Circle,
+                   .points = {{0.0, 0.0}},
+                   .radius = 0.5}},
+        .suggestions = {
+            {.formula = "horizontal(L1)", .glyph = "H", .anchor = {1.0, 0.0}}}};
+    build_canvas_display(r.list, r.canvas, r.doc, r.app.selection(),
+                         r.app.hot(), r.app.scene(false), FakeText(), nullptr,
+                         &preview);
+    CHECK((count(r.list, Role::Preview) == 3 &&
+           count(r.list, Role::Suggestion) == 1));
+    const auto items = r.list.items();
+    const auto first = std::ranges::find_if(
+        items, [](const Primitive & p) { return role_of(p) == Role::Preview; });
+    const auto handle = std::ranges::find_if(
+        items, [](const Primitive & p) { return role_of(p) == Role::Handle; });
+    CHECK_MESSAGE(handle < first, "drawn over the design handles");
+    const auto * text = std::get_if<TextPrim>(&*std::ranges::find_if(
+        items,
+        [](const Primitive & p) { return role_of(p) == Role::Suggestion; }));
+    REQUIRE(text);
+    CHECK(r.list.text(*text) == "H");
+}
+
+TEST_CASE("canvas display: the suggestions of one anchor, side by side") {
+    Rig r;
+    REQUIRE(r.app.open(tv_file()));
+    r.frame();
+    const PreviewList preview{
+        .suggestions = {
+            {.formula = "P3.x == 0", .glyph = "x=0", .anchor = {0.0, 0.0}},
+            {.formula = "P3.y == 0", .glyph = "y=0", .anchor = {0.0, 0.0}},
+            {.formula = "horizontal(L1)", .glyph = "H", .anchor = {1.0, 0.0}}}};
+    build_canvas_display(r.list, r.canvas, r.doc, r.app.selection(),
+                         r.app.hot(), r.app.scene(false), FakeText(), nullptr,
+                         &preview);
+    std::vector<const TextPrim *> texts;
+    for(const Primitive & p : r.list.items())
+        if(role_of(p) == Role::Suggestion)
+            texts.push_back(std::get_if<TextPrim>(&p));
+    REQUIRE(texts.size() == 3);
+    const Vec2d o = r.canvas.view().to_screen({0.0, 0.0});
+    const Vec2d h = r.canvas.view().to_screen({1.0, 0.0});
+    CHECK((texts[0]->at.x == static_cast<float>(o.x) + 12.0f &&
+           texts[1]->at.x == texts[0]->at.x + 3 * 7.0f + 6.0f &&
+           texts[1]->at.y == texts[0]->at.y));
+    CHECK_MESSAGE(texts[2]->at.x == static_cast<float>(h.x) + 12.0f,
+                  "another anchor starts again");
+}
+
+TEST_CASE("canvas display: the slot a preview point shares, before glyphs") {
+    Rig r;
+    REQUIRE(r.app.open(tv_file()));
+    r.frame();
+    const PreviewList preview{
+        .prims = {{.kind = PreviewPrim::Kind::Point,
+                   .points = {{1.0, 0.0}},
+                   .label = "mid(L1)"},
+                  {.kind = PreviewPrim::Kind::Point, .points = {{0.0, 0.0}}}},
+        .suggestions = {
+            {.formula = "horizontal(L2)", .glyph = "H", .anchor = {1.0, 0.0}}}};
+    build_canvas_display(r.list, r.canvas, r.doc, r.app.selection(),
+                         r.app.hot(), r.app.scene(false), FakeText(), nullptr,
+                         &preview);
+    std::vector<const TextPrim *> texts;
+    for(const Primitive & p : r.list.items())
+        if(role_of(p) == Role::Suggestion)
+            texts.push_back(std::get_if<TextPrim>(&p));
+    REQUIRE(texts.size() == 2);
+    const Vec2d at = r.canvas.view().to_screen({1.0, 0.0});
+    CHECK_MESSAGE((texts[0]->at.x == static_cast<float>(at.x) + 12.0f &&
+                   texts[0]->size == 7 &&
+                   texts[1]->at.x == texts[0]->at.x + 7 * 7.0f + 6.0f &&
+                   texts[1]->at.y == texts[0]->at.y),
+                  "one row: mid(L1), then H; a new point names nothing");
 }
 
 }  // namespace gs::test

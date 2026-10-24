@@ -1,0 +1,30 @@
+# Symmetric on an empty sketch: a plumb segment L1 (v1 kept) and five
+# points. Tool first, P3, P4, then L1: symmetric(P3, P4, L1). On the
+# selection of P5, P6 and P7: symmetric(P5, P6, P7).
+open tests/data/sketch-blank.json
+wait 16
+action tool.segment
+wait 2
+click L 579 558
+click L 579 120
+action tool.point
+wait 2
+click L 469 284
+click L 700 273
+click L 415 449
+click L 743 449
+click L 606 531
+key Escape
+key Escape
+wait 2
+action tool.symmetric
+wait 2
+click L 469 284
+click L 700 273
+click L 579 202
+wait 2
+key Escape
+wait 2
+select element P5 element P6 element P7
+action tool.symmetric
+wait 4

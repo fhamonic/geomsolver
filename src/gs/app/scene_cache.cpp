@@ -21,6 +21,54 @@ std::vector<double> linspace01(int n) {
 
 }  // namespace
 
+void evaluate_values(Evaluator & ev, std::span<const double> x,
+                     std::span<const double> st, Scene & scene) {
+    const Model & model = *scene.model;
+    const auto & items = model.display();
+    std::vector<ExprRef> refs;
+    refs.reserve(items.size() + model.lets().size() +
+                 model.constraints().size() + model.sketch().size());
+    for(const DisplayInfo & d : items) refs.push_back(d.ref);
+    for(const LetInfo & l : model.lets()) refs.push_back(l.ref);
+    const std::size_t n_values = refs.size();
+    for(const ConstraintInfo & c : model.constraints())
+        if(c.value.ref.node >= 0) refs.push_back(c.value.ref);
+    const std::size_t n_constraints = refs.size();
+    // One pass for the elements too: a file without a sketch evaluates the
+    // same refs as it did before there were sketches.
+    for(const SketchInfo & e : model.sketch()) {
+        refs.push_back(e.ref);
+        if(e.type != SketchType::Arc) continue;
+        for(const ExprRef & r :
+            {e.arc.center, e.arc.radius, e.arc.start_angle, e.arc.end_angle})
+            refs.push_back(r);
+    }
+    std::vector<GeoValue> v = ev.values(x, st, refs);
+    scene.sketch.clear();
+    scene.arcs.clear();
+    for(auto next = v.begin() + static_cast<long>(n_constraints);
+        const SketchInfo & e : model.sketch()) {
+        scene.sketch.push_back(std::move(*next++));
+        if(e.type != SketchType::Arc) {
+            scene.arcs.emplace_back();
+            continue;
+        }
+        scene.arcs.push_back(ArcValue{next[0].vec(), next[1].scalar(),
+                                      next[2].scalar(), next[3].scalar()});
+        next += 4;
+    }
+    v.resize(n_constraints);
+    scene.constraints.assign(model.constraints().size(), {});
+    auto next = v.begin() + static_cast<long>(n_values);
+    for(std::size_t i = 0; i < model.constraints().size(); ++i)
+        if(model.constraints()[i].value.ref.node >= 0)
+            scene.constraints[i] = std::move(*next++);
+    v.resize(n_values);
+    scene.lets.assign(v.begin() + static_cast<long>(items.size()), v.end());
+    v.resize(items.size());
+    scene.display = std::move(v);
+}
+
 void SceneCache::clear() {
     ev_.reset();
     scene_ = Scene{};
@@ -58,25 +106,7 @@ const Scene & SceneCache::update(const Document & doc, bool interactive) {
     try {
         scene_.error.clear();
         if(x_changed || sweep_changed) {
-            std::vector<ExprRef> refs;
-            refs.reserve(items.size() + model.lets().size() +
-                         model.constraints().size());
-            for(const DisplayInfo & d : items) refs.push_back(d.ref);
-            for(const LetInfo & l : model.lets()) refs.push_back(l.ref);
-            const std::size_t n_values = refs.size();
-            for(const ConstraintInfo & c : model.constraints())
-                if(c.value.ref.node >= 0) refs.push_back(c.value.ref);
-            std::vector<GeoValue> v = ev_->values(x, st, refs);
-            scene_.constraints.assign(model.constraints().size(), {});
-            auto next = v.begin() + static_cast<long>(n_values);
-            for(std::size_t i = 0; i < model.constraints().size(); ++i)
-                if(model.constraints()[i].value.ref.node >= 0)
-                    scene_.constraints[i] = std::move(*next++);
-            v.resize(n_values);
-            scene_.lets.assign(v.begin() + static_cast<long>(items.size()),
-                               v.end());
-            v.resize(items.size());
-            scene_.display = std::move(v);
+            evaluate_values(*ev_, x, st, scene_);
             ++counters_.display;
         }
 

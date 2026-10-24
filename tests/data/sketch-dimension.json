@@ -1,0 +1,25 @@
+{
+  "format": "geomsolver-instance/2",
+  "description": "Points, segments and circles at round places, for the GUI scripts of Smart Dimension: A and B apart in x and y, the level L1 with P above it and the parallel L4 above that, L2 at 45 degrees, the circles K1 and K2.",
+  "sketch": {
+    "extent": "box(0, 0, 4, 3)",
+    "elements": {
+      "A": {"type": "point", "value": [0.5, 0.5]},
+      "B": {"type": "point", "value": [1.5, 1]},
+      "C": {"type": "point", "value": [0.5, 2]},
+      "D": {"type": "point", "value": [1.5, 2]},
+      "L1": {"type": "segment", "from": "C", "to": "D"},
+      "P": {"type": "point", "value": [1, 2.4]},
+      "J": {"type": "point", "value": [2.5, 2.5]},
+      "K": {"type": "point", "value": [3.5, 2.5]},
+      "L4": {"type": "segment", "from": "J", "to": "K"},
+      "F": {"type": "point", "value": [2.5, 0.5]},
+      "G": {"type": "point", "value": [3, 1]},
+      "L2": {"type": "segment", "from": "F", "to": "G"},
+      "M": {"type": "point", "value": [2.5, 1.6]},
+      "K1": {"type": "circle", "center": "M", "radius": 0.25},
+      "N": {"type": "point", "value": [3.5, 1.6]},
+      "K2": {"type": "circle", "center": "N", "radius": 0.15}
+    }
+  }
+}

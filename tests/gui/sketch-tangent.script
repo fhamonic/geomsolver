@@ -1,0 +1,31 @@
+# Tangent on an empty sketch: a circle K1, a segment L1 from a point P2 on
+# its rim (on(P2, K1) kept), and a segment L2 above it. Tangent, tool
+# first, on P2, L1 and K1: tangent_at(L1, K1, P2, -1), L1 leaving P2
+# downwards where K1 turns upwards. On the selection of L2 and K1, which
+# lies on L2's right: tangent(L2, K1, -1).
+open tests/data/sketch-blank.json
+wait 16
+action tool.circle
+wait 2
+click L 579 339
+click L 689 339
+action tool.segment
+wait 2
+click L 689 339
+click L 716 503
+click L 415 175
+click L 743 202
+key Escape
+key Escape
+wait 2
+action tool.tangent
+wait 2
+click L 689 339
+click L 702 421
+click L 579 449
+wait 2
+key Escape
+wait 2
+select element L2 element K1
+action tool.tangent
+wait 4

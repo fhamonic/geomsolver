@@ -212,7 +212,7 @@ bool RequirementsPresenter::apply_filter(std::size_t i,
     if(i == 0) text_ = std::get<std::string>(value);
     if(i == 1) associated_ = std::get<bool>(value);
     if(i == 2) direct_only_ = std::get<bool>(value);
-    if(i == 3) violated_ = std::get<bool>(value);
+    if(i == kViolatedFilter) violated_ = std::get<bool>(value);
     if(i == 4) disabled_ = std::get<bool>(value);
     return true;
 }

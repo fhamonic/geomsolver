@@ -289,6 +289,24 @@ TEST_CASE("instance: schema_lists_key tells a listed key from a new one") {
     CHECK_FALSE(schema_lists_key("descripton"));
 }
 
+TEST_CASE("instance: an included file's geometry is not held to its type") {
+    // An included file may serve a /1 instance too, which ignores a key of
+    // another type: a /2 instance does not refuse it there.
+    TempDir tmp;
+    write_all(tmp.path / "room.json",
+              R"J({"geometry": {"lamp": {"type": "point", "x": 1, "y": 2,
+                                         "r": 0.3}}})J");
+    Json d = base_doc();
+    d["format"] = "geomsolver-instance/2";
+    d["include"] = Json::array({"room.json"});
+    const LoadResult r = Instance::from_json(d, tmp.path / "main.json");
+    REQUIRE(r.ok());
+    const CompileResult c = compile(*r.instance);
+    INFO(to_string(c.diagnostics));
+    CHECK(c.ok());
+    CHECK(c.diagnostics.empty());
+}
+
 TEST_CASE("instance: include and parse errors") {
     TempDir tmp;
     write_all(
@@ -348,6 +366,31 @@ TEST_CASE("instance: include and parse errors") {
     r = Instance::load(tmp.path / "nope.json");
     CHECK_FALSE(r.instance);
     CHECK(r.diagnostics[0].message.find("cannot open") != std::string::npos);
+
+    // A number out of double range is no parse_error to nlohmann.
+    write_all(tmp.path / "huge.json",
+              "{\"format\": \"geomsolver-instance/1\",\n  \"params\": {\"a\": "
+              "1e999}\n}");
+    r = Instance::load(tmp.path / "huge.json");
+    CHECK_FALSE(r.instance);
+    REQUIRE(r.diagnostics.size() == 1);
+    CHECK(r.diagnostics[0].to_string() ==
+          (tmp.path / "huge.json").string() +
+              ": [json.exception.out_of_range.406] number overflow parsing "
+              "'1e999'");
+    write_all(
+        tmp.path / "far.json",
+        R"J({"geometry": {"lamp": {"type": "point", "x": 1e999, "y": 2}}})J");
+    d["include"] = Json::array({"far.json"});
+    r = Instance::from_json(d, tmp.path / "main.json");
+    REQUIRE(r.instance);
+    CHECK(has_error(r.diagnostics, "far.json", "number overflow parsing"));
+    d["include"] = Json::array();
+    r = Instance::from_json(d, tmp.path / "main.json");
+    REQUIRE(r.ok());
+    REQUIRE(r.instance->set("include", Json::array({"far.json"})));
+    CHECK(has_error(r.instance->include_diagnostics(), "far.json",
+                    "number overflow parsing"));
 }
 
 TEST_CASE("instance: edit, recompile, keep the last good model") {

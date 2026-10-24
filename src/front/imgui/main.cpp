@@ -460,9 +460,10 @@ int main(int argc, char ** argv) {
     Options opt;
     if(!parse_args(argc, argv, opt)) return 2;
     const fs::path exe = exe_dir(argv[0]);
-    // A script opens what it needs, and the selftest's checks hold for
-    // tests/data/tv_corner_ref.json only: a default instance would make
-    // either depend on whatever data/ holds.
+    // A script opens what it needs, and the selftest's checks are written
+    // for tests/data/tv_corner_ref.json, skipping on another file those that
+    // name what it lacks: a default instance would make either depend on
+    // whatever data/ holds.
     if(!opt.instance && !opt.script && !opt.selftest)
         opt.instance = default_instance(exe);
 
@@ -541,6 +542,9 @@ int main(int argc, char ** argv) {
             gs::app::make_solver_backend(), std::move(settings));
         gs::app::App & app = panel->app();
         app.solver().set_show_durations(!scripted);
+        // A scripted run diagnoses a large sketch at the next tick, on this
+        // thread, so that it draws the same message every time.
+        app.sketch().set_worker(!scripted);
         if(opt.instance && !app.open(*opt.instance)) {
             std::fprintf(stderr, "geomsolver: cannot open %s\n",
                          opt.instance->string().c_str());

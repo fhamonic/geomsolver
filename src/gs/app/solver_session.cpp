@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "gs/app/format.hpp"
+#include "gs/engine/evaluator.hpp"
+#include "gs/solve/report.hpp"
 
 namespace gs::app {
 namespace {
@@ -36,6 +38,10 @@ std::string excluded_message(const Document & doc) {
         "Solve, Polish and the Pareto study wait for {} item(s) excluded "
         "from the model: {}",
         doc.excluded().size(), excluded_labels(doc));
+}
+
+bool nothing_to_optimise(const Document & doc) {
+    return doc.has_sketch() && doc.model() && doc.model()->n() == 0;
 }
 
 SolverSession::SolverSession(std::unique_ptr<SolverBackend> backend)
@@ -109,6 +115,10 @@ bool SolverSession::start(Document & doc, SolveKind kind) {
         message_ = excluded_message(doc);
         return false;
     }
+    if(nothing_to_optimise(doc)) {
+        message_ = kNothingToOptimise;
+        return false;
+    }
     SolveRequest req;
     req.kind = kind;
     req.model = doc.model();
@@ -150,9 +160,12 @@ bool SolverSession::start(Document & doc, SolveKind kind) {
         message_ = err.empty() ? "the solver refused the job" : err;
         return false;
     }
-    // Cleared rather than set to "started": the progress line reports the
-    // job, and a "started" text would stay after the job has ended.
-    message_.clear();
+    // Not "started": the progress line reports the job, and a "started"
+    // text would stay after the job has ended. A sketch that fails its check
+    // stays failed for every design, so that is said instead, and stays.
+    Evaluator ev(*doc.model());
+    message_ =
+        check_failure(*doc.model(), ev.verify(doc.x(), 2), settings_.feas_tol);
     return true;
 }
 

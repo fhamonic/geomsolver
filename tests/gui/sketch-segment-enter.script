@@ -1,0 +1,15 @@
+# sketch-segment.script up to its Enter, which applies the length typed
+# before the next click places the end: the field is set and closed, and
+# nothing more is written.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.segment
+wait 2
+click L 837 532
+click L 515 523
+click L 515 532
+wait 2
+text "0.5"
+wait 2
+key Enter
+wait 2

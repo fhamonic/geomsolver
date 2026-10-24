@@ -1,0 +1,28 @@
+# Coincident on an empty sketch: a box B1 from P1 to P2, and a segment L1
+# from P3 to P4 near the box's lower right corner, which is derived:
+# vertex(B1, 1). Coincident, tool first, merges P4 into that corner, which
+# L1 then ends on, then merges P2, the box's second corner, into P3, the
+# first picked staying.
+open tests/data/sketch-blank.json
+wait 16
+action tool.box
+wait 2
+click L 360 558
+click L 524 449
+action tool.segment
+wait 2
+click L 634 284
+click L 661 547
+key Escape
+key Escape
+wait 2
+action tool.coincident
+wait 2
+click L 661 547
+click L 524 558
+wait 2
+click L 634 284
+click L 524 449
+wait 2
+key Escape
+wait 4

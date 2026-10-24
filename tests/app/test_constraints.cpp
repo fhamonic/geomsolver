@@ -1,10 +1,13 @@
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "gs/app/app.hpp"
 #include "gs/app/constraints.hpp"
+#include "gs/engine/expression.hpp"
 
 #include "helpers.hpp"
 
@@ -49,6 +52,23 @@ struct Rig {
     }
 };
 
+// The Kind column as P1 read it, from the parser alone: what a file
+// without a sketch still shows.
+std::pair<std::string, std::string> p1_kind(std::string_view expr) {
+    const ParseResult parsed = parse_expression(expr);
+    if(!parsed.ok() || parsed.ast->kind != Ast::Kind::Relation) return {};
+    const std::string & op = parsed.ast->text;
+    if(parsed.ast->args.size() == 3) return {"range", "A range: lo ≤ e ≤ hi"};
+    if(op == "<=")
+        return {"≤",
+                "At most: the left side is less than or equal to the right"};
+    if(op == ">=")
+        return {
+            "≥",
+            "At least: the left side is greater than or equal to the right"};
+    return {"=", "An equality"};
+}
+
 }  // namespace
 
 TEST_CASE("constraints: the rows, their relation, quantifier and status") {
@@ -65,17 +85,17 @@ TEST_CASE("constraints: the rows, their relation, quantifier and status") {
         (couch.parent == r.header && couch.depth == 1 &&
          couch.path == "constraints[0]" && !couch.dim &&
          couch.cells[0].kind == ListCell::Kind::Check && couch.cells[0].on &&
-         couch.cells[1].text == "≥" &&
-         couch.cells[2].kind == ListCell::Kind::Name &&
-         couch.cells[3].text == "clearance(tv, couch) >= clr" &&
-         couch.cells[4].text == "for all tau" &&
-         couch.cells[5].tone == Tone::Ok &&
-         couch.cells[5].text.starts_with("margin ") &&
-         couch.cells[5].tip.find("\nValue now: ") != std::string::npos),
+         couch.cells[2].text == "≥" &&
+         couch.cells[3].kind == ListCell::Kind::Name &&
+         couch.cells[4].text == "clearance(tv, couch) >= clr" &&
+         couch.cells[5].text == "for all tau" &&
+         couch.cells[6].tone == Tone::Ok &&
+         couch.cells[6].text.starts_with("margin ") &&
+         couch.cells[6].tip.find("\nValue now: ") != std::string::npos),
         "enabled, at least, for all tau, its margin and its value now: "
-            << couch.cells[5].text);
-    CHECK((r.row("pivot_spacing").cells[4].text == "—" &&
-           r.row("pivot_spacing").cells[4].tone == Tone::Dim));
+            << couch.cells[6].text);
+    CHECK((r.row("pivot_spacing").cells[5].text == "—" &&
+           r.row("pivot_spacing").cells[5].tone == Tone::Dim));
     std::string tip;
     CHECK_MESSAGE(
         (relation_kind("a <= b") == "≤" && relation_kind("a == b") == "=" &&
@@ -84,7 +104,7 @@ TEST_CASE("constraints: the rows, their relation, quantifier and status") {
          relation_kind("x >=").empty() && relation_kind("x > 0") == "≥"),
         "the relation it states, from its syntax tree");
     CHECK_MESSAGE(
-        (r.list.columns().size() == 6 &&
+        (r.list.columns().size() == 7 &&
          r.list.toolbar() == std::vector<std::string>{"formula.add_constraint",
                                                       "edit.delete"} &&
          !r.list.row({{K::Constraint, "gone"}}) &&
@@ -133,9 +153,9 @@ TEST_CASE("constraints: a row's state, its toggles and its sheet's edits") {
     st = constraint_state(doc, r.app.scene_now(), 1);
     CHECK_MESSAGE(
         (st.status && st.status->tone == Tone::Bad && st.here && st.violated &&
-         r.row("fridge").cells[5].text.starts_with("[here] violated ") &&
-         r.row("fridge").cells[5].tip.starts_with(
-             r.row("fridge").cells[5].text + "\n")),
+         r.row("fridge").cells[6].text.starts_with("[here] violated ") &&
+         r.row("fridge").cells[6].tip.starts_with(
+             r.row("fridge").cells[6].text + "\n")),
         "a violated constraint, also here: the mark first, the whole status "
         "in the tooltip");
     doc.edit("constraints[0].expr", "clearance(tv, couh) >= clr");
@@ -265,9 +285,9 @@ TEST_CASE("constraints: an entry without a name, and names used twice") {
     const std::optional<ListRow> row = r.list.row(unnamed_c);
     REQUIRE(row);
     CHECK_MESSAGE(
-        (row->cells[2].text == "constraints[3]" &&
-         row->cells[2].tone == Tone::Bad && row->path == "constraints[3]" &&
-         r.list.activate(unnamed_c, 2) == Intent::Rename &&
+        (row->cells[3].text == "constraints[3]" &&
+         row->cells[3].tone == Tone::Bad && row->path == "constraints[3]" &&
+         r.list.activate(unnamed_c, 3) == Intent::Rename &&
          r.properties.sheet(unnamed_c.key).title ==
              "constraint constraints[3]"),
         "keyed by its place: a row, a sheet, a name to give");
@@ -286,18 +306,100 @@ TEST_CASE("constraints: a double click edits the formula") {
     Rig r;
     const RowId couch{{K::Constraint, "couch"}};
     CHECK_MESSAGE(
-        (r.list.activate(couch, 2) == Intent::Rename &&
-         r.list.activate(couch, 3) == Intent::OpenFormula &&
-         r.list.activate(couch, 5) == Intent::OpenFormula &&
+        (r.list.activate(couch, 3) == Intent::Rename &&
+         r.list.activate(couch, 4) == Intent::OpenFormula &&
+         r.list.activate(couch, 6) == Intent::OpenFormula &&
          r.list.activate(couch, std::nullopt) == Intent::OpenFormula &&
          r.list.activate(r.header, 3) == Intent::None),
         "on the name its editor, elsewhere the formula");
     r.sel.set(couch.key);
-    CHECK(r.app.panels().activate(PanelId::Constraints, couch, 3) ==
+    CHECK(r.app.panels().activate(PanelId::Constraints, couch, 4) ==
           Intent::OpenFormula);
     CHECK_MESSAGE((r.app.formula().is_open() &&
                    r.app.formula().title() == "Edit constraint couch"),
                   "the formula pop-up opens on it");
+}
+
+TEST_CASE("constraints: without a sketch, the Kind column is P1's relation") {
+    int files = 0, constraints = 0;
+    const fs::path data = tv_file().parent_path();
+    for(const fs::path & dir :
+        {data, data / ".." / ".." / "docs" / "instances"})
+        for(const auto & e : fs::directory_iterator(dir)) {
+            if(e.path().extension() != ".json") continue;
+            std::ifstream in(e.path());
+            const Json doc = Json::parse(in);
+            if(doc.contains("sketch")) continue;
+            ++files;
+            for(const Json & c : doc.value("constraints", Json::array())) {
+                const std::string expr = c.value("expr", "");
+                std::string tip;
+                const std::string kind =
+                    relation_kind(expr, &tip, KindNames(doc));
+                INFO(e.path().filename().string() << ": " << expr);
+                CHECK(std::pair{kind, tip} == p1_kind(expr));
+                ++constraints;
+            }
+        }
+    CHECK((files >= 30 && constraints >= 100));
+}
+
+TEST_CASE(
+    "constraints: the Kind column shows the kind of a sketch's constraint") {
+    Rig r;
+    REQUIRE(r.doc.load_json(Json::parse(R"J({
+          "format": "geomsolver-instance/2",
+          "params": {"gap": 0.1},
+          "sketch": {"elements": {
+            "P": {"type": "point", "value": [0, 0], "fixed": true},
+            "Q": {"type": "point", "value": [1, 0]},
+            "PQ": {"type": "segment", "from": "P", "to": "Q"},
+            "disc": {"type": "circle", "center": "Q", "radius": 0.2},
+            "swing": {"type": "arc", "center": "Q", "radius": 0.3,
+                      "start": 0, "end": "90deg"}}},
+          "constraints": [
+            {"name": "apart", "expr": "dist(Q, P) == 1"},
+            {"name": "away", "expr": "gap <= dist(P, Q)"},
+            {"name": "span", "expr": "0.5 <= len(PQ) <= 2"},
+            {"name": "flat", "expr": "horizontal(PQ)"},
+            {"name": "level", "expr": "P.y == Q.y"},
+            {"name": "clear", "expr": "clearance(disc, PQ) >= 0"},
+            {"name": "open", "expr": "span(swing) == 90deg"},
+            {"name": "ajar", "expr": "start_angle(swing) == 0"},
+            {"name": "shut", "expr": "end_angle(swing) == 90deg"},
+            {"name": "reach", "expr": "radius(swing) == 0.3"}]
+        })J"),
+                            fs::temp_directory_path() / "test_app_kinds.json"));
+    r.app.sync();
+    const auto kind = [&](const char * name) {
+        const ListRow row = r.row(name);
+        return std::pair{row.cells[2].text, row.cells[2].tip};
+    };
+    CHECK(kind("apart") ==
+          std::pair<std::string, std::string>{
+              "dist", "Distance: the distance between two points"});
+    CHECK(kind("away") ==
+          std::pair<std::string, std::string>{
+              "dist ≥",
+              "Distance bound: the distance between two points, at least a "
+              "value"});
+    CHECK(kind("span").first == "≤len≤");
+    CHECK(kind("span").second.starts_with("Length range: "));
+    CHECK(kind("flat").first == "horiz.");
+    CHECK(kind("flat").second.starts_with("Horizontal: "));
+    CHECK(kind("level") == p1_kind("P.y == Q.y"));
+    CHECK(kind("clear") == p1_kind("clearance(disc, PQ) >= 0"));
+    CHECK(kind("open") == std::pair<std::string, std::string>{
+                              "span", "Span: the angle an arc turns through"});
+    CHECK(kind("ajar") ==
+          std::pair<std::string, std::string>{
+              "start", "Start angle: the direction an arc starts at"});
+    CHECK(kind("shut") ==
+          std::pair<std::string, std::string>{
+              "end", "End angle: the direction an arc ends at"});
+    CHECK(kind("reach") ==
+          std::pair<std::string, std::string>{
+              "radius", "Radius: the radius of a circle or an arc"});
 }
 
 }  // namespace gs::test

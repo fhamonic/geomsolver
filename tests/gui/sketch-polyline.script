@@ -1,0 +1,27 @@
+# The Polyline tool on the sketch example: four clicks and a click back on
+# the first vertex close a polygon PG1; three clicks and Enter finish a
+# polyline PL1 open; two clicks and a right click finish PL2 open; one
+# click and Esc drop the next; a second Esc quits the tool.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.polyline
+wait 2
+click L 708 339
+click L 789 339
+click L 789 258
+click L 708 258
+click L 709 340
+wait 2
+click L 724 363
+click L 772 355
+click L 740 291
+key Enter
+wait 2
+click L 716 242
+click L 797 250
+click R 797 250
+wait 2
+click L 764 283
+key Escape
+key Escape
+wait 2

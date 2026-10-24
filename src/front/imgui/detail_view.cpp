@@ -3,7 +3,11 @@
 #include <array>
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
+
+#include <imgui_internal.h>
 
 #include "front/imgui/widgets.hpp"
 
@@ -172,13 +176,43 @@ std::string number_format(std::string_view unit) {
     return fmt;
 }
 
+// A value typed into a Properties drag field and not sent yet (drag()).
+struct Typed {
+    SelKey key;
+    std::string id;
+    DetailValue value;
+};
+std::optional<Typed> typed;
+
 // The drag of the widget just submitted: one undo step from its activation
-// to its release, the value it shows read back from the sheet.
-void drag(const SheetOps & ops, const DetailItem & item, bool changed,
-          const DetailValue & value) {
-    if(ImGui::IsItemActivated()) ops.begin_drag(item.id);
-    if(changed) ops.update_drag(item.id, value);
-    if(ImGui::IsItemDeactivated()) ops.end_drag(item.id);
+// to its release, the value it shows read back from the sheet. A Ctrl+click
+// types into it, and ImGui applies every keystroke: forwarded as they come,
+// typing 120 into an arc's end would drag the sketch to 1 and 12 first,
+// where a guard can stop it for good. The typed value goes once, when the
+// field is left; Esc, which reverts ImGui's text, sends none.
+void drag(App & app, const DetailSheet & sheet, const SheetOps & ops,
+          const DetailItem & item, bool changed, const DetailValue & value) {
+    if(changed && sheet.key && ImGui::TempInputIsActive(ImGui::GetItemID()))
+        typed = Typed{*sheet.key, item.id, value};
+    else if(changed)
+        ops.update_drag(item.id, value);
+    // One frame can leave a field and enter another: Tab to a pair's next
+    // component (one item: its release must come first, or the new drag
+    // is the one ended), or a click into another field, whose activation
+    // comes first when it precedes in the sheet. Either way the value
+    // typed into the field left is sent before a drag begins, since
+    // begin_drag() ends the open one with the last value it was sent.
+    if(ImGui::IsItemDeactivated()) {
+        if(typed && typed->id == item.id &&
+           ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            typed.reset();
+        send_typed_value(app);
+        ops.end_drag(item.id);
+    }
+    if(ImGui::IsItemActivated()) {
+        send_typed_value(app);
+        ops.begin_drag(item.id);
+    }
 }
 
 // The editor of `item`. False when it changed the document: the items after
@@ -251,7 +285,7 @@ bool editor(App & app, const DetailSheet & sheet, const DetailItem & item,
                                     bounded ? &hi : nullptr, fmt.c_str());
             }
             if(!item.tip.empty()) tooltip_text(item.tip);
-            drag(ops, item, changed, value);
+            drag(app, sheet, ops, item, changed, value);
             return true;
         }
         case Kind::Colour: {
@@ -260,11 +294,22 @@ bool editor(App & app, const DetailSheet & sheet, const DetailItem & item,
                 "##v", std::get<Rgba>(value).data(),
                 ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);
             if(!item.tip.empty()) tooltip_text(item.tip);
-            drag(ops, item, changed, value);
+            drag(app, sheet, ops, item, changed, value);
             return true;
         }
         case Kind::Button: {
             const bool pressed = ImGui::SmallButton(item.label.c_str());
+            if(!item.tip.empty()) tooltip_text(item.tip);
+            return !(pressed && ops.press(item.id));
+        }
+        case Kind::Link: {
+            ImGui::AlignTextToFramePadding();
+            if(!item.target) {
+                ImGui::TextUnformatted(item.text.c_str());
+                if(!item.tip.empty()) tooltip_text(item.tip);
+                return true;
+            }
+            const bool pressed = ImGui::TextLink(item.text.c_str());
             if(!item.tip.empty()) tooltip_text(item.tip);
             return !(pressed && ops.press(item.id));
         }
@@ -330,6 +375,12 @@ void sheet_view(App & app, const DetailSheet & sheet, const SheetOps & ops) {
 }
 
 }  // namespace
+
+void send_typed_value(App & app) {
+    if(!typed) return;
+    const Typed t = *std::exchange(typed, std::nullopt);
+    app.panels().properties.update_drag(t.key, t.id, t.value);
+}
 
 void detail_view(App & app) {
     if(!ImGui::IsWindowAppearing())

@@ -63,9 +63,10 @@ public:
     // it. Of entries that share the name, the one the editor is open on.
     // True when renamed: every path may now name another entry. A refused
     // name keeps the editor open, with the reason in
-    // RenameEditor::refusal(). By value: a caller may pass the selected
-    // key itself, whose name the selection rewrites while it still compares
-    // the other keys with the old name.
+    // RenameEditor::refusal(). A body's element takes its name within its
+    // body, "c2" for "tv.c", or the qualified "tv.c2". By value: a caller
+    // may pass the selected key itself, whose name the selection rewrites
+    // while it still compares the other keys with the old name.
     bool rename(SelKey key, std::string text);
     // Esc in the name editor, or a click elsewhere: renames nothing.
     void cancel_rename() { rename_.close(); }

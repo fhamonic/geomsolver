@@ -5,16 +5,16 @@ size 3200 2000
 open tests/data/tv_corner_ref.json
 wait 16
 # A's handle.
-click R 853 1432
+click R 921 1432
 wait 4
 shot menu.ppm
 key Escape
 action edit.clear_selection
 wait 3
-move 760 1380
+move 828 1380
 wait 2
 press L
-move 1000 1520 10
+move 1068 1520 10
 wait 2
 shot box.ppm
 release L

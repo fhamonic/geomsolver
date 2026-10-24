@@ -158,7 +158,11 @@ TEST_CASE("formula draft: the names it completes to") {
                   "the constant pi");
     r.type("dis");
     CHECK((f.candidates() ==
-           std::vector<Completion>{{"dist", "function", "2 args"}}));
+           std::vector<Completion>{{"dist", "function", "2 args"},
+                                   {"line_dist", "function", "2-3 args"}}));
+    r.type("coinc");
+    CHECK((f.candidates() ==
+           std::vector<Completion>{{"coincident", "predicate", "2 args"}}));
     r.type("seat");
     CHECK_MESSAGE(
         (r.names() == std::vector<std::string>{"couch_seat", "couch_seat_1",
@@ -210,6 +214,11 @@ TEST_CASE("formula draft: accept, insert and the text update") {
     f.accept(0);
     u = f.take_text_update();
     CHECK((u && u->text == "clearance(tv, couch)" && u->caret == 19));
+    f.set_text("paral", 5);
+    f.accept(0);
+    u = f.take_text_update();
+    CHECK_MESSAGE((u && u->text == "parallel(" && u->caret == 9),
+                  "a predicate gets its bracket too");
     f.accept(99);
     CHECK(!f.take_text_update());
 
@@ -351,6 +360,99 @@ TEST_CASE("formula draft: the formula pre-filled from the selection") {
          fields[1].id == "forall" && fields[1].text == "tau" &&
          fields[1].value == DetailValue(1)),
         "the action opens the pop-up pre-filled");
+}
+
+TEST_CASE("formula draft: the bounds and clearances of the sketch's entries") {
+    using SK = SketchOperand::Kind;
+    using P = Prefill;
+    const SketchOperand a{SK::Point, "A", {1, 0}}, b{SK::Point, "B", {0, 2}},
+        l{SK::Line, "edge(B1, 2)", {}}, k{SK::Shape, "K1", {}},
+        box{SK::Shape, "B1", {}};
+    const SketchPrefills ab = sketch_prefills(std::vector{a, b});
+    CHECK(ab.bound == P{"dist(A, B) >= ", 14, ""});
+    CHECK(ab.range == P{" <= dist(A, B) <= ", 0, ""});
+    CHECK_MESSAGE((ab.order_x == P{"A.x > B.x", 9, ""} &&
+                   ab.order_y == P{"B.y > A.y", 9, ""}),
+                  "each as drawn: A right of B, B above A");
+    const SketchOperand c{SK::Point, "C", {0, 2.00001}};
+    const SketchPrefills bc = sketch_prefills(std::vector{b, c});
+    CHECK_MESSAGE((bc.order_x == P{"B.x >= C.x", 10, ""} &&
+                   bc.order_y == P{"B.y >= C.y", 10, ""}),
+                  "plumb and level as drawn: an order that holds there");
+    const SketchPrefills line = sketch_prefills(std::vector{l});
+    CHECK((line.bound == P{"len(edge(B1, 2)) <= ", 20, ""} &&
+           line.range == P{" <= len(edge(B1, 2)) <= ", 0, ""} &&
+           line.order_x == P{}));
+    CHECK((sketch_prefills(std::vector{k, box}).bound ==
+           P{"clearance(K1, B1) >= ", 21, ""}));
+    CHECK((sketch_prefills(std::vector{a, k}).bound ==
+           P{"clearance(A, K1) >= ", 20, ""}));
+    for(const std::vector<SketchOperand> & none :
+        {std::vector<SketchOperand>{}, {a}, {k}, {a, b, k}})
+        CHECK_MESSAGE(sketch_prefills(none) == SketchPrefills{},
+                      "nothing for " << none.size());
+    CHECK(prefill_label(ab.bound) == "Add dist(A, B) >= ...");
+    CHECK(prefill_label(ab.range) == "Add ... <= dist(A, B) <= ...");
+    CHECK(prefill_label(ab.order_x) == "Add A.x > B.x...");
+    CHECK(prefill_label(P{"clearance(tv, )", 14, ""}) ==
+          "Add clearance(tv, ...)");
+
+    // The context menu, on the sketch's entries as they are picked.
+    App app(nullptr);
+    REQUIRE(app.open(fs::path(GS_TEST_DATA_DIR) /
+                     "../../docs/instances/sketch-basic.json"));
+    app.sync();
+    app.scene(false);
+    auto action = [&](const char * id) { return app.actions().find(id); };
+    auto in_menu = [&](std::string_view id) {
+        const std::vector<std::string> e = app.context_actions().entries;
+        return std::ranges::contains(e, id);
+    };
+    app.selection().assign({{K::Element, "E"}, {K::Element, "N"}});
+    CHECK(action("formula.add_constraint")->label() == "Add dist(E, N) >= ...");
+    CHECK(action("formula.add_range")->label() ==
+          "Add ... <= dist(E, N) <= ...");
+    CHECK(action("formula.add_order_x")->label() == "Add E.x > N.x...");
+    CHECK(action("formula.add_order_y")->label() == "Add N.y > E.y...");
+    CHECK((in_menu("formula.add_range") && in_menu("formula.add_order_x") &&
+           in_menu("formula.add_order_y")));
+    REQUIRE(app.actions().run("formula.add_order_x"));
+    FormulaDraft & f = app.formula();
+    CHECK((f.is_open() && f.text() == "E.x > N.x" && f.caret() == 9));
+    REQUIRE(f.commit());
+    const Json * cs = app.document().instance()->get("constraints");
+    CHECK(cs->back()["expr"] == "E.x > N.x");
+
+    app.selection().assign(
+        {{K::Element, "E"}, {K::Element, "shelf", -1, "vertex 1"}});
+    CHECK(action("formula.add_order_x")->label() ==
+          "Add E.x > vertex(shelf, 1).x...");
+    app.selection().assign({{K::Element, "axis"}});
+    CHECK(action("formula.add_constraint")->label() == "Add len(axis) <= ...");
+    CHECK(action("formula.add_range")->label() ==
+          "Add ... <= len(axis) <= ...");
+    CHECK_FALSE(action("formula.add_order_x")->is_enabled());
+    app.selection().assign({{K::Element, "walls", -1, "edge 0"}});
+    CHECK(action("formula.add_constraint")->label() ==
+          "Add len(edge(walls, 0)) <= ...");
+    app.selection().assign({{K::Element, "table"}, {K::Element, "shelf"}});
+    CHECK(action("formula.add_constraint")->label() ==
+          "Add clearance(table, shelf) >= ...");
+    CHECK_FALSE(in_menu("formula.add_range"));
+    REQUIRE(app.actions().run("formula.add_constraint"));
+    CHECK(f.text() == "clearance(table, shelf) >= ");
+    f.cancel();
+    app.selection().assign({{K::Element, "E"}, {K::Param, "walk"}});
+    CHECK(action("formula.add_constraint")->label() == "Add constraint...");
+    CHECK_FALSE(action("formula.add_range")->is_enabled());
+
+    // A file without a sketch: as before, and no bound of the sketch.
+    Rig r;
+    r.sel.assign({{K::Design, "A"}, {K::Design, "B"}});
+    CHECK(r.label() == "Add dist(A, B) >= ...");
+    for(const char * id :
+        {"formula.add_range", "formula.add_order_x", "formula.add_order_y"})
+        CHECK_FALSE_MESSAGE(r.app.actions().find(id)->is_enabled(), id);
 }
 
 TEST_CASE("formula draft: adding a constraint") {
@@ -545,7 +647,7 @@ TEST_CASE("formula draft: where the pop-up opens from") {
     const SelKey couch{K::Constraint, "couch"};
     Panels & panels = r.app.panels();
     CHECK_MESSAGE(
-        (panels.activate(PanelId::Constraints, RowId{couch}, 3) ==
+        (panels.activate(PanelId::Constraints, RowId{couch}, 4) ==
              Intent::OpenFormula &&
          f.is_open() && f.mode() == FormulaDraft::Mode::EditConstraint &&
          f.take_open_request()),

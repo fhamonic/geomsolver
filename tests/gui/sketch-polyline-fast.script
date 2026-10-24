@@ -1,0 +1,21 @@
+# A polyline's edge typed fast over the canvas, before the field has the
+# keyboard: the length 0.4, its second part on the frame the field takes
+# the keyboard and Enter on the next; then the angle 90 and Enter on the
+# frame after its seed, which places the vertex; Enter again finishes it.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.polyline
+wait 2
+click L 708 339
+move 760 300 3
+wait 2
+text "0"
+wait 1
+text ".4"
+key Enter
+wait 4
+text "90"
+key Enter
+wait 4
+key Enter
+wait 2

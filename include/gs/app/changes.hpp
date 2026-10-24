@@ -16,7 +16,9 @@ enum class Change : std::uint32_t {
     // Another document (load, reload, Open). Every other part may differ
     // too; Structure is always set with it.
     Instance = 1 << 0,
-    // A JSON path may now name another entry (Document::path_generation).
+    // A JSON path may now name another entry (Document::path_generation),
+    // or the document gained or lost its sketch section, which changes the
+    // lists' groups, columns and filters (a tool's first shape).
     Structure = 1 << 1,
     // A compile attempt: content, diagnostics and excluded items.
     Content = 1 << 2,
@@ -45,6 +47,15 @@ enum class Change : std::uint32_t {
     // A sweep player played or paused (App::toggle_play()), which the sweep
     // bar and a range's sheet both show.
     Player = 1 << 16,
+    // The sketch: its model replaced (Document::sketch_generation), its
+    // diagnosis, the live values of a drag (SketchSession) or the monitored
+    // statuses. A list or a sheet reads its rows or items again, as on
+    // Scene; the status bar's and Messages' sketch message changes.
+    Sketch = 1 << 17,
+    // The active tool, its state, its preview or its fields, the value field
+    // typed in, the toolbar's options (ToolHost): the toolbar, the status
+    // bar's hint and the canvas read again, no list does.
+    Tool = 1 << 18,
 };
 
 class Changes {

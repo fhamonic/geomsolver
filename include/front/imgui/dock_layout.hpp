@@ -16,15 +16,20 @@ using namespace gs::app;
 // which the layout docks and saves, so the label may change.
 std::string window_title(std::string_view label, PanelId id);
 std::string canvas_window_title();
+// The toolbar's window, beside the canvas: no panel, so View > Panels
+// cannot close it, and Reset layout puts it back.
+std::string toolbar_window_title();
+// The default layout's toolbar width, in pixels.
+float toolbar_width();
 
 // The dockspace that fills the main viewport between the menu bar and the
 // status bar, and its layout. The layout is saved in the App's settings
 // (layout.imgui) and loaded at the next start; without one, after a change
 // of the default layout's version, or on View > Reset layout, the default
-// layout is built: the canvas in the centre, the lists Elements, Variables,
-// Quantities, Params and Ranges over Constraints, Criteria and the Solver
-// on the right, Messages, Margins and Document under the canvas, and
-// Properties beside them.
+// layout is built: the canvas in the centre, the toolbar on its left, the
+// lists Elements, Variables, Quantities, Params and Ranges over Constraints,
+// Criteria and the Solver on the right, Messages, Margins and Document under
+// the canvas and the toolbar, and Properties beside them.
 class DockLayout {
 public:
     // Before the first frame: turns docking on and loads the saved layout.

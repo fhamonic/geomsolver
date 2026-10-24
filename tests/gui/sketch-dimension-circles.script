@@ -1,0 +1,19 @@
+# Smart Dimension on circles: K1, its radius typed (r1); then K1 and K2, the
+# distance of their centres, Esc keeping it (d1).
+open tests/data/sketch-dimension.json
+wait 16
+action tool.dimension
+wait 2
+click L 716 321
+click L 670 394
+wait 2
+text "0.3"
+wait 2
+key Enter
+wait 2
+click L 670 266
+click L 853 293
+click L 762 229
+wait 2
+key Escape
+wait 2

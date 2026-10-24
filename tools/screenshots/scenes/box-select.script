@@ -2,10 +2,10 @@
 # release it selects what lies wholly inside: A, B, d and pivot_zone.
 open tests/data/tv_corner_ref.json
 wait 16
-move 320 545
+move 388 545
 wait 2
 press L
-move 400 620 10
+move 468 620 10
 wait 2
 shot
 release L

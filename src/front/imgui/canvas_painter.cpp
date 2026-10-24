@@ -48,6 +48,16 @@ ImU32 role_color(Paint p) {
             return rgba(110, 200, 255, 36);
         case Role::Quantity:
             return rgba(200, 170, 255, 230);
+        case Role::Element:
+            return rgba(232, 236, 244, 240);
+        case Role::ElementHelper:
+            return rgba(140, 146, 158, 170);
+        case Role::ElementFixed:
+            return rgba(255, 170, 120, 240);
+        case Role::Preview:
+            return rgba(120, 220, 255, 230);
+        case Role::Suggestion:
+            return rgba(255, 220, 90, 255);
         case Role::ViolationFrame:
             return rgba(255, 90, 80, 255);
         case Role::ViolationFill:

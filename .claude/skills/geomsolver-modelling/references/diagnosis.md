@@ -60,18 +60,21 @@ Fix LINT items first. The raw commands are given too, so every step can be run b
 | try a change without editing the file | `--set params.gap=0.05`, `--set 'constraints[2].enabled=false'` |
 | change a bound, in the criterion's display unit | `--bound depth=90` |
 | trade-off study over a bound (display unit) | `--pareto depth --bounds 80,90,100` |
-| freeze variables at their written values | `--fix A,B` |
+| freeze variables (or sketch points, circles, arcs, bodies) at their written values | `--fix A,B` |
+| settle a sketch's drawing onto its geometry constraints, save it | `--sketch-solve --write-instance out.json` |
 | print any expression at the result | `--probe "dist(A, B)"` |
 | save best design + the bounds used (input file untouched) | `--write-instance out.json` |
 | machine-readable results (`geomsolver-results/1`) | `--out results.json` |
 
 - Exit status: 0 = a feasible design (and always for `--eval`), 1 = no feasible run (or
-  `--write-instance` had nothing to write), 2 = load, compile or usage error.
+  `--write-instance` had nothing to write), 2 = load, compile or usage error. `--sketch-solve`: 0 = every
+  geometry constraint holds at the written values, 1 = one is Malformed, a conflicting one was left out (the
+  rest is written), or the sketch was not solved.
 - `--set PATH=VALUE`: VALUE is read as JSON when it parses (`0.05`, `true`, `[1, 2]`, `{...}`), else as a
   string (`5cm`, `maximize`, an expression). `null` removes the key. Quote the whole argument in single
   quotes. Index paths (`criteria[3]`) follow the file order: count the entries first; `criteria[N]` with
   N = current length appends. Prefer name paths (`params.gap`, `design.H.fixed`).
-- `--eval`, `--polish` and `--pareto` exclude each other. A Pareto point runs only `pareto_starts` (8) + 2
+- `--eval`, `--polish`, `--pareto` and `--sketch-solve` exclude each other. A Pareto point runs only `pareto_starts` (8) + 2
   starts: confirm a doubtful point with `--bound C=V --starts 256`.
 
 ## 3. Messages -> meaning -> fix
@@ -106,6 +109,10 @@ All messages below were printed by the CLI for broken copies of `assets/template
 | `constraint sides must be Scalar, got Polygon` | compared a shape | measure it: `clearance(...)`, `max_y(...)` |
 | `a criterion is an expression, not a comparison (use "role" and "bound")` | `>=` inside a criterion | remove it; use `role` + `bound` |
 | `a constraint needs a comparison (<=, >= or ==)` | constraint without relation | add `>= value` etc. |
+| `horizontal() is a predicate: it is only allowed as a whole constraint` | a predicate in a let, a criterion or a comparison (`parallel(AB, CD) == 0`) | write the call alone as the constraint's `expr` |
+| `the orientation of parallel() must be a constant +1 or -1` (or `the side of tangent()`) | a variable, or a value other than 1 and -1 | write +1 or -1, the one the drawing has |
+| `coincident() relates 'B' to itself` | the same argument twice (`B`, `start(S)`, `edge(G, 0)`) | name the two points (or curves) |
+| `argument 2 of on_line() must be a segment, got Polyline of 3 points` | a polyline where a segment is needed | one edge: `edge(walls, 1)` |
 | `'=' is only allowed in at(sweep = value, body)` | `=` typed for a comparison | write `==`, `<=` or `>=` |
 | `params.gap at column 2: unexpected 'cm'` | space before the unit (`"3 cm"`) | `"3cm"` |
 | `unknown unit suffix 'pi' (use deg, rad, m, cm, mm or %)` | `2pi` | `2 * pi` |
@@ -123,6 +130,7 @@ All messages below were printed by the CLI for broken copies of `assets/template
 | `warning: design.L.value: value lies outside [min, max]; the solver starts from the clamped value` | often a value in display units (`60` meant cm) | write SI (`0.6`) |
 | `warning: design.H.value: value lies 0.3 m outside its domain` | start point outside its domain | move it inside |
 | `warning: constraints[0].for_all: unknown key 'for_all' (ignored)` | misspelt key: the requirement is LOST | fix the key (`forall`) |
+| `constraints[0].for_all: unknown key 'for_all'; a constraint has the keys ...` (no `warning:`) | a key a `/2` file does not know, at any level, or one of a later version | fix the key from the list, or remove it |
 | `"forall" has no effect` | relation does not use that sweep | remove `forall`, or fix the expression |
 | `does not depend on any design variable: it is always satisfied or always violated` | all its variables are fixed (or none used) | unfix, or delete the row |
 | `this comparison does not depend on any design variable: it is always satisfied or always violated` | one comparison of a chain is between two constants (`clearance(arm, plant) >= gap >= 0`, at the column of the second `>=`) | drop that comparison, or put the expression that varies in the middle |
@@ -138,6 +146,19 @@ All messages below were printed by the CLI for broken copies of `assets/template
 | `warning: --set params.gapp: the instance had no such key, so it was added (check the spelling)` | `--set` path typo: nothing changed | fix the path |
 | `--set constraints[5].expr: 'constraints[5].expr': index 5 out of range` | index past the end | count entries (append = length) |
 | `--write-instance: no feasible solution to write` | nothing feasible (exit 1) | diagnose first (section 5) |
+| `--write-instance: the sketch fails its check, so nothing was written` | a sketch with no design variable violates a constraint (exit 1) | fix the drawing or the constraint first |
+| `--pareto: nothing to optimise: a sketch is checked, not solved, ...` | a study of a sketch with no design variable (exit 2) | add a design variable to study |
+| `the sketch fails its check: width violated by 0.3; no design can satisfy it` | a geometry constraint fails at the drawn values, which no design variable moves; every run ends infeasible | `--sketch-solve` the drawing, or fix the constraint |
+| `sketch: ...; not solved: largest geometry residual 0.0996 m` | the drawing is off its geometry constraints | `--sketch-solve --write-instance out.json`, then check out.json |
+| `sketch: ...; conflicting: dBC left out (with dAB, dAC); ...` | dAB, dAC and dBC cannot all hold; the latest, dBC, is left out and the drawing satisfies the rest (exit 1 with `--sketch-solve`) | change or delete one of the group (dimensions that cannot all hold) |
+| `sketch: ...; conflicting: {x1, x4}, ...: nothing moved; ...` and `conflicting: nothing written` | three solves did not isolate the conflict | fix the groups named, the first one first |
+| `  singular configuration (a linkage at dead centre?): rb` | rb is (nearly) dependent at this drawing only: circles that happen to touch, a linkage flat at its limit | harmless; move the drawing off it if a drag sticks there |
+| `sketch: ...; redundant: v2 (with h1, h3, v1); ...` | v2 follows from the others: harmless while consistent | delete v2, or keep it knowingly |
+| `constraints[3].expr at column 8: tangent at a point that 'pin' puts on both: write tangent_at(k1, k2, end(k1), s)` | a tangency written as a distance where a constraint joins the two curves (two arcs always meet through `coincident`): there it tells nothing the joint does not (exit 2) | write the `tangent_at` the message names |
+| `  meet is malformed: its gradient vanishes, ...: write coincident(A, B)` | a form the solver cannot use (also: a zero-length segment, a radius <= 0, a tangency written as a distance at a shared point) | write the form the message names |
+| `  tv: the frame is not anchored to its members (3 DOFs)` | the body's elements can slide in its frame | fix one of its points, or draw a constant element in it |
+| `--sketch-solve: the instance has no sketch section` | nothing to settle (exit 2) | |
+| `--fix: 'walls' is a polyline: only a point, a circle or a body of the sketch has a fixed state` | `--fix` on a shape (exit 2) | fix its points |
 
 ## 4. Reading a solve result
 

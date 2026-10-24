@@ -60,6 +60,38 @@ TEST_CASE("solver: the session over a fake backend") {
                     criterion(s, "protrusion"), msg));
 }
 
+TEST_CASE("solver: a job on a sketch that fails its check says so first") {
+    // A check-only group (width) is the same for every design: the job
+    // starts, and the message says why every run will end infeasible.
+    Json d = Json::parse(R"J({
+      "format": "geomsolver-instance/2",
+      "params": {"W": 1.5},
+      "design": {"V": {"type": "scalar", "min": 0, "max": 1, "value": 0.5}},
+      "sketch": {"elements": {
+        "O": {"type": "point", "value": [0, 0], "fixed": true},
+        "E": {"type": "point", "value": [1.2, 0]}}},
+      "constraints": [
+        {"name": "width", "expr": "dist(O, E) == W"},
+        {"name": "level", "expr": "horizontal(O, E)"}],
+      "criteria": [{"name": "v", "expr": "V", "role": "minimize"}]
+    })J");
+    Document doc;
+    REQUIRE(doc.load_json(d, "mem.json"));
+    REQUIRE(doc.model());
+    auto fake = std::make_unique<FakeBackend>();
+    FakeBackend * f = fake.get();
+    SolverSession session(std::move(fake));
+    CHECK(session.start(doc, SolveKind::Multistart));
+    CHECK(f->starts == 1);
+    CHECK(session.message() ==
+          "the sketch fails its check: width violated by "
+          "0.3; no design can satisfy it");
+    // Drawn to W, it passes: a started job says nothing.
+    REQUIRE(doc.edit("params.W", 1.2));
+    CHECK(session.start(doc, SolveKind::Multistart));
+    CHECK(session.message().empty());
+}
+
 TEST_CASE("solver: the gs::SolverService backend") {
     const fs::path instance = tv_file();
     {

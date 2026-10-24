@@ -76,6 +76,9 @@ constexpr bool has(Mods set, Mods m) {
            static_cast<std::uint8_t>(m);
 }
 
+// The pointer's buttons, as the canvas and the tools see them.
+enum class Button : std::uint8_t { Left, Right, Middle };
+
 struct KeyChord {
     Key key;
     Mods mods = Mods::None;

@@ -828,6 +828,15 @@ Discrete alternatives (TV size S/M/L, open or closed) are enumerated: that is a 
 
 The P1 plan, with its critique resolution and the decisions taken, is [`gui-sketcher-study/p1-plan.md`](gui-sketcher-study/p1-plan.md).
 
+**Status (2026-10-15):** P2a, the headless core of P2, is implemented in the working tree:
+- the `sketch` section (world elements, bodies with poses and qualified names, exact arcs), strict keys in `/2`, predicates and constraint kinds;
+- the sketch solver `gs_sketch` on Eigen (commit, DOF, redundancy, conflicts, malformed constraints, drags), with `--sketch-solve` in the CLI;
+- the Document's two models with `SketchSession`, the sketch message, and the Elements, Constraints and Properties panels with the sketch edits (merge, detach, fix, reference, flip side, vertices, the delete cascade).
+
+**Status (2026-10-20):** P2b steps 8–10 are implemented in the working tree too: the toolbar and the keyboard rules, canvas drags of sketch elements, snapping with rank-tested suggestions, the creation tools (Point, Segment, Polyline/Polygon, Box, Circle, exact Arc), the constraint tools (Coincident, Point on object, Horizontal, Vertical, Parallel, Perpendicular, Tangent, Equal, Symmetric, Fix) and Smart Dimension with its on-canvas value editor.
+
+P2b steps 11–14 (glyphs and dimension labels, Edit body and New body, front-end polish, the guide and screenshots) follow. The P2 plan, with the decisions taken at each review pause (its section 8), is [`gui-sketcher-study/p2-plan.md`](gui-sketcher-study/p2-plan.md).
+
 
 Sizes are estimates for one developer, tests and docs included. They use the study's LOC figures:
 - about 2.5 k engine + 1.4 k test lines for the language and sketch-model items;
@@ -887,6 +896,8 @@ Sizes are estimates for one developer, tests and docs included. They use the stu
 | D6 | Coincidence | Sharing with Detach; coincidences are not rows (pins between bodies are) | FreeCAD-style `coincident(A, B)` rows with checkboxes, compiled by merging |
 | D7 | Is a second range needed by a real instance soon? | Decides when P5 Tier A is built | — |
 | D8 | The ~7–10 month horizon | Ship phases as they gate | Stop after P2 (sketcher + today's optimiser) or after P3 (static layouts) |
+
+**Decided by the user (2026-10-13):** D6 coincidence by sharing (with Detach); D4 inequalities shown in red while dragging, not enforced, in v1; the sketch solver uses Eigen from ConanCenter. **Also decided:** static bodies come in P2 (frames, poses, qualified names, cross-body pins, Edit body, dragging a body as a whole); motion stays in P4. Arcs are exact elements in the sketch (centre, radius, end angles; exact point-on-arc and tangency constraints) and are tessellated with a bounded chord error (0.1 mm by default) inside the optimiser's geometry operations until P5.
 
 ---
 

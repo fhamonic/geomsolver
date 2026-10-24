@@ -123,6 +123,48 @@ The counts above are those of the current suite; yours grow with the cases you a
 
 The `doc` target of the Makefile serves the site locally. Before you open a pull request, check that `zensical build --strict` reports no warning for the pages you changed.
 
+## 7. Adding a predicate
+
+A [predicate](../reference/builtins.md#predicates), such as `parallel(s1, s2)`, is a whole constraint by itself: it compiles to rows, not to a value. It takes the same first steps as a function, with four differences.
+
+1. **The table entry** has the kind `Predicate`. `Compiler::call` then refuses the name anywhere but as a whole constraint, and the completion of the GUI's formula field offers it as a predicate.
+2. **The rows** are built in `Compiler::predicate` (`src/gs/engine/compiler.cpp`), a branch per name. It compiles the arguments, checks them, and appends each row group with `rows({...}, labels)`:
+
+    ```cpp title="src/gs/engine/compiler.cpp (Compiler::predicate)"
+    } else if(f == "on") {
+        if(!all(point(0), circle(1))) return false;
+        const int r = radius_of(x[1], col, c);
+        radius_guard(r);
+        rows({sub(mk(Op::Dist, {x[0], center_of(x[1], col, c)}, col, c), r)});
+    ```
+
+    - **Read shapes through the helpers** `vertex_of`, `segment_of`, `unit_of`, `center_of`, `radius_of` and `line_dist`. A shape built from its points (a sketch element, `segment()`, `circle()`) gives the point's own node, so a row depends on the points it reads only.
+    - **Natural units, never squared.** A row is 0 when the predicate holds, and in metres, radians or a ratio.
+    - **Normalise directions** with `unit_of`: a segment of zero length then gives NaN, so no direction row holds for it.
+    - **Orientation in the text.** When a predicate has two solutions (a side, a direction), take a constant ±1 argument with `sign_arg`, and make an angle row the angle from the first direction turned onto its target (`Op::AngleBetween`): its jump of 2π lies 180° from the target.
+    - **One group per kind of row.** Equality and inequality rows go to two groups; give the second a `suffix` (`on_segment` has `NAME:span`).
+3. **What the sketch solver needs.** Set each group's `unit` (`RowUnit`), its `weight` (`RowWeight::Shortest` for a row on a direction, which the sketch solver weighs by the shortest segment or radius it reads) and its `natural` unit for the reports. Record a guard (`seg_guard`, `radius_guard`, or `RowGuard::Kind::Inner`) for every length the rows read that must stay positive: the sketch solver declares the constraint Malformed when one is not.
+4. **Its kind.** The GUI reads a constraint's [kind](../reference/expressions.md#kinds) with `gs::match_kind` (`src/gs/engine/kind.cpp`), which recognises a predicate by a form per arity in `kPredicates`: its name, its argument count, the index of its side or orientation argument (`-1` for none), and whether its first two operands may be swapped without changing the constraint (`coincident`, but not `perpendicular(s1, s2, o)`, whose `o` would have to change sign):
+
+    ```cpp title="src/gs/engine/kind.cpp (kPredicates)"
+    {"parallel", 2, K::Parallel, -1, true},
+    {"parallel", 3, K::Parallel, 2, true},
+    ```
+
+    Give it a value of `ConstraintKind` (`include/gs/engine/kind.hpp`), its name in `kind_name()`, and its label and meaning in `kind_text()` (`src/gs/app/constraints.cpp`), at most 3 ems wide: the Kind column of the Constraints panel. The test "kind: every predicate of the builtin table has a form per arity" fails for a predicate without one.
+
+`tests/engine/test_predicates.cpp` holds the predicate tests: its rows on a hand-made configuration of design variables (so that nothing folds), its group, units, weights and guards, and its errors. Add it to "predicates: double and dual evaluations are bit-identical", which fails for a predicate it does not list, and to the finite-difference test. Add its forms to "kind: predicates, their operands and their side" in `tests/engine/test_kind.cpp`. Add a constraint over sketch elements to `classes_doc()` in `tests/engine/test_sketch_mode.cpp`, with the role of each of its groups: "sketch mode: both bindings classify every group alike" fails for a predicate it does not list, and the same document checks its rows, one by one, against the dense evaluator. Document it in the predicates table of [Builtin functions](../reference/builtins.md#predicates), with a constraint in `docs/instances/ref-predicates.json` that the drawing satisfies, whose kind the test "kind: the constraints of the sketch examples" then lists.
+
+## 8. A dimension
+
+A function that measures what a sketcher dimensions, such as `len(s)` or `radius(k)`, makes a [kind](../reference/expressions.md#kinds) when it is compared with a constant. Its row of `kDimensions` (`src/gs/engine/kind.cpp`) gives the function, the shapes of its operands, the kind, whether a bound and a range are of that kind too, whether the constant is a magnitude, and whether the operands may be swapped:
+
+```cpp title="src/gs/engine/kind.cpp (kDimensions)"
+{"dist", {kPt, kPt}, 2, K::Distance, true, true, true},
+```
+
+A new kind also needs its `ConstraintKind`, its name and its label, as a predicate does. Add each way of writing it to "kind: each dimension, written every normalised way" in `tests/engine/test_kind.cpp`, and the kind to the table of [Kinds](../reference/expressions.md#kinds).
+
 ## Checklist
 
 - Name and arity in the table of `builtins.cpp`, dispatch with `needs()` in `Compiler::call`
@@ -131,3 +173,5 @@ The `doc` target of the Makefile serves the site locally. Before you open a pull
 - Value, derivative and kink tests in `test_builtins.cpp`; a bit-identity test if the TV instance does not use it
 - The whole test suite passes
 - Reference page, README table and, if needed, the conventions table updated
+- A predicate: kind `Predicate`, a branch of `Compiler::predicate` with units, weights and guards, and the tests of `test_predicates.cpp`; its forms in `kPredicates`, its `ConstraintKind`, its name and label, and the tests of `test_kind.cpp`
+- A dimension: its row of `kDimensions` and the tests of `test_kind.cpp`

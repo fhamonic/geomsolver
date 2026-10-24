@@ -12,6 +12,7 @@
 #include "gs/app/sheet.hpp"
 #include "gs/app/sweep_bar.hpp"
 
+#include "fake_tool.hpp"
 #include "helpers.hpp"
 
 namespace gs::test {
@@ -68,7 +69,8 @@ private:
             ++rebuilds;
         } else if(c.has_any(Change::Content | Change::Model | Change::Values |
                             Change::Sweep | Change::Visibility |
-                            Change::Solver | Change::Scene | Change::Player)) {
+                            Change::Solver | Change::Scene | Change::Player |
+                            Change::Sketch)) {
             refresh();
         }
     }
@@ -170,6 +172,15 @@ protected:
              .field = {"display[1].color"},
              .value = colour(doc)});
         add({.kind = DK::Button, .id = "reset", .label = "Reset values"});
+        add({.kind = DK::Link,
+             .id = "pair",
+             .label = "With",
+             .text = "B",
+             .target = SelKey{K::Design, "B"}});
+        add({.kind = DK::Link,
+             .id = "held",
+             .label = "Held",
+             .text = "vec(0, 0)"});
         add({.kind = DK::Checkbox,
              .id = "locked",
              .label = "Fill",
@@ -275,7 +286,7 @@ TEST_CASE("sheet adapter: the items, their ids and the keys they own") {
         kinds.insert(i.kind);
         ids.insert(i.id);
     }
-    CHECK_MESSAGE((kinds.size() == 11 && ids.size() == s->items.size()),
+    CHECK_MESSAGE((kinds.size() == 12 && ids.size() == s->items.size()),
                   "every kind of item, each id once");
     CHECK_MESSAGE(
         (s->owned() ==
@@ -394,6 +405,22 @@ TEST_CASE("sheet adapter: set() and press(), keyed by entry and item") {
     CHECK_MESSAGE((r.doc.undo_label() == "reset design values" &&
                    grid.matches_fresh_read()),
                   "a button runs its command");
+
+    steps = r.doc.undo_count();
+    CHECK_MESSAGE((!sheets.press(a, "held") && !sheets.set(a, "pair", true) &&
+                   r.sel.keys() == std::vector<SelKey>{a}),
+                  "a link without a target is text; a link is only pressed");
+    const int rebuilds = grid.rebuilds;
+    CHECK(grid.edited([&] { return sheets.press(a, "pair"); }));
+    CHECK_MESSAGE(
+        (r.sel.keys() == std::vector<SelKey>{{K::Design, "B"}} &&
+         r.sel.to_reveal() == SelKey{K::Design, "B"} &&
+         r.app.take_panel_focus() == PanelId::Elements &&
+         r.doc.undo_count() == steps && grid.rebuilds > rebuilds &&
+         !grid.sheet() && grid.matches_fresh_read()),
+        "a link selects its target and reveals it, no edit: the grid is "
+        "built again for the new selection");
+    r.sel.set(a);
 
     CHECK(grid.edited([&] { return sheets.set(a, "name", std::string("P")); }));
     const SelKey p{K::Design, "P"};
@@ -752,6 +779,122 @@ TEST_CASE("sheet adapter: the lets', display items' and requirements' sheets") {
     app.tick(0.0);
     app.scene(false);
     CHECK_MESSAGE(grid.matches_fresh_read(), "solver results");
+}
+
+}  // namespace gs::test
+
+namespace gs::test {
+
+TEST_CASE("sheet adapter: Sketch changes are read again, Tool changes none") {
+    App app(std::make_unique<FakeBackend>());
+    Document & doc = app.document();
+    REQUIRE(app.open(fs::path(GS_TEST_DATA_DIR) /
+                     "../../docs/instances/sketch-body.json"));
+    app.sync();
+    app.scene(false);
+    PropertiesPresenter & props = app.panels().properties;
+    app.selection().set({K::Constraint, "gap"});
+    FakePropertyGrid grid(app, [&] { return props.sheet(); });
+    REQUIRE(grid.sheet());
+    CHECK(grid.sheet()->title == "constraint gap");
+    const int rebuilds = grid.rebuilds, refreshes = grid.refreshes;
+
+    // In world mode a press on the TV drags the body.
+    const sketch::Gesture body =
+        sketch::drag_body(*doc.sketch_model(), 0, {0.0, 0.0});
+    REQUIRE(app.sketch().begin(body, "move tv"));
+    app.sketch().move(std::vector<Vec2d>{{0.6, 1.25}});
+    CHECK_MESSAGE((grid.matches_fresh_read() && grid.rebuilds == rebuilds &&
+                   grid.refreshes > refreshes),
+                  "a drag frame: its items read again in place");
+    app.sketch().cancel();
+
+    REQUIRE(app.selection().size() == 1);
+    app.selection().set({K::Element, "tv.c"});
+    CHECK((grid.matches_fresh_read() && grid.sheet()->title == "point tv.c"));
+    REQUIRE(doc.edit("params.arm", 0.43));
+    CHECK_MESSAGE(grid.matches_fresh_read(), "a commit that settles");
+
+    const int all = grid.rebuilds + grid.refreshes;
+    app.changed().emit(Change::Tool);
+    CHECK_MESSAGE(
+        (grid.matches_fresh_read() && grid.rebuilds + grid.refreshes == all),
+        "a tool's change reads no sheet again");
+}
+
+}  // namespace gs::test
+
+namespace gs::test {
+
+TEST_CASE("sheet adapter: a sketch element's drag, its links and its checks") {
+    App app(std::make_unique<FakeBackend>());
+    Document & doc = app.document();
+    REQUIRE(app.open(fs::path(GS_TEST_DATA_DIR) /
+                     "../../docs/instances/sketch-body.json"));
+    app.sync();
+    app.scene(false);
+    PropertiesPresenter & props = app.panels().properties;
+    const SelKey a{K::Element, "A"};
+    app.selection().set(a);
+    FakePropertyGrid grid(app, [&] { return props.sheet(); });
+    REQUIRE(grid.sheet());
+
+    const int rebuilds = grid.rebuilds;
+    CHECK(grid.edited([&] { return props.begin_drag(a, "value"); }));
+    CHECK(grid.edited(
+        [&] { return props.update_drag(a, "value", Vec{0, 1.4}); }));
+    CHECK_MESSAGE((grid.matches_fresh_read() && grid.rebuilds == rebuilds &&
+                   std::get<Vec>(grid.item("value").value) == Vec{0, 1.4}),
+                  "a frame of the session's drag: read again in place");
+    CHECK(grid.edited([&] { return props.end_drag(a, "value"); }));
+    CHECK_MESSAGE((grid.matches_fresh_read() && grid.rebuilds == rebuilds &&
+                   doc.undo_label() == "move A"),
+                  "its release: one commit, the items in place");
+
+    CHECK(grid.edited([&] { return props.set(a, "helper", true); }));
+    CHECK((grid.matches_fresh_read() &&
+           std::get<bool>(grid.item("helper").value)));
+    app.selection().set({K::Element, "top"});
+    REQUIRE(grid.sheet());
+    CHECK(grid.item("to").target == SelKey{K::Element, "tv.c"});
+    CHECK(grid.edited([&] { return props.press({K::Element, "top"}, "to"); }));
+    CHECK_MESSAGE(
+        (grid.matches_fresh_read() && grid.sheet()->title == "point tv.c"),
+        "a link: the grid shows its target's sheet");
+}
+
+}  // namespace gs::test
+
+namespace gs::test {
+
+TEST_CASE("sheet adapter: a tool's events read no sheet, its shape does") {
+    App app(std::make_unique<FakeBackend>());
+    REQUIRE(app.open(tv_file()));
+    app.sync();
+    app.scene(false);
+    FakeLog log;
+    provide_fake(app, log);
+    PropertiesPresenter & props = app.panels().properties;
+    app.selection().set({K::Param, "clr"});
+    FakePropertyGrid grid(app, [&] { return props.sheet(); });
+    REQUIRE(grid.sheet());
+    ToolHost & tools = app.tools();
+    REQUIRE(tools.start("tool.segment"));
+    const int all = grid.rebuilds + grid.refreshes;
+    tools.event({.kind = ToolEvent::Kind::Move, .world = {0.1, 0.1}});
+    tools.event({.kind = ToolEvent::Kind::Press, .world = {0.1, 0.1}});
+    tools.typed("1");
+    CHECK_MESSAGE(
+        (grid.matches_fresh_read() && grid.rebuilds + grid.refreshes == all),
+        "Tool alone: no sheet read again");
+    tools.event({.kind = ToolEvent::Kind::Press, .world = {0.5, 0.1}});
+    REQUIRE(log.commits == 1);
+    CHECK_MESSAGE(
+        (grid.matches_fresh_read() && grid.sheet()->title == "segment L1"),
+        "the shape committed and selected");
+    REQUIRE(app.document().undo());
+    app.sync();
+    CHECK(grid.matches_fresh_read());
 }
 
 }  // namespace gs::test

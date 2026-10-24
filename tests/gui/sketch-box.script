@@ -1,0 +1,22 @@
+# The Box tool on the sketch example: two clicks draw B1 by two corners;
+# M takes the centre and corner method, a click places the centre, and the
+# width 0.4 and the height 0.2 typed place the corner of B2, its centre a
+# helper point that symmetric() keeps in the middle; Esc quits the tool.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.box
+wait 2
+click L 708 339
+click L 789 291
+wait 2
+key M
+click L 748 266
+move 789 250 3
+wait 2
+text "0.4"
+key Tab
+text "0.2"
+key Enter
+wait 2
+key Escape
+wait 2

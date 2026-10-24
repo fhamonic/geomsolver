@@ -17,6 +17,7 @@
 #include "gs/engine/diagnostics.hpp"
 #include "gs/engine/instance.hpp"
 #include "gs/engine/model.hpp"
+#include "gs/sketch/sketch.hpp"
 
 namespace gs::app {
 
@@ -59,6 +60,26 @@ struct EditBatch {
 
     std::string label;  // names the step: "Undo <label>"
     std::vector<Op> ops;
+    // Settle the sketch and write what moves, also when no operation
+    // touches what it reads: "Solve sketch".
+    bool solve_sketch = false;
+};
+
+// `batch`'s operations applied to `instance` in order, as Document::apply()
+// applies them, without its compile, settle or undo step: a scratch copy a
+// rank test or a merge reads (try_constrain(), the Arc tool's start). False
+// at the first that fails, the copy then half written.
+bool apply_ops(Instance & instance, const EditBatch & batch);
+
+// The diagnosis of the sketch (plan 3.5) and what it was computed for.
+struct SketchDiagnosis {
+    // The sketch generation it was computed for (Document::sketch_generation).
+    std::uint64_t generation = 0;
+    // The sketch-mode model its rows and elements index: one of an older
+    // generation names those of its own model, which sketch_model() may no
+    // longer list at the same places.
+    std::shared_ptr<const Model> model;
+    sketch::Diagnosis result;
 };
 
 // The open instance, its last good compiled Model and the current design x.
@@ -73,13 +94,21 @@ struct EditBatch {
 // an x with a different Model.
 //
 // An undo step is a snapshot of the document, x and the sweep positions.
+//
+// A document with a sketch section holds a second model, compiled in sketch
+// mode by gs::sketch::settle() at every compile (sketch_model()). An edit
+// that touches what the sketch reads settles it first and writes the values
+// it moves into the same undo step; any other compile (load, undo, redo, an
+// edit elsewhere) settles it in a dry run, which writes nothing, or keeps
+// the last settle when the sections the sketch reads are those it saw.
 class Document {
 public:
     static constexpr std::size_t kMaxUndo = 200;
 
     // A rename apply() made: `entry` as its batch named it ("design.A",
     // "constraints[2]"), the name before (empty for an unnamed constraint or
-    // criterion) and after.
+    // criterion) and after, as a SelKey names the entry: a body's element
+    // qualified ("tv.c" to "tv.c2").
     struct Renamed {
         std::string entry, from, to;
     };
@@ -121,8 +150,9 @@ public:
     bool complete() const {
         return model_ != nullptr && !stale_ && excluded_.empty();
     }
-    // Geometry-only model of the instance (params + geometry + includes) for
-    // drawing the scene while model() is null; null when that fails too.
+    // Geometry-only model of the instance (params + geometry + includes,
+    // and the sketch when it compiles with them) for drawing the scene while
+    // model() is null; null when that fails too.
     const std::shared_ptr<const Model> & background() const {
         return background_;
     }
@@ -135,9 +165,68 @@ public:
     // Bumped on every compile attempt, successful or not.
     std::uint64_t compile_generation() const { return compile_gen_; }
 
+    // The instance has a "sketch" section. Without one, the sketch members
+    // below stay empty and a compile settles nothing.
+    bool has_sketch() const;
+    // The last settle() whose compile succeeded, or that settle carried over
+    // a dry run of the same sketch inputs (written then empty): its status,
+    // the constraints it left out, its model (Free binding, row plans). Its
+    // constraint indices are its model's, which skip the excluded items:
+    // match them to the instance by ConstraintInfo::path. Status Empty and
+    // no model without a sketch. After a settle that wrote, the model and
+    // q are compiled from the written instance, as a load of the saved file
+    // has them, not settle()'s own model of the drawing before the write.
+    const sketch::Settled & settled() const { return settled_; }
+    const std::shared_ptr<const Model> & sketch_model() const {
+        return settled_.model;
+    }
+    // The latest settle() did not compile: settled() and sketch_model() are
+    // the last good ones, as model() is while stale().
+    bool sketch_stale() const { return sketch_stale_; }
+    // The System over sketch_model(); null without one.
+    const sketch::System * system() const {
+        return system_ ? &*system_ : nullptr;
+    }
+    // The columns of sketch_model() as the instance holds them, which a
+    // file edited by hand may hold off its constraints. A drag starts from
+    // them.
+    std::span<const double> sketch_q() const { return sketch_q_; }
+    // x for sketch_model(): x() when model() was compiled from the same
+    // document, else sketch_model()'s own initial x, whose charts may differ
+    // from model()'s. Empty without a sketch model.
+    std::vector<double> sketch_x() const;
+    // Bumped whenever sketch_model() is replaced or dropped: a compile of a
+    // document with a sketch, the sketch section added or erased, another
+    // instance. A drag's q and a diagnosis belong to one generation.
+    std::uint64_t sketch_generation() const { return sketch_gen_; }
+    // The latest diagnosis set, possibly of an older generation: it stays
+    // until the one of the current generation arrives. A settle whose
+    // components all have at most Options::sync_columns columns is
+    // diagnosed at once; a larger one by SketchSession's worker. Without a
+    // converged settle there is nothing to diagnose (diagnosis_due()).
+    const std::optional<SketchDiagnosis> & diagnosis() const {
+        return diagnosis_;
+    }
+    // diagnosis()'s generation, 0 without one.
+    std::uint64_t diagnosis_generation() const {
+        return diagnosis_ ? diagnosis_->generation : 0;
+    }
+    // The current generation converged and has no diagnosis yet.
+    bool diagnosis_due() const;
+    // Stores `result`, the diagnosis of sketch generation `generation` at
+    // settled().q with sketch::left_out(settled()), emitting Sketch. A
+    // result for another generation is dropped: false.
+    bool set_diagnosis(std::uint64_t generation, sketch::Diagnosis result);
+
     // Applies the operations in order, recompiles once and records one undo
     // step. Returns complete(): false when the compile failed or excluded
-    // items; the edits stay in the document either way. An operation that
+    // items; the edits stay in the document either way. With a sketch, a
+    // batch that touches sketch, params, geometry, include, let or
+    // constraints (a rename may touch any; a note, a helper flag, a label or
+    // the extent, which no settle reads, does not), or asks for solve_sketch,
+    // settles it before the compile and writes the values it moves in the
+    // same step: SettleOptions::previous is the last sketch model, so a
+    // typed dimension moved far is reached by continuation. An operation that
     // cannot be applied (a malformed path, a missing key to erase) refuses
     // the whole batch: the document is left as it was, nothing is recorded,
     // and `error` says why.
@@ -246,8 +335,10 @@ private:
     struct Stamp {
         const Instance * instance = nullptr;
         std::uint64_t paths = 0, compiles = 0, models = 0, xs = 0, sweeps = 0;
+        std::uint64_t sketches = 0, diagnoses = 0;
         std::uint64_t history = 0, log = 0;
         bool dirty = false;
+        bool sketch = false;  // has_sketch()
     };
     // Opened by every public mutator; the outermost one emits changed().
     class Notify;
@@ -256,6 +347,19 @@ private:
     Changes changes_since(const Stamp & before) const;
 
     void adopt(std::shared_ptr<Instance> inst, std::vector<Diagnostic> diags);
+    // Settles the sketch, writing the values it moves when `write`, or drops
+    // the sketch state of a document without one. Its diagnostics wait in
+    // sketch_diags_ for the design-mode compile, which follows it.
+    void settle_now(bool write);
+    // A dry run whose sketch inputs (the sections the sketch reads) are
+    // those of the last settle finds what it found: settle() is a pure
+    // function of them. Only the sketch model is compiled again, for what
+    // changed elsewhere (the x charts, the monitored groups of a criterion),
+    // and the diagnosis is kept for the new generation. False, and nothing
+    // done, when the inputs differ or the new model's constraints, Solve
+    // groups or columns do not line up with the last one's.
+    bool reuse_settle();
+    void reset_sketch();
     void compile_now(std::vector<Diagnostic> prefix);
     void build_background();
     void write_values();
@@ -278,6 +382,16 @@ private:
     std::shared_ptr<const Json> last_good_doc_;
     std::vector<Diagnostic> diags_;
     std::vector<ExcludedItem> excluded_;
+    sketch::Settled settled_;
+    std::optional<sketch::System> system_;
+    std::vector<double> sketch_q_;
+    std::vector<Diagnostic> sketch_diags_;
+    std::optional<SketchDiagnosis> diagnosis_;
+    // The sections the sketch reads (sketch, params, geometry, include, let,
+    // constraints) as the last settle saw them, after its write.
+    std::optional<Json> settled_inputs_;
+    bool sketch_stale_ = false;
+    std::uint64_t sketch_gen_ = 0, diagnosis_gen_ = 0;
     std::vector<double> x_;
     std::vector<double> sweep_t_;
     // x moved since the design values were last written to the instance.

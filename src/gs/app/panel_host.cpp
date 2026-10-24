@@ -10,6 +10,14 @@
 namespace gs::app {
 namespace {
 
+// The name a rename replaces: a body's element's within its body.
+std::string short_name(const SelKey & key) {
+    const std::size_t dot = key.kind == SelKey::Kind::Element
+                                ? key.name.find('.')
+                                : std::string::npos;
+    return dot == std::string::npos ? key.name : key.name.substr(dot + 1);
+}
+
 bool is_error(const Diagnostic & d) {
     return d.severity == Diagnostic::Severity::Error;
 }
@@ -74,8 +82,34 @@ bool PanelHost::rename(SelKey key, std::string text) {
     const std::string entry = std::ranges::contains(paths, rename_.entry())
                                   ? rename_.entry()
                                   : paths.front();
-    if(text == key.name) {
+    // A body's element is renamed within its body: "tv.c" takes "c2", typed
+    // as such or as "tv.c2".
+    if(const std::size_t dot = key.name.find('.');
+       key.kind == SelKey::Kind::Element && dot != std::string::npos &&
+       text.starts_with(key.name.substr(0, dot + 1)))
+        text.erase(0, dot + 1);
+    if(text == short_name(key)) {
         rename_.close();
+        return false;
+    }
+    // A rename keeps an element in its frame. Left to the engine, a dotted
+    // name is refused as "not a valid name: use letters, digits and '_'",
+    // which hides why: the editor is seeded with "tv.c", and changing its
+    // body is an easy slip.
+    if(const std::size_t dot = text.rfind('.');
+       key.kind == SelKey::Kind::Element && dot != std::string::npos) {
+        const std::size_t own = key.name.find('.');
+        rename_.refuse(
+            entry,
+            own == std::string::npos
+                ? std::format("cannot rename {} to {}: a rename does not "
+                              "move it into a body",
+                              key.name, text)
+                : std::format("cannot rename {} to {}: it stays in {}; type "
+                              "{}, or {}.{}",
+                              key.name, text, key.name.substr(0, own),
+                              text.substr(dot + 1), key.name.substr(0, own),
+                              text.substr(dot + 1)));
         return false;
     }
     std::string err;

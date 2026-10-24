@@ -41,6 +41,8 @@ public:
     Intent activate(const RowId & id,
                     std::optional<std::size_t> column) override;
     std::vector<Filter> filters() const override;
+    // The index of Violated in filters().
+    static constexpr std::size_t kViolatedFilter = 3;
 
 protected:
     // `kind` is Constraint or Criterion.

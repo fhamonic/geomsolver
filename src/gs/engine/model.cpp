@@ -170,6 +170,13 @@ std::vector<double> Model::initial_x() const {
     return x_from_values(values);
 }
 
+std::vector<double> Model::initial_q() const {
+    std::vector<double> q;
+    q.reserve(sketch_coords_.size());
+    for(const SketchCoord & c : sketch_coords_) q.push_back(c.value);
+    return q;
+}
+
 std::vector<double> Model::values_from_x(std::span<const double> x) const {
     if(static_cast<int>(x.size()) != n_)
         throw std::invalid_argument(std::format(
@@ -246,6 +253,7 @@ NlpLayout Model::nlp_layout(const SampleSets & samples) const {
     for(std::size_t g = 0; g < groups_.size(); ++g) {
         L.group_offset.push_back(static_cast<int>(L.rows.size()));
         const RowGroup & G = groups_[g];
+        if(G.check_only) continue;
         if(G.sweep < 0) {
             for(int s = 0; s < G.split; ++s)
                 L.rows.push_back({static_cast<int>(g), s, -1});

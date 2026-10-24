@@ -20,6 +20,8 @@ std::vector<RowId> row_ids(std::span<const SelKey> keys) {
     return out;
 }
 
+bool ListPresenter::column_shown(std::size_t) const { return true; }
+
 bool ListPresenter::toggle(const RowId &, std::size_t) { return false; }
 
 std::vector<ListCell> ListPresenter::footer() { return {}; }

@@ -30,16 +30,34 @@ bool ActionRegistry::run(std::string_view id) const {
     return true;
 }
 
+namespace {
+
+bool listens(const Action & a, KeyFocus focus) {
+    return a.scope == focus.scope && (!focus.typing || a.in_text) &&
+           (!focus.field || a.in_text || a.in_field) &&
+           (!focus.popup || a.in_popup);
+}
+
+bool mods_match(const Action & a, KeyChord c, Mods held) {
+    return c.mods == held || (c.mods == Mods::None && !a.exact_mods);
+}
+
+}  // namespace
+
+bool ActionRegistry::matches(const Action & a, KeyFocus focus, Mods held,
+                             Key key) {
+    return listens(a, focus) && std::ranges::any_of(a.chords, [&](KeyChord c) {
+               return c.key == key && mods_match(a, c, held);
+           });
+}
+
 void ActionRegistry::run_pressed(
     KeyFocus focus, Mods held,
     const std::function<bool(Key, bool)> & pressed) const {
     for(const Action & a : actions_) {
-        if(a.scope != focus.scope || (focus.typing && !a.in_text) ||
-           (focus.popup && !a.in_popup))
-            continue;
+        if(!listens(a, focus)) continue;
         const bool fired = std::ranges::any_of(a.chords, [&](KeyChord c) {
-            return (c.mods == Mods::None || c.mods == held) &&
-                   pressed(c.key, a.repeat);
+            return mods_match(a, c, held) && pressed(c.key, a.repeat);
         });
         if(fired && a.is_enabled()) a.run();
     }

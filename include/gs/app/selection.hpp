@@ -27,7 +27,13 @@ struct SelKey {
         Constraint,
         Criterion,
         Display,
-        Geometry
+        Geometry,
+        // A sketch element by its qualified name ("P1", "tv.c"); `sub`
+        // names a point slot of it ("to", "center", "points 3", "corners
+        // 1": slot_sub()), which Detach and Delete vertex take, or a part
+        // ("start", "edge 2") that the canvas picks from plan step 11.
+        Element,
+        Body,  // a body of the sketch ("tv")
     };
     SelKey() = default;
     SelKey(Kind k, std::string n, int i = -1, std::string part = {})
@@ -58,23 +64,32 @@ enum class EntryKind : std::uint8_t {
     Criterion,
     Display,
     Geometry,
+    SketchElement,
+    Body,
 };
-inline constexpr std::size_t kEntryKinds = 9;
+inline constexpr std::size_t kEntryKinds = 11;
 // A design entry is a point when its "type" is "point" in `doc`, else a
 // scalar, also when there is no such entry or no instance.
 EntryKind entry_kind(const Document & doc, const SelKey & key);
 
 // The document section that holds entries of `kind`: "params", "design",
-// "constraints", ...
+// "constraints", ..., "sketch" for an element or a body, which sit deeper:
+// "sketch.elements.P1", "sketch.bodies.tv.elements.c", "sketch.bodies.tv".
 const char * section_of(SelKey::Kind kind);
 // How lists and messages name the entry: its name, "display[2]" for a
 // display item, "constraints[3]" for an unnamed constraint.
 std::string key_name(const SelKey & key);
+// Whether `key` names a point slot of an element ("to", "points 3"):
+// sketch_edits.hpp's slot_path() finds it.
+bool slot_sub(const SelKey & key);
+// key_name(), "vertex 2 of wall" for a polyline's vertex slot.
+std::string deleted_name(const SelKey & key);
 // A constraint or a criterion whose "name" is missing, no string or empty,
 // which the schema refuses: keyed by its place, so that it can be selected,
 // shown in Properties and given a name.
 bool unnamed(const SelKey & key);
-// "4 selected: A, couch, display[2], ...": the names past the third are cut.
+// "4 selected: A, couch, display[2], ...": the names past the third are cut;
+// a part of an element as a formula names it, end(door), a slot L1 (to).
 std::string selection_text(std::span<const SelKey> keys);
 
 // The entries selected on the canvas and in the lists. Keyed by name,
@@ -100,6 +115,10 @@ public:
 
     // The entry `from` names is now named `to`: an unnamed one too.
     void renamed(const SelKey & from, std::string_view to);
+    // Every key of `kind` whose name starts with `from` now starts with
+    // `to`: a renamed body's members, "tv." to "screen.".
+    void renamed_prefix(SelKey::Kind kind, std::string_view from,
+                        std::string_view to);
     // display[index] was erased: the later items move up by one.
     void display_erased(int index);
     // Drops the keys whose entry is gone (an undo, a reload): a name reused
@@ -153,6 +172,8 @@ public:
     // every pointer update.
     void set(HotSource source, std::optional<SelKey> key);
     void renamed(const SelKey & from, std::string_view to);
+    void renamed_prefix(SelKey::Kind kind, std::string_view from,
+                        std::string_view to);
     // display[index] was erased: the later items move up by one.
     void display_erased(int index);
     Signal<Changes> & changed() { return changed_; }
@@ -182,6 +203,8 @@ std::optional<SelKey> entry_key(const Instance & instance,
 std::string entry_root(std::string_view path);
 
 // The deletion of the selected entries, worked out before it is confirmed.
+// A sketch element, a body or a polyline's vertex slot ({Element, "wall",
+// "points 2"}) takes its cascade with it, in the same step.
 struct DeletePlan {
     // One undo step; no operation when nothing can be deleted.
     EditBatch batch;
@@ -198,6 +221,14 @@ struct DeletePlan {
     std::vector<std::string> unparsed;
     // Selected entries that cannot be deleted, with the reason.
     std::vector<std::string> refused;
+    // With a sketch, what the delete takes besides the selection
+    // (sketch_cascade(), plan 4.10): the elements that use what goes, "top
+    // (it uses tv.c)", which are asked first; the points only deleted
+    // elements used; the vertices removed from polylines and polygons; the
+    // constraints of a recognised kind that name what goes ("h1:
+    // horizontal(L1)"); the formulas left to check, whose edge or vertex
+    // moved or went.
+    std::vector<std::string> taken, orphans, vertices, removed, check;
 };
 
 DeletePlan plan_delete(const Instance & instance, const Selection & selection);

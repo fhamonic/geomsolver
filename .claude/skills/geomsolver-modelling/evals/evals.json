@@ -21,6 +21,13 @@
       "prompt": "In tv_corner_ref.json (it includes example_room_ref.json; both are in the input folder), I want two changes: the two wall pivots must lie on a line at -35 degrees, and neither link may ever come within 2 cm of the TV during the swing. Keep everything else as it is. Save the modified instance as tv_modified.json, solve it, and tell me the new protrusion and whether the design is feasible.",
       "expected_output": "tv_modified.json compiles and solves feasibly at about 107.31 cm protrusion (the original is 104.37 cm). Both links are constrained (clearance(segment(A, C), tv) and clearance(segment(B, D), tv) for every tau, at least 2 cm); constraining only one link gives 105.63 cm because the solver relabels the links. The pivot line is constrained so that AB is at -35 degrees (sin_between(B - A, dir(-35deg)) == 0, or an equivalent); everything else unchanged.",
       "files": ["evals/files/modify/tv_corner_ref.json", "evals/files/modify/example_room_ref.json"]
+    },
+    {
+      "id": 4,
+      "name": "add-predicates-to-a-sketch",
+      "prompt": "My room is drawn as a sketch in room_sketch.json (in the input folder). Add two constraints: the east wall, between the corner O and E, must stay horizontal, and the round table must touch the east wall from inside the room. Write them the way the sketcher would, keep everything else as it is, and save the file as room_constrained.json. Then tell me whether the drawing as it stands satisfies them, and by how much it misses if it does not.",
+      "expected_output": "room_constrained.json compiles with no error or warning and differs from the input only by two new constraints written as predicates (whole expr, no comparison): horizontal(edge(walls, 0)) or horizontal(O, E), satisfied; and a tangency of the table to the east wall with the side that puts the table inside the room: tangent(segment(O, E), table, 1) or tangent(edge(walls, 0), table, -1) (edge 0 runs from E to O), violated by 0.45 m (the table's centre is 0.9 m from the wall, its radius 0.45 m). The answer says the sketch is checked, not solved, in this version: the drawing is not moved to satisfy the new constraint, and nothing is optimised. No design variable is added and no drawn value is changed.",
+      "files": ["evals/files/sketch/room_sketch.json"]
     }
   ]
 }

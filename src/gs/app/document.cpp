@@ -8,12 +8,66 @@
 #include <ranges>
 #include <unordered_set>
 
+#include "gs/app/selection.hpp"
 #include "gs/engine/rename.hpp"
 
 namespace gs::app {
+
+bool apply_ops(Instance & instance, const EditBatch & batch) {
+    for(const EditBatch::Op & op : batch.ops) {
+        switch(op.kind) {
+            case EditBatch::Op::Kind::Set:
+                if(!instance.set(op.path, op.value)) return false;
+                break;
+            case EditBatch::Op::Kind::Erase:
+                if(!instance.erase(op.path)) return false;
+                break;
+            case EditBatch::Op::Kind::Rename: {
+                RenameResult r = rename_entry(
+                    instance, op.path,
+                    op.value.is_string() ? op.value.get<std::string>() : "");
+                if(!r.ok()) return false;
+                if(r.doc != instance.doc())
+                    instance.restore(std::move(r.doc), true);
+                break;
+            }
+        }
+    }
+    return true;
+}
 namespace {
 
 std::size_t uz(int i) { return static_cast<std::size_t>(i); }
+
+// The sections a sketch's values, slots and geometry constraints read: an
+// edit of any other one leaves the drawing settled.
+constexpr std::string_view kSketchInputs[] = {
+    "sketch", "params", "geometry", "include", "let", "constraints"};
+
+// A key of the sketch inputs that no settle reads: an element's or a body's
+// note, an element's helper flag, a constraint's note or label, the
+// extent. A settle written for it moves an unsolved drawing inside "make
+// axis a helper", and every label drag of a dimension would solve again.
+bool unread_by_sketch(std::string_view path) {
+    std::vector<std::string_view> seg;
+    for(std::size_t b = 0; b <= path.size();) {
+        const std::size_t e = std::min(path.find('.', b), path.size());
+        seg.push_back(path.substr(b, e - b));
+        b = e + 1;
+    }
+    const std::size_t n = seg.size();
+    if(seg[0] == "sketch") {
+        if(n == 2) return seg[1] == "extent";
+        const bool element =
+            (n == 4 && seg[1] == "elements") ||
+            (n == 6 && seg[1] == "bodies" && seg[3] == "elements");
+        if(element) return seg[n - 1] == "helper" || seg[n - 1] == "note";
+        return n == 4 && seg[1] == "bodies" && seg[3] == "note";
+    }
+    if(!seg[0].starts_with("constraints[")) return false;
+    return (n == 2 && (seg[1] == "note" || seg[1] == "label")) ||
+           (n >= 3 && seg[1] == "label");
+}
 
 // "constraints[3].expr" -> "/constraints/3/expr"
 nlohmann::json_pointer<std::string> to_pointer(std::string_view path) {
@@ -32,6 +86,68 @@ nlohmann::json_pointer<std::string> to_pointer(std::string_view path) {
     }
     if(out.empty() || out.front() != '/') out.insert(out.begin(), '/');
     return nlohmann::json_pointer<std::string>(out);
+}
+
+// The sketch-mode compile settle() makes.
+CompileResult compile_free(const Instance & instance) {
+    CompileOptions co;
+    co.sketch = SketchBinding::Free;
+    co.row_plans = true;
+    co.isolate_items = true;
+    return compile(instance, co);
+}
+
+// After a settle that wrote, its model and q become those of the written
+// instance, as a load of the saved file compiles them. settle() compiled
+// its model before the write, and an arc's angle scale and vertex count are
+// taken from its drawn radius at the compile: kept, a drag after a commit
+// that moved a radius weighs a turn, and a monitored clearance reads the
+// polyline, by the old radius, unlike the same file loaded. The write moves
+// values only, never a key the compile reads for its columns, rows or
+// constraints, so the indices of `s` hold for the new model.
+void compile_written(const Instance & instance, sketch::Settled & s) {
+    CompileResult cr = compile_free(instance);
+    if(!cr.ok()) return;
+    s.q = cr.model->initial_q();
+    s.model = std::move(cr.model);
+}
+
+// Whether `doc` holds the kSketchInputs sections `inputs` holds.
+bool same_inputs(const Json & doc, const Json & inputs) {
+    for(const std::string_view section : kSketchInputs) {
+        const auto a = doc.find(section);
+        const auto b = inputs.find(section);
+        const bool here = a != doc.end(), there = b != inputs.end();
+        if(here != there || (here && *a != *b)) return false;
+    }
+    return true;
+}
+
+Json sketch_inputs(const Json & doc) {
+    Json out = Json::object();
+    for(const std::string_view section : kSketchInputs)
+        if(const auto it = doc.find(section); it != doc.end())
+            out[std::string(section)] = *it;
+    return out;
+}
+
+// Whatever Settled and a Diagnosis index in `a` names the same in `b`: the
+// constraints (malformed, conflicting), the Solve groups (components, rank,
+// dependencies) and the columns (held, free blocks). An item excluded or
+// brought back elsewhere, a design entry a constraint reads, shifts them.
+bool lines_up(const Model & a, const Model & b) {
+    const auto solve_groups = [](const Model & m) {
+        std::vector<std::pair<std::size_t, int>> out;
+        for(std::size_t g = 0; g < m.groups().size(); ++g)
+            if(m.groups()[g].role == GroupRole::Solve)
+                out.emplace_back(g, m.groups()[g].split);
+        return out;
+    };
+    return std::ranges::equal(a.constraints(), b.constraints(), {},
+                              &ConstraintInfo::path, &ConstraintInfo::path) &&
+           solve_groups(a) == solve_groups(b) &&
+           std::ranges::equal(a.sketch_coords(), b.sketch_coords(), {},
+                              &SketchCoord::name, &SketchCoord::name);
 }
 
 // Removes `path` from `doc` only when it is an array element: an erased
@@ -124,9 +240,12 @@ Document::Stamp Document::stamp() const {
             .models = model_gen_,
             .xs = x_gen_,
             .sweeps = sweep_gen_,
+            .sketches = sketch_gen_,
+            .diagnoses = diagnosis_gen_,
             .history = history_gen_,
             .log = log_gen_,
-            .dirty = dirty()};
+            .dirty = dirty(),
+            .sketch = has_sketch()};
 }
 
 Changes Document::changes_since(const Stamp & before) const {
@@ -134,11 +253,14 @@ Changes Document::changes_since(const Stamp & before) const {
     Changes c;
     if(now.instance != before.instance)
         c |= Change::Instance | Change::Structure;
-    if(now.paths != before.paths) c |= Change::Structure;
+    if(now.paths != before.paths || now.sketch != before.sketch)
+        c |= Change::Structure;
     if(now.compiles != before.compiles) c |= Change::Content;
     if(now.models != before.models) c |= Change::Model;
     if(now.xs != before.xs) c |= Change::Values;
     if(now.sweeps != before.sweeps) c |= Change::Sweep;
+    if(now.sketches != before.sketches || now.diagnoses != before.diagnoses)
+        c |= Change::Sketch;
     if(now.history != before.history || now.dirty != before.dirty)
         c |= Change::History;
     if(now.log != before.log) c |= Change::Log;
@@ -208,6 +330,10 @@ void Document::adopt(std::shared_ptr<Instance> inst,
     x_.clear();
     x_unwritten_ = false;
     stale_ = false;
+    // The last sketch state belongs to another document: a failed settle
+    // of this one must not keep it, nor its diagnosis show greyed.
+    reset_sketch();
+    settle_now(false);
     compile_now(std::move(diags));
     if(!model_) {
         ++model_gen_;
@@ -231,7 +357,8 @@ void Document::compile_now(std::vector<Diagnostic> prefix) {
     // appear twice.
     std::unordered_set<std::string> seen;
     diags_.clear();
-    for(std::vector<Diagnostic> * list : {&prefix, &cr.diagnostics})
+    for(std::vector<Diagnostic> * list :
+        {&prefix, &cr.diagnostics, &sketch_diags_})
         for(Diagnostic & d : *list)
             if(seen.insert(d.to_string()).second)
                 diags_.push_back(std::move(d));
@@ -267,17 +394,148 @@ void Document::build_background() {
     background_.reset();
     const Json & doc = instance_->doc();
     if(!doc.is_object()) return;
-    Json stripped = Json::object();
-    for(const char * key : {"format", "include", "params", "geometry"})
-        if(doc.contains(key)) stripped[key] = doc[key];
-    try {
-        LoadResult lr = Instance::from_json(std::move(stripped), path());
-        if(!lr.instance) return;
-        CompileResult cr = compile(*lr.instance);
-        background_ = std::move(cr.model);
-    } catch(const std::exception &) {
-        background_.reset();
+    // With the sketch first: its values read only params, geometry and
+    // constant lets, so an error elsewhere leaves the drawing. A sketch that
+    // reads a let, or has the error itself, fails here: the geometry alone.
+    for(const bool sketch : {true, false}) {
+        if(sketch && !doc.contains("sketch")) continue;
+        Json stripped = Json::object();
+        for(const char * key : {"format", "include", "params", "geometry"})
+            if(doc.contains(key)) stripped[key] = doc[key];
+        if(sketch) stripped["sketch"] = doc["sketch"];
+        try {
+            LoadResult lr = Instance::from_json(std::move(stripped), path());
+            if(!lr.instance) continue;
+            CompileResult cr = compile(*lr.instance);
+            background_ = std::move(cr.model);
+        } catch(const std::exception &) {
+            background_.reset();
+        }
+        if(background_) return;
     }
+}
+
+bool Document::has_sketch() const {
+    return instance_ && instance_->get("sketch") != nullptr;
+}
+
+void Document::reset_sketch() {
+    sketch_diags_.clear();
+    settled_inputs_.reset();
+    if(!settled_.model && !diagnosis_ && !sketch_stale_) return;
+    settled_ = {};
+    system_.reset();
+    sketch_q_.clear();
+    sketch_stale_ = false;
+    ++sketch_gen_;
+    if(diagnosis_) {
+        diagnosis_.reset();
+        ++diagnosis_gen_;
+    }
+}
+
+void Document::settle_now(bool write) {
+    if(!has_sketch()) {
+        reset_sketch();
+        return;
+    }
+    if(!write && reuse_settle()) return;
+    sketch::Settled s;
+    try {
+        sketch::SettleOptions o;
+        o.dry_run = !write;
+        o.isolate_items = true;
+        // Continuation follows the dimensions an edit moved since the last
+        // commit: on a dry run nothing is written, so nothing needs it.
+        if(write) o.previous = settled_.model.get();
+        s = sketch::settle(*instance_, o);
+        if(s.model && !s.written.empty()) compile_written(*instance_, s);
+    } catch(const std::exception & e) {
+        s = {};
+        s.diagnostics.push_back(
+            {Diagnostic::Severity::Error, "", -1,
+             std::format("internal error in the sketch solver: {}", e.what())});
+    }
+    sketch_diags_ = std::move(s.diagnostics);
+    if(!s.model) {
+        sketch_stale_ = settled_.model != nullptr;
+        settled_inputs_.reset();
+        return;
+    }
+    s.diagnostics.clear();
+    sketch_stale_ = false;
+    system_.emplace(s.model, s.options);
+    sketch_q_ = s.written.empty() ? s.model->initial_q() : s.q;
+    settled_ = std::move(s);
+    settled_inputs_ = sketch_inputs(instance_->doc());
+    ++sketch_gen_;
+    if(!diagnosis_due()) return;
+    const sketch::Options & o = settled_.options;
+    const bool small = std::ranges::all_of(
+        settled_.components, [&](const sketch::Component & c) {
+            return std::ssize(c.columns) <= o.sync_columns;
+        });
+    if(!small) return;
+    try {
+        set_diagnosis(sketch_gen_,
+                      system_->diagnose(settled_.model->initial_x(), settled_.q,
+                                        sketch::left_out(settled_)));
+    } catch(const std::exception & e) {
+        log(LogEntry::Level::Error,
+            std::format("internal error in the sketch diagnosis: {}",
+                        e.what()));
+    }
+}
+
+bool Document::reuse_settle() {
+    if(!settled_.model || sketch_stale_ || !settled_inputs_ ||
+       !same_inputs(instance_->doc(), *settled_inputs_))
+        return false;
+    CompileResult cr;
+    try {
+        cr = compile_free(*instance_);
+    } catch(const std::exception &) {
+        return false;
+    }
+    if(!cr.ok() || !lines_up(*settled_.model, *cr.model)) return false;
+    sketch_diags_ = std::move(cr.diagnostics);
+    settled_.excluded = std::move(cr.excluded);
+    settled_.model = std::move(cr.model);
+    // The last settle's write belongs to its own commit: this one wrote
+    // nothing.
+    settled_.written.clear();
+    system_.emplace(settled_.model, settled_.options);
+    sketch_q_ = settled_.model->initial_q();
+    const bool current = diagnosis_ && diagnosis_->generation == sketch_gen_;
+    ++sketch_gen_;
+    if(current) {
+        diagnosis_->generation = sketch_gen_;
+        diagnosis_->model = settled_.model;
+        ++diagnosis_gen_;
+    }
+    return true;
+}
+
+std::vector<double> Document::sketch_x() const {
+    const Model * m = settled_.model.get();
+    if(!m) return {};
+    if(model_ && !stale_ && !sketch_stale_ && model_->n() == m->n())
+        return {x_.begin(), x_.end()};
+    return m->initial_x();
+}
+
+bool Document::diagnosis_due() const {
+    return settled_.model && settled_.converged && !sketch_stale_ &&
+           diagnosis_generation() != sketch_gen_;
+}
+
+bool Document::set_diagnosis(std::uint64_t generation,
+                             sketch::Diagnosis result) {
+    const Notify notify(*this);
+    if(generation != sketch_gen_ || !settled_.model) return false;
+    diagnosis_ = SketchDiagnosis{generation, settled_.model, std::move(result)};
+    ++diagnosis_gen_;
+    return true;
 }
 
 void Document::write_values() {
@@ -334,12 +592,17 @@ bool Document::apply(EditBatch batch, std::string * error) {
             case EditBatch::Op::Kind::Rename: {
                 const std::string name =
                     op.value.is_string() ? op.value.get<std::string>() : "";
-                std::string from;
-                if(!op.path.ends_with(']'))
-                    from = op.path.substr(op.path.find('.') + 1);
-                else if(const Json * n = instance_->get(op.path + ".name");
-                        n && n->is_string())
-                    from = n->get<std::string>();
+                // As a SelKey names the entry: "sketch.bodies.tv.elements.c"
+                // is "tv.c", renamed to "tv.<name>", or App::sync() would
+                // follow an undone rename to a key that names nothing.
+                const std::optional<SelKey> key =
+                    entry_key(*instance_, op.path);
+                const std::string from = key ? key->name : std::string();
+                std::string to = name;
+                if(const std::size_t dot = from.find('.');
+                   key && key->kind == SelKey::Kind::Element &&
+                   dot != std::string::npos)
+                    to = from.substr(0, dot + 1) + name;
                 RenameResult r = rename_entry(*instance_, op.path, name);
                 done = r.ok();
                 if(!done) {
@@ -352,7 +615,7 @@ bool Document::apply(EditBatch batch, std::string * error) {
                     if(!good) good = *last_good_doc_;
                     *good = rename_in(std::move(*good), op.path, name);
                 }
-                renames.push_back({op.path, std::move(from), name});
+                renames.push_back({op.path, from, std::move(to)});
                 break;
             }
         }
@@ -375,6 +638,17 @@ bool Document::apply(EditBatch batch, std::string * error) {
     if(reshaped) ++path_gen_;
     for(std::string & note : notes) log(LogEntry::Level::Info, std::move(note));
     if(good) last_good_doc_ = std::make_shared<const Json>(std::move(*good));
+    // Before the undo step is decided: what the settle writes is part of
+    // it, and a Solve sketch that moves nothing records none.
+    settle_now(batch.solve_sketch ||
+               std::ranges::any_of(batch.ops, [](const EditBatch::Op & op) {
+                   return op.kind == EditBatch::Op::Kind::Rename ||
+                          (!unread_by_sketch(op.path) &&
+                           std::ranges::any_of(
+                               kSketchInputs, [&](std::string_view section) {
+                                   return path_is_under(op.path, section);
+                               }));
+               }));
     // Instance::set marks the instance modified even when it writes the
     // value already there: without restoring the flag, a no-op edit leaves
     // the document modified with no undo step that clears it.
@@ -450,6 +724,8 @@ bool Document::recompile() {
     if(!instance_) return false;
     end_gesture();
     write_values();
+    settled_inputs_.reset();
+    settle_now(false);
     compile_now({});
     return complete();
 }
@@ -481,6 +757,7 @@ void Document::restore(Snapshot s) {
     last_good_doc_ = std::move(s.last_good);
     background_.reset();
     const std::uint64_t gen = model_gen_;
+    settle_now(false);
     compile_now({});
     // x may not be written in the document, and even when it is, the
     // document holds it only to 1e-12 (an unchanged value keeps its written
@@ -728,6 +1005,7 @@ bool Document::save_as(const std::filesystem::path & target,
     }
     // Save As may rewrite include specs: without a recompile, revert() would
     // restore specs relative to the old directory.
+    settle_now(false);
     compile_now({});
     return true;
 }

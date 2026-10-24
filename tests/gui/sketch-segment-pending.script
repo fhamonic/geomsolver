@@ -1,0 +1,24 @@
+# The Segment tool's length typed, then a click on the Elements list, which
+# takes the field's keyboard and leaves the text there. Back over the
+# canvas, the blank that Space types leaves the text alone, so Space + drag
+# pans instead of placing the second point; a letter leaves it alone too.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.segment
+wait 2
+click L 724 291
+move 760 250 3
+text "1"
+wait 3
+click L 1400 300
+wait 3
+move 600 400 3
+wait 2
+keydown Space
+text " "
+wait 2
+drag L 600 400 700 450
+keyup Space
+wait 3
+text "h"
+wait 3

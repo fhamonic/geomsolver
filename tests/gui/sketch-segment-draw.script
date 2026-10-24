@@ -1,0 +1,12 @@
+# The Segment tool while it draws: from E, snapped, towards a point level
+# with it, whose H suggestion shows, then a digit typed over the canvas,
+# which opens the length.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.segment
+wait 2
+click L 837 532
+move 515 523 4
+wait 2
+text "1"
+wait 2

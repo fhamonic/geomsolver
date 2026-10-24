@@ -1,12 +1,14 @@
 #include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gs/app/actions.hpp"
 #include "gs/app/app.hpp"
 #include "gs/app/keys.hpp"
 
+#include "fake_tool.hpp"
 #include "helpers.hpp"
 
 namespace gs::test {
@@ -93,10 +95,13 @@ TEST_CASE("actions: pressed keys") {
     add("c", {Key::C});
     add("b", {Key::B});
     add("text", {Key::T}, {.in_text = true});
+    add("field", {Key::F}, {.in_field = true});
     add("dialog", {Key::D}, {.in_popup = false});
     add("held", {Key::H}, {.repeat = true});
     add("off", {Key::O}, {.enabled = [&] { return on; }});
     add("canvas", {Key::C}, {.scope = KeyScope::Canvas});
+    add("e", {Key::E}, {.exact_mods = true});
+    add("e.shift", {Key::E, Mods::Shift}, {.exact_mods = true});
     auto fired = [&](std::vector<Key> keys, Mods held = Mods::None,
                      KeyFocus focus = {}, bool held_down = false) {
         ran.clear();
@@ -121,6 +126,13 @@ TEST_CASE("actions: pressed keys") {
     CHECK_MESSAGE(
         (fired({Key::X, Key::T, Key::D}, Mods::None, typing) == Ids{"text"}),
         "a text field keeps the keys of the actions not in_text");
+    CHECK_MESSAGE(fired({Key::F}, Mods::None, typing).empty(),
+                  "in_field is no in_text");
+    const KeyFocus field{.field = true};
+    CHECK_MESSAGE(
+        (fired({Key::X, Key::T, Key::F}, Mods::None, field) ==
+         Ids{"text", "field"}),
+        "a tool's field open without the keyboard: in_text and in_field");
     const KeyFocus popup{.popup = true};
     CHECK_MESSAGE((fired({Key::X, Key::D}, Mods::None, popup) == Ids{"x"}),
                   "an open popup keeps the keys of the actions not in_popup");
@@ -130,6 +142,23 @@ TEST_CASE("actions: pressed keys") {
     CHECK(fired({Key::O}).empty());
     on = true;
     CHECK((fired({Key::O}) == Ids{"off"}));
+    CHECK_MESSAGE((fired({Key::E}) == Ids{"e"} &&
+                   fired({Key::E}, Mods::Shift) == Ids{"e.shift"} &&
+                   fired({Key::E}, Mods::Ctrl).empty()),
+                  "exact_mods: a chord without modifiers fires with none held");
+
+    const Action & e = *r.find("e");
+    CHECK_MESSAGE(
+        (ActionRegistry::matches(e, {}, Mods::None, Key::E) &&
+         !ActionRegistry::matches(e, {}, Mods::Shift, Key::E) &&
+         !ActionRegistry::matches(e, {.typing = true}, Mods::None, Key::E) &&
+         !ActionRegistry::matches(e, {.scope = KeyScope::Canvas}, Mods::None,
+                                  Key::E)),
+        "matches() applies the rules of run_pressed()");
+    on = false;
+    CHECK_MESSAGE(
+        ActionRegistry::matches(*r.find("off"), {}, Mods::None, Key::O),
+        "matches() whether enabled or not");
 }
 
 TEST_CASE("actions: the application's keys") {
@@ -182,6 +211,7 @@ TEST_CASE("actions: the application's actions, menus and shortcuts") {
                                          "edit.reset_values",
                                          "edit.rename",
                                          "edit.clear_selection",
+                                         "app.escape",
                                          "view.hide",
                                          "view.show",
                                          "view.remove_drawing",
@@ -192,6 +222,13 @@ TEST_CASE("actions: the application's actions, menus and shortcuts") {
                                          "item.disable",
                                          "design.release",
                                          "design.fix",
+                                         "sketch.merge",
+                                         "sketch.detach",
+                                         "sketch.delete_vertex",
+                                         "sketch.unfix",
+                                         "sketch.driving",
+                                         "sketch.reference",
+                                         "sketch.flip_side",
                                          "view.fit_all",
                                          "view.fit_design",
                                          "view.fit_selection",
@@ -221,6 +258,9 @@ TEST_CASE("actions: the application's actions, menus and shortcuts") {
                                          "range.add",
                                          "display.add",
                                          "formula.add_constraint",
+                                         "formula.add_range",
+                                         "formula.add_order_x",
+                                         "formula.add_order_y",
                                          "formula.add_criterion",
                                          "formula.add_quantity",
                                          "formula.edit",
@@ -230,7 +270,34 @@ TEST_CASE("actions: the application's actions, menus and shortcuts") {
                                          "help.controls",
                                          "solver.solve",
                                          "solver.polish",
-                                         "solver.stop"}),
+                                         "sketch.solve",
+                                         "solver.stop",
+                                         "tool.point",
+                                         "tool.segment",
+                                         "tool.polyline",
+                                         "tool.box",
+                                         "tool.circle",
+                                         "tool.arc",
+                                         "tool.coincident",
+                                         "tool.point_on_object",
+                                         "tool.horizontal",
+                                         "tool.vertical",
+                                         "tool.parallel",
+                                         "tool.perpendicular",
+                                         "tool.tangent",
+                                         "tool.equal",
+                                         "tool.symmetric",
+                                         "tool.dimension",
+                                         "tool.fix",
+                                         "tool.new_body",
+                                         "tool.body_from_selection",
+                                         "tool.finish",
+                                         "tool.back",
+                                         "tool.field",
+                                         "tool.method",
+                                         "tool.auto_constraints",
+                                         "tool.helper",
+                                         "tool.grid_snap"}),
         "registration order: the shortcuts of one frame run save, open, "
         "reload, quit, redo, undo, delete");
 
@@ -254,20 +321,49 @@ TEST_CASE("actions: the application's actions, menus and shortcuts") {
         {"edit.undo", {"Ctrl+Z"}, KeyScope::Global, false, false, false},
         {"edit.delete", {"Del"}, KeyScope::Global, false, false, false},
         {"edit.rename", {"F2"}, KeyScope::Global, false, false, false},
-        {"edit.clear_selection",
-         {"Esc"},
-         KeyScope::Global,
-         false,
-         false,
-         false},
+        {"edit.clear_selection", {}, KeyScope::Global, false, false, false},
+        {"app.escape", {"Esc"}, KeyScope::Global, false, false, false},
         {"view.fit_all", {"F"}, KeyScope::Canvas, false, true, true},
         {"view.fit_design", {"G"}, KeyScope::Canvas, false, true, true},
         {"list.activate", {"Enter"}, KeyScope::Panel, false, false, false},
         {"list.previous", {"Up"}, KeyScope::Panel, false, true, false},
         {"list.next", {"Down"}, KeyScope::Panel, false, true, false},
+        {"tool.finish", {"Enter"}, KeyScope::Global, false, false, false},
+        {"tool.back", {"Backspace"}, KeyScope::Global, false, false, false},
+        {"tool.field", {"Tab"}, KeyScope::Global, false, false, false},
+        {"tool.method", {"M"}, KeyScope::Global, false, false, false},
+        {"tool.point", {"Shift+P"}, KeyScope::Canvas, false, false, false},
+        {"tool.segment", {"Shift+L"}, KeyScope::Canvas, false, false, false},
+        {"tool.polyline", {"Shift+M"}, KeyScope::Canvas, false, false, false},
+        {"tool.box", {"Shift+R"}, KeyScope::Canvas, false, false, false},
+        {"tool.circle", {"Shift+C"}, KeyScope::Canvas, false, false, false},
+        {"tool.arc", {"Shift+A"}, KeyScope::Canvas, false, false, false},
+        {"tool.new_body", {"Shift+B"}, KeyScope::Canvas, false, false, false},
+        {"tool.body_from_selection",
+         {"Shift+F"},
+         KeyScope::Canvas,
+         false,
+         false,
+         false},
+        {"tool.coincident", {"C"}, KeyScope::Canvas, false, false, false},
+        {"tool.point_on_object", {"O"}, KeyScope::Canvas, false, false, false},
+        {"tool.horizontal", {"H"}, KeyScope::Canvas, false, false, false},
+        {"tool.vertical", {"V"}, KeyScope::Canvas, false, false, false},
+        {"tool.parallel", {"P"}, KeyScope::Canvas, false, false, false},
+        {"tool.perpendicular", {"N"}, KeyScope::Canvas, false, false, false},
+        {"tool.tangent", {"T"}, KeyScope::Canvas, false, false, false},
+        {"tool.equal", {"E"}, KeyScope::Canvas, false, false, false},
+        {"tool.symmetric", {"S"}, KeyScope::Canvas, false, false, false},
+        {"tool.dimension", {"D"}, KeyScope::Canvas, false, false, false},
+        {"tool.fix", {"K"}, KeyScope::Canvas, false, false, false},
     };
     for(const Expected & e : keyed) {
         const Action & a = action(app, e.id);
+        CHECK_MESSAGE(a.exact_mods == (a.scope == KeyScope::Canvas ||
+                                       a.id.starts_with("tool.")),
+                      "a Canvas action and a tool key need exactly their "
+                      "modifiers, as no other: "
+                          << e.id);
         CHECK_MESSAGE((chord_texts(a) == e.chords && a.scope == e.scope &&
                        a.in_text == e.in_text && a.repeat == e.repeat &&
                        a.in_popup == e.in_popup),
@@ -276,7 +372,8 @@ TEST_CASE("actions: the application's actions, menus and shortcuts") {
     int chorded = 0;
     for(const Action & a : app.actions().all())
         chorded += a.chords.empty() ? 0 : 1;
-    CHECK_MESSAGE(chorded == 14, "no other action has a chord");
+    CHECK_MESSAGE(chorded == static_cast<int>(std::size(keyed)) - 1,
+                  "no other action has a chord (clear_selection has none)");
 
     std::vector<std::string> titles;
     auto check_entries = [&](const Menu & m, auto & self) -> void {
@@ -396,6 +493,113 @@ TEST_CASE("actions: labels, enabled and checked follow the state") {
            !action(connected, "solver.stop").is_enabled()));
     CHECK((connected.actions().run("solver.solve") &&
            connected.solver().message().empty()));
+}
+
+// Plan 4.3: a press fires one action, whatever is focused. The front-end
+// runs the Global actions every frame, the Canvas ones while the pointer is
+// over it and the Panel ones while a panel has the keyboard, the last two
+// possibly in the same frame. A pair listed in `intended` is told apart by
+// the actions' enabled state, which matches() does not read.
+TEST_CASE("actions: every key and modifiers fire at most one action") {
+    App app(nullptr);
+    const std::vector<std::pair<std::string, std::string>> intended = {
+        // tool.finish leaves Enter to a list that has the keyboard, but
+        // over the canvas.
+        {"tool.finish", "list.activate"},
+    };
+    const std::vector<std::vector<KeyScope>> focuses = {
+        {KeyScope::Global},
+        {KeyScope::Global, KeyScope::Canvas},
+        {KeyScope::Global, KeyScope::Panel},
+        {KeyScope::Global, KeyScope::Panel, KeyScope::Canvas},
+    };
+    std::vector<std::string> clashes;
+    int presses = 0;
+    for(const std::vector<KeyScope> & scopes : focuses)
+        for(const bool typing : {false, true})
+            for(const bool popup : {false, true})
+                for(const bool field : {false, true})
+                    for(int k = 0; k <= static_cast<int>(Key::Down); ++k)
+                        for(int m = 0; m < 16; ++m) {
+                            const Key key = static_cast<Key>(k);
+                            const Mods mods = static_cast<Mods>(m);
+                            std::vector<std::string> fired;
+                            for(const KeyScope scope : scopes)
+                                for(const Action & a : app.actions().all())
+                                    if(ActionRegistry::matches(
+                                           a, {scope, typing, popup, field},
+                                           mods, key))
+                                        fired.push_back(a.id);
+                            ++presses;
+                            if(fired.size() < 2) continue;
+                            const bool listed =
+                                fired.size() == 2 &&
+                                std::ranges::any_of(
+                                    intended, [&](const auto & p) {
+                                        return (p.first == fired[0] &&
+                                                p.second == fired[1]) ||
+                                               (p.first == fired[1] &&
+                                                p.second == fired[0]);
+                                    });
+                            if(!listed)
+                                clashes.push_back(std::format(
+                                    "{}: {}, {}", chord_text({key, mods}),
+                                    fired[0], fired[1]));
+                        }
+    CHECK(presses == 4 * 2 * 2 * 2 * (static_cast<int>(Key::Down) + 1) * 16);
+    std::string listed;
+    for(const std::string & c : clashes) listed += "\n" + c;
+    INFO("clashes:" << listed);
+    CHECK(clashes.empty());
+
+    // Pause 4's ruling: while a tool's field waits for the keyboard, a
+    // letter typed into it ("30cm") fires nothing; the field's own keys act
+    // on it.
+    std::vector<std::string> in_field;
+    for(const Action & a : app.actions().all())
+        if(a.in_field) in_field.push_back(a.id);
+    CHECK((in_field == std::vector<std::string>{"app.escape", "tool.finish",
+                                                "tool.back", "tool.field"}));
+    for(const Action & a : app.actions().all())
+        for(const KeyChord & c : a.chords)
+            for(const KeyScope scope :
+                {KeyScope::Global, KeyScope::Canvas, KeyScope::Panel})
+                CHECK_MESSAGE(
+                    ActionRegistry::matches(a, {.scope = scope, .field = true},
+                                            c.mods, c.key) ==
+                        (a.scope == scope && (a.in_text || a.in_field)),
+                    a.id << " with a field open");
+
+    // The intended pair, by state: Enter with a tool and a panel's keyboard.
+    REQUIRE(app.open(tv_file()));
+    FakeLog log;
+    provide_fake(app, log);
+    REQUIRE(app.tools().start("tool.segment"));
+    app.selection().set({SelKey::Kind::Constraint, "couch"});
+    app.set_focused_panel(PanelId::Constraints);
+    CHECK_MESSAGE((!action(app, "tool.finish").is_enabled() &&
+                   action(app, "list.activate").is_enabled()),
+                  "a panel's keyboard: Enter is the list's");
+    app.set_focused_panel(std::nullopt);
+    CHECK_MESSAGE((action(app, "tool.finish").is_enabled() &&
+                   !action(app, "list.activate").is_enabled()),
+                  "the canvas's: Enter is the tool's");
+    // A list clicked during a shape keeps the keyboard once the pointer is
+    // back over the canvas.
+    app.set_focused_panel(PanelId::Constraints);
+    app.canvas().set_viewport(0.0, 0.0, 1000.0, 700.0);
+    app.canvas().update({.pos = {500.0, 350.0}, .hovered = true},
+                        app.scene(false));
+    CHECK_MESSAGE((action(app, "tool.finish").is_enabled() &&
+                   action(app, "tool.back").is_enabled() &&
+                   action(app, "tool.field").is_enabled() &&
+                   action(app, "tool.method").is_enabled() &&
+                   !action(app, "list.activate").is_enabled()),
+                  "a panel's keyboard, the pointer over the canvas: the "
+                  "keys are the tool's");
+    app.tools().cancel();
+    CHECK_MESSAGE(action(app, "list.activate").is_enabled(),
+                  "no tool: Enter is the list's, wherever the pointer is");
 }
 
 }  // namespace gs::test

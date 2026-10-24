@@ -1,0 +1,18 @@
+# Smart Dimension on a point and a line: P, then L1, the label placed and
+# Enter keeps the measured value: line_dist(P, L1, 1), P on the left of L1
+# (d1). Then L1, then P, which d1 measures already: a reference dimension,
+# and no editor opens (d2).
+open tests/data/sketch-dimension.json
+wait 16
+action tool.dimension
+wait 2
+click L 396 175
+click L 360 248
+click L 542 211
+wait 2
+key Enter
+wait 2
+click L 360 248
+click L 396 175
+click L 542 211
+wait 2

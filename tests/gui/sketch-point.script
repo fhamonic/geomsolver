@@ -1,0 +1,19 @@
+# The Point tool on the sketch example: a click on empty canvas places P1;
+# x and y typed after Tab place P2, each a dimension; a click on E selects
+# E and creates nothing. Esc quits the tool.
+open docs/instances/sketch-basic.json
+wait 16
+action tool.point
+wait 2
+click L 708 339
+wait 2
+key Tab
+text "0.25"
+key Tab
+text "1.5"
+key Enter
+wait 2
+click L 837 532
+wait 2
+key Escape
+wait 2

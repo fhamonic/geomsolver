@@ -6,6 +6,7 @@
 #include <sstream>
 #include <variant>
 
+#include "gs/engine/keys.hpp"
 #include "gs/engine/model.hpp"
 #include "schema.hpp"
 
@@ -178,19 +179,15 @@ bool schema_lists_key(std::string_view json_path) {
     if(!parse_path(json_path, steps, nullptr)) return true;
     const std::string * key = std::get_if<std::string>(&steps.back());
     if(!key) return true;
-    std::string parent;
-    for(std::size_t i = 0; i + 1 < steps.size(); ++i) {
-        parent += '/';
-        if(const std::string * k = std::get_if<std::string>(&steps[i])) {
-            for(const char c : *k)
-                parent += c == '~'   ? std::string("~0")
-                          : c == '/' ? std::string("~1")
-                                     : std::string(1, c);
-        } else {
-            parent += std::to_string(std::get<std::size_t>(steps[i]));
-        }
-    }
-    return detail::schema_lists_key(parent, *key);
+    std::vector<std::string> parent;
+    for(std::size_t i = 0; i + 1 < steps.size(); ++i)
+        if(const std::string * k = std::get_if<std::string>(&steps[i]))
+            parent.push_back(*k);
+        else
+            parent.emplace_back("[]");
+    if(const KeySection * s = key_section(parent))
+        return s->find(*key) != nullptr;
+    return !is_name_map(parent);
 }
 
 std::vector<std::string> format2_keys(const Json & doc) {
@@ -216,7 +213,10 @@ LoadResult Instance::load(const std::filesystem::path & file) {
     Json doc;
     try {
         doc = Json::parse(text);
-    } catch(const nlohmann::json::parse_error & e) {
+    } catch(const nlohmann::json::exception & e) {
+        // Not parse_error alone: a number out of double range, such as
+        // 1e999, throws out_of_range.406, which would escape load() and end
+        // the GUI instead of becoming a diagnostic.
         r.diagnostics.push_back(
             {Diagnostic::Severity::Error, "", -1,
              std::format("{}: {}", file.string(), e.what())});
@@ -268,7 +268,7 @@ std::vector<Diagnostic> Instance::reload_includes() {
         }
         try {
             inc.doc = Json::parse(text);
-        } catch(const nlohmann::json::parse_error & e) {
+        } catch(const nlohmann::json::exception & e) {
             out.push_back(
                 {Diagnostic::Severity::Error, inc.spec, -1, e.what()});
             continue;
@@ -350,8 +350,11 @@ bool Instance::set(std::string_view json_path, Json value, std::string * error,
     dirty_ = true;
     if(doc_.contains("format") && doc_["format"] == detail::kFormat1) {
         const std::string written = path_text(steps);
+        // Both ways: writing "sketch.extent" creates "sketch", and writing
+        // "sweeps.tau" can bring "sweeps.tau.samples".
         for(const std::string & key : detail::format2_keys(doc_)) {
-            if(!path_is_under(key, written)) continue;
+            if(!path_is_under(key, written) && !path_is_under(written, key))
+                continue;
             doc_["format"] = detail::kFormat2;
             if(note)
                 *note = std::format(

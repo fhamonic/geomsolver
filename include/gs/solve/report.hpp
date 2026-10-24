@@ -43,7 +43,16 @@ bool write_json(const std::filesystem::path & file,
 // starts from s.initial_samples.
 std::string format_sweeps(const Model & m, const SolverSettings & s);
 std::string format_design(const Model & m, std::span<const double> x);
-std::string format_check(const Model & m, const Check & c, double feas_tol);
+// A sketch's geometry constraints (GroupRole::Solve) are listed only
+// when violated, then counted on one line, unless `all_geometry`: a drawing
+// holds dozens of them.
+std::string format_check(const Model & m, const Check & c, double feas_tol,
+                         bool all_geometry = false);
+// "the sketch fails its check: d1 violated by 0.003 m; no design can
+// satisfy it", or "" when every check-only group holds: a check-only group
+// is constant, so a solve could only report every run infeasible.
+std::string check_failure(const Model & m, const Verification & v,
+                          double feas_tol);
 // Also lists the variants of the solutions shown: the design values that
 // differ by more than x_tol (normalised, as cluster_x_tol) from the best run.
 std::string format_solutions(const Model & m, const MultistartResult & r,

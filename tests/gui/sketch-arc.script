@@ -1,0 +1,36 @@
+# The Arc tool on the sketch example: a click for the centre, the radius 0.4
+# and the start angle 0 typed, a move a quarter turn round and the span 90
+# typed draw Arc1; three clicks, the pointer going clockwise between the
+# last two, draw Arc2, stored with its ends swapped. Then the Segment tool
+# draws L1 from Arc1's end, which it shares as end(Arc1).
+open docs/instances/sketch-basic.json
+wait 16
+action tool.arc
+wait 2
+click L 724 339
+move 789 339 3
+wait 2
+text "0.4"
+key Tab
+text "0"
+key Enter
+wait 2
+move 770 293 3
+move 724 275 3
+wait 2
+text "90"
+key Enter
+wait 2
+click L 772 371
+click L 805 371
+move 795 394 3
+move 772 403 3
+click L 772 403
+wait 2
+action tool.segment
+wait 2
+click L 724 275
+click L 660 258
+wait 2
+key Escape
+wait 2
